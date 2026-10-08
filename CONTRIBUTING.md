@@ -51,16 +51,18 @@ If someone else merged first, GitHub may say your branch is out of date or has c
 
 Each lane has its own package, so we can work in parallel without blocking each other. Stay in your lane's folder unless the Issue says otherwise.
 
-| Lane | Folder | Lead | Human review |
-|---|---|---|---|
-| consent | `src/diffdata/consent/` | Paul | required |
-| discover | `src/diffdata/discover/` | Paul | |
-| collect | `src/diffdata/collect/` | Paul (core), Lachlan (source detail) | |
-| organize | `src/diffdata/organize/` | Lachlan | |
-| scrub | `src/diffdata/scrub/` | Ananjay | required |
-| store | `src/diffdata/store/` | not assigned yet | required |
-| common | `src/diffdata/common/` | shared | |
-| repo | docs, CI, tooling | Paul | |
+Find your lane from the requirement IDs in your Issue.
+
+| Lane | Folder | Requirements | Lead | Human review |
+|---|---|---|---|---|
+| consent | `src/diffdata/consent/` | CON, REV | Paul | required |
+| discover | `src/diffdata/discover/` | DIS | Paul | |
+| collect | `src/diffdata/collect/` | COL | Paul (core), Lachlan (source detail) | |
+| organize | `src/diffdata/organize/` | ORG, HIS | Lachlan | |
+| scrub | `src/diffdata/scrub/` | SCR | Ananjay | required |
+| store | `src/diffdata/store/` | STO, REC | not assigned yet | required |
+| common | `src/diffdata/common/` | COL-10, ORG-2 | shared | |
+| repo | docs, CI, tooling | ENG | Paul | |
 
 ## Review policy
 

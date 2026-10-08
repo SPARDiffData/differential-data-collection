@@ -11,6 +11,8 @@ from diffdata.common.paths import DataInRepoError, data_dir
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
 DATA_FOLDERS = {"data", "output", "exports"}
+EMAIL = re.compile(r"[\w.+-]+@([\w-]+(?:\.[\w-]+)+)")
+EXAMPLE_DOMAINS = {"example.com", "example.org", "example.net"}
 
 
 def test_data_dir_inside_a_repo_is_refused(tmp_path):
@@ -48,12 +50,30 @@ def test_no_env_config_or_data_files_are_tracked():
     assert [p for p in tracked if forbidden(p)] == []
 
 
+def emails_outside_example_domains(folder: Path) -> list[str]:
+    """List emails in `folder`'s text files whose domain isn't example.com/.org/.net."""
+    found = []
+    for path in sorted(folder.rglob("*")):
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_bytes().decode("utf-8")
+        except UnicodeDecodeError:
+            continue  # binary fixtures (a sample .docx or recording) can't be scanned as text
+        found += [
+            f"{path.name}: {domain}"
+            for domain in EMAIL.findall(text)
+            if domain.lower() not in EXAMPLE_DOMAINS
+        ]
+    return found
+
+
 def test_fixture_emails_use_reserved_example_domains():
     # Synthetic data only: fake people get addresses at example.com/.org/.net (RFC 2606).
-    email = re.compile(r"[\w.+-]+@([\w-]+(?:\.[\w-]+)+)")
-    for path in FIXTURES.rglob("*"):
-        if path.is_file():
-            for domain in email.findall(path.read_text(encoding="utf-8")):
-                assert domain.lower() in {"example.com", "example.org", "example.net"}, (
-                    f"{path.name} has an email at {domain}; fixtures must be synthetic"
-                )
+    assert emails_outside_example_domains(FIXTURES) == [], "fixtures must be synthetic"
+
+
+def test_email_check_skips_binary_files_and_catches_other_domains(tmp_path):
+    (tmp_path / "sample.docx").write_bytes(b"PK\x03\x04\xff\xfe binary")
+    (tmp_path / "notes.md").write_text("Ask sam@company.invalid", encoding="utf-8")
+    assert emails_outside_example_domains(tmp_path) == ["notes.md: company.invalid"]
