@@ -1,0 +1,32 @@
+[project]
+name = "diffdata"
+version = "0.0.1"
+description = "Finds, collects, scrubs and stores the working data behind AI safety research."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+diffdata = "diffdata.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# Pyflakes, pycodestyle, import sorting, bugbear, and modern-Python upgrades.
+select = ["F", "E", "W", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.10",
+]

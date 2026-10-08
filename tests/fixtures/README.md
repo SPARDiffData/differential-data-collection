@@ -1,0 +1,12 @@
+# Test fixtures
+
+**Synthetic data only.** Everything in this folder is made up: people, messages, links and IDs.
+Never copy real collected data here, not even a trimmed or "anonymized" sample.
+
+When you add a fixture:
+
+- Invent names (Alex Example, Sam Sample) and use `example.com` for email addresses. A test fails on any other email domain.
+- Use obviously fake IDs and links (`FAKE-DOC-0001`, `T00000000`).
+- Don't put anything that looks like a real token or key here. GitHub's push protection may block it, and fake secrets for scrub tests need their own agreed approach (SCR-1).
+
+`slack_channel_sample.md` is a small illustrative channel. Its shape isn't the export format; DIS-1 will define that.
