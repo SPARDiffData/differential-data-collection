@@ -1,0 +1,49 @@
+name: Task
+description: One piece of work in one lane.
+body:
+  - type: dropdown
+    id: lane
+    attributes:
+      label: Lane
+      description: Which part of the code this belongs to. See the lanes table in CONTRIBUTING.md.
+      options:
+        - consent
+        - discover
+        - collect
+        - organize
+        - scrub
+        - store
+        - common
+        - repo
+    validations:
+      required: true
+  - type: input
+    id: requirements
+    attributes:
+      label: Requirement IDs
+      description: From docs/requirements.md. Write "none" for repo chores.
+      placeholder: DIS-1, COL-7
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What and why
+      description: What needs doing, and what it makes possible.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: How we'll know it's finished. A short list of checks works well.
+      placeholder: |
+        - [ ] ...
+        - [ ] Tests cover it
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Links, constraints, and anything out of scope.

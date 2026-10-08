@@ -218,3 +218,18 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---- diffdata ----
+# HARD RULE: real collected data never goes in a git commit.
+# Keep the data folder outside the repo (see config.example.toml); these
+# patterns are a second line of defence.
+data/
+output/
+exports/
+config.toml
+*.local.toml
+.env.*
+!.env.example
+
+# Claude Code personal settings
+.claude/settings.local.json

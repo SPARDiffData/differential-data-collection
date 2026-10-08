@@ -1,0 +1,2 @@
+# Store text with LF line endings so Windows and macOS produce identical diffs.
+* text=auto eol=lf

@@ -1,0 +1,20 @@
+# diffdata configuration.
+# Copy this file to config.toml and fill in your own values.
+# config.toml is gitignored and stays on your computer. Never commit it.
+
+[sources]
+# CON-1: listing a channel or folder here is your opt-in to collecting it.
+# Remove it and collection stops on the next run (CON-3).
+slack_channels = ["example-channel"]  # channel names, without the '#'
+folders = []                          # fixed places to check, e.g. ["~/Documents/transcripts"]
+
+[local]
+# Where collected data is kept on your computer.
+# HARD RULE: real collected data never goes in a git commit. This folder must be
+# outside any git repository; diffdata refuses to use a folder inside one.
+data_dir = "~/diffdata-data"
+
+[store]
+# STO-1: the pilot store is the SPARDiffData shared Google Drive.
+backend = "google-drive"
+folder = ""  # the shared Drive folder to push to
