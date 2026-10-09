@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "deny": [
+      "mcp__claude_ai_Slack__slack_send_*",
+      "mcp__claude_ai_Slack__slack_schedule_*",
+      "mcp__claude_ai_Slack__slack_create_*",
+      "mcp__claude_ai_Slack__slack_update_*",
+      "mcp__claude_ai_Slack__slack_add_*",
+      "mcp__claude_ai_Slack__slack_delete_*",
+      "mcp__claude_ai_Slack__slack_remove_*",
+      "mcp__claude_ai_Slack__*upload*",
+      "mcp__claude_ai_Google_Drive__*create*",
+      "mcp__claude_ai_Google_Drive__*update*",
+      "mcp__claude_ai_Google_Drive__*delete*",
+      "mcp__claude_ai_Google_Drive__*trash*",
+      "mcp__claude_ai_Google_Drive__*move*",
+      "mcp__claude_ai_Google_Drive__*copy*",
+      "mcp__claude_ai_Google_Drive__*share*",
+      "mcp__claude_ai_Google_Drive__*upload*",
+      "mcp__claude_ai_Google_Drive__*edit*",
+      "mcp__claude_ai_Google_Drive__*modify*",
+      "mcp__claude_ai_Gmail__*send*",
+      "mcp__claude_ai_Gmail__*draft*",
+      "mcp__claude_ai_Gmail__*create*",
+      "mcp__claude_ai_Gmail__*update*",
+      "mcp__claude_ai_Gmail__*delete*",
+      "mcp__claude_ai_Gmail__*trash*",
+      "mcp__claude_ai_Gmail__*modify*",
+      "mcp__claude_ai_Gmail__*label*",
+      "mcp__claude_ai_Google_Calendar__*create*",
+      "mcp__claude_ai_Google_Calendar__*update*",
+      "mcp__claude_ai_Google_Calendar__*delete*",
+      "mcp__claude_ai_Google_Calendar__*respond*",
+      "mcp__claude_ai_Google_Calendar__*move*"
+    ]
+  }
+}

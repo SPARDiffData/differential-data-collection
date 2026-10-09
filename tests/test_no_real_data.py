@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from diffdata.common.paths import DataInRepoError, data_dir
+from diffdata.common.paths import DataInRepoError, DataInSyncedFolderError, data_dir
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -45,6 +45,23 @@ def test_data_dir_inside_this_repo_is_refused():
 
 def test_data_dir_outside_a_repo_is_allowed(tmp_path):
     assert data_dir(tmp_path / "collected") == (tmp_path / "collected").resolve()
+
+
+@pytest.mark.parametrize(
+    "synced",
+    [
+        "OneDrive/collected",
+        "OneDrive - Example Org/collected",
+        "Dropbox (Example)/collected",
+        "My Drive/collected",  # Google Drive for desktop on Windows, or mirrored
+        "Library/CloudStorage/GoogleDrive-alex@example.com/My Drive/collected",
+        "iCloudDrive/collected",  # iCloud on Windows
+        "Library/Mobile Documents/com~apple~CloudDocs/collected",  # iCloud Drive on macOS
+    ],
+)
+def test_data_dir_in_a_synced_folder_is_refused(tmp_path, synced):
+    with pytest.raises(DataInSyncedFolderError):
+        data_dir(tmp_path / synced)
 
 
 def test_no_env_config_or_data_files_are_tracked():

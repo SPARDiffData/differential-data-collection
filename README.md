@@ -4,7 +4,7 @@
 
 ## Status
 
-**v0.0.1: repo skeleton.** The `diffdata` command and its stages exist, but nothing is collected yet. The first feature Issues come next: Slack export, the reference log, canvas and Google Doc current versions, and pushing to the shared Drive. See [CHANGELOG.md](CHANGELOG.md).
+**v0.0.1: repo skeleton.** The `diffdata` command and its stages exist. Slack export (DIS-1) works through Claude Code; the other stages are stubs. Next come the reference log, canvas and Google Doc current versions, and pushing to the shared Drive. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick start
 
@@ -19,6 +19,22 @@ uv run pytest
 ```
 
 To configure it, copy `config.example.toml` to `config.toml` and `.env.example` to `.env`, then fill them in. Both stay on your computer.
+
+## Export a Slack channel (DIS-1)
+
+For the pilot there's no Slack app: Claude Code reads Slack for you through its Slack connector, as you. Nothing writes to Slack. This repo's `.claude/settings.json` removes every Slack write tool from Claude while it works in this folder.
+
+1. **Set up `config.toml`.** List the channels to export under `slack_channels`; listing a channel is your opt-in. Set `slack_workspace_url` to your workspace's address. Keep `data_dir` outside the repo and outside OneDrive, Dropbox, Google Drive and iCloud: `diffdata` refuses those.
+2. **Try it.** Open Claude Code in the repo folder and type `/slack-export test`. It reads only the 5 newest messages of the first channel.
+3. **Run it.** Type `/slack-export`. Claude reads each channel and its threads. A hook saves each result unchanged to your data folder, so Claude never retypes it, and then `diffdata` builds:
+   - `slack/export/<channel>/<date>.md`: one readable file per day (UTC), with thread replies under their post
+   - `slack/store/<channel-id>/messages.jsonl`: every version of every message, for the later steps
+
+Claude reports counts only. The raw results, including authors' emails, stay in your data folder until scrubbing (SCR-2).
+
+By hand: `uv run diffdata discover slack build` rebuilds the export from what's saved, and `uv run diffdata discover slack abort` stops a run. A run also closes on its own after an hour. If Claude says `uv` isn't found, restart VS Code.
+
+Not yet: each run reads every channel from the start. Reading only what's new, including late replies in older threads, comes next.
 
 ## Two hard rules
 

@@ -25,7 +25,7 @@ def test_stage_package_imports(stage):
     importlib.import_module(f"diffdata.{stage}")
 
 
-@pytest.mark.parametrize("command", sorted(cli.COMMANDS))
+@pytest.mark.parametrize("command", cli.STUBS)
 def test_stub_command_says_not_built_yet(command, capsys):
     assert cli.main([command]) == 1
     assert "not built yet" in capsys.readouterr().err
