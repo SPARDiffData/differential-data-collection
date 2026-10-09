@@ -59,6 +59,8 @@ def build(config: Config) -> str:
             "file(s). The connector's format may have changed. Nothing is lost: the raw "
             "results stay in the inbox."
         )
+    if totals["empty"]:
+        report.append(f"{totals['empty']} result file(s) had no messages in them.")
     if run is None:
         report.append("No export run was open, so this rebuilt from the inbox.")
     else:
@@ -86,7 +88,7 @@ def read_inbox(channel_dir: Path, channel_id: str, workspace: str) -> tuple[list
         messages, skipped = parse_result(
             result["tool_name"], result["tool_input"], result["tool_response"]
         )
-        counts.update(results=1, messages=len(messages), skipped=skipped)
+        counts.update(results=1, messages=len(messages), skipped=skipped, empty=not messages)
         for m in messages:
             records.append(
                 {

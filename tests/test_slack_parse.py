@@ -5,7 +5,13 @@ from dataclasses import asdict
 
 import pytest
 
-from diffdata.discover.slack_parse import parse_result, permalink, result_text, to_markdown
+from diffdata.discover.slack_parse import (
+    next_cursor,
+    parse_result,
+    permalink,
+    result_text,
+    to_markdown,
+)
 
 CHANNEL_TOOL = "mcp__claude_ai_Slack__slack_read_channel"
 THREAD_TOOL = "mcp__claude_ai_Slack__slack_read_thread"
@@ -35,6 +41,22 @@ def thread(slack_response):
 
 def test_unwraps_the_connector_result(slack_response):
     assert result_text(slack_response("read_channel.txt")).startswith("Channel: #example-channel")
+
+
+def test_unwraps_a_saved_copy_that_holds_the_block_list(slack_response):
+    saved_copy = json.dumps(slack_response("read_channel.txt"))  # one string, as read from a file
+    assert result_text(saved_copy).startswith("Channel: #example-channel")
+
+
+def test_finds_the_next_cursor():
+    more = "There are more messages available. To view the next page, use cursor: `FAKECURSOR01`\n"
+    result = json.dumps({"messages": "", "pagination_info": more})
+    assert next_cursor(result) == "FAKECURSOR01"
+    assert next_cursor(json.dumps({"messages": "", "pagination_info": "No more."})) is None
+
+
+def test_counts_replies_from_the_thread_line(channel):
+    assert {ts: m.replies for ts, m in channel.items() if m.replies} == {PARENT: 3}
 
 
 def test_reads_every_top_level_post(channel):

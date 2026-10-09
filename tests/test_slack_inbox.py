@@ -2,6 +2,7 @@
 
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +13,7 @@ from diffdata.discover.slack_inbox import SlackExportError, abort, begin, open_r
 
 T0 = datetime(2026, 10, 1, 14, 0, tzinfo=UTC)
 CHANNEL = "C00000001"
+FIXTURES = Path(__file__).parent / "fixtures" / "slack"
 
 
 @pytest.fixture
@@ -140,6 +142,88 @@ def test_abort_closes_the_run(config):
 def test_the_hook_does_nothing_without_a_config(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert slack_inbox.save_from_hook(payload()) == 0
+
+
+MORE = "There are more messages available. To view the next page, use cursor: `FAKECURSOR01`\n"
+
+
+def connector_result(fixture: str, pagination: str = MORE) -> list[dict]:
+    text = (FIXTURES / fixture).read_text(encoding="utf-8")
+    return [{"type": "text", "text": json.dumps({"messages": text, "pagination_info": pagination})}]
+
+
+def hook_note(capsys) -> str:
+    output = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+    assert output["hookEventName"] == "PostToolUse"
+    return output["additionalContext"]
+
+
+def test_save_tells_claude_the_next_cursor_and_the_threads_to_read(config, capsys):
+    begin(config, ["example-channel=C00000001"], now=T0)
+    hook = json.loads(payload())
+    hook["tool_response"] = connector_result("read_channel.txt")
+    assert save(config, json.dumps(hook).encode("utf-8"), now=T0) == 0
+    note = hook_note(capsys)
+    assert note.startswith("diffdata saved this result to the inbox: 5 message(s).")
+    assert "cursor `FAKECURSOR01`" in note
+    assert "slack_read_thread: 1790864040.000100." in note
+    assert "Alex" not in note and "Kickoff" not in note  # IDs and counts only
+
+
+@pytest.fixture
+def overflowed(tmp_path):
+    """Claude Code's layout: the session's transcript, and beside it a folder of the same
+    name whose tool-results folder holds results too big for Claude's context."""
+    transcript = tmp_path / "claude" / "projects" / "repo" / "session-0001.jsonl"
+    folder = transcript.with_suffix("") / "tool-results"
+    folder.mkdir(parents=True)
+
+    def make(saved_text: str, notice_path=None) -> bytes:
+        saved = folder / "toolu_fake0001.txt"
+        saved.write_text(saved_text, encoding="utf-8")
+        notice = (
+            "Output too large (80.4KB). Full output saved to: "
+            f"{notice_path or saved}\n\nPreview (first 2KB):\n{saved_text[:200]}"
+        )
+        hook = json.loads(payload())
+        hook["transcript_path"] = str(transcript)
+        hook["tool_response"] = [{"type": "text", "text": notice}]
+        return json.dumps(hook).encode("utf-8")
+
+    return make
+
+
+@pytest.mark.parametrize("as_blocks", [False, True])
+def test_a_result_too_big_for_claude_is_read_from_claude_codes_saved_copy(
+    config, capsys, overflowed, as_blocks
+):
+    response = connector_result("read_channel.txt", pagination="")
+    saved_text = json.dumps(response) if as_blocks else response[0]["text"]
+    begin(config, ["example-channel=C00000001"], now=T0)
+    assert save(config, overflowed(saved_text), now=T0) == 0
+    [path] = inbox_files(config)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["tool_response"] == saved_text
+    assert saved["overflow_file"] == "toolu_fake0001.txt"
+    note = hook_note(capsys)
+    assert "5 message(s)" in note and "too big" in note and "No more pages" in note
+
+
+def test_a_saved_copy_outside_the_sessions_folder_is_refused(config, capsys, overflowed, tmp_path):
+    elsewhere = tmp_path / "elsewhere.txt"
+    elsewhere.write_text("{}", encoding="utf-8")
+    begin(config, ["example-channel=C00000001"], now=T0)
+    assert save(config, overflowed("{}", notice_path=elsewhere), now=T0) == 2
+    assert "Stop the export" in capsys.readouterr().err
+    assert inbox_files(config) == []
+
+
+def test_a_missing_saved_copy_stops_the_export(config, capsys, overflowed, tmp_path):
+    missing = tmp_path / "claude" / "projects" / "repo" / "session-0001" / "tool-results" / "x.txt"
+    begin(config, ["example-channel=C00000001"], now=T0)
+    assert save(config, overflowed("{}", notice_path=missing), now=T0) == 2
+    assert "Stop the export" in capsys.readouterr().err
+    assert inbox_files(config) == []
 
 
 def test_cli_begin_and_abort(tmp_path, monkeypatch, capsys):

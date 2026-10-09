@@ -43,6 +43,8 @@ META = re.compile(r"^(?P<key>Thread|Reactions|Files): (?P<value>.*)$")
 FILE = re.compile(r"(?P<name>[^,]+?) \(ID: (?P<id>F[A-Z0-9]+), (?P<type>[^,()]+), [^()]+\)")
 REACTION = re.compile(r"(?P<name>[^\s,()]+) \((?P<count>\d+)\)")
 SLACK_MARKUP = re.compile(r"<([^<>\n]+)>")
+CURSOR = re.compile(r"cursor:?\s*`([^`]+)`")  # "...use cursor: `bmV4dF90czox...`"
+REPLIES = re.compile(r"^(\d+) repl")  # "Thread: 3 replies (latest: ...)"
 
 
 @dataclass
@@ -55,6 +57,7 @@ class Message:
     text: str  # as Slack sent it, markup and all
     files: list[dict]
     reactions: list[dict]
+    replies: int = 0  # from a channel read's Thread line; not part of the content
 
     def content_hash(self) -> str:
         """A new hash means a new version of the message. Reactions don't count."""
@@ -62,19 +65,41 @@ class Message:
         return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
 
 
-def result_text(tool_response) -> str:
-    """The `messages` text inside a saved tool result."""
+def raw_text(tool_response) -> str:
+    """The text of a tool result: a list of text blocks, or a plain string."""
     blocks = tool_response if isinstance(tool_response, list) else [tool_response]
-    raw = "".join(
+    return "".join(
         block if isinstance(block, str) else block.get("text") or ""
         for block in blocks
         if isinstance(block, str | dict)
     )
+
+
+def result_json(tool_response) -> dict | None:
+    """The JSON inside a tool result, or None if it isn't JSON."""
     try:
-        inner = json.loads(raw)
+        inner = json.loads(raw_text(tool_response))
     except json.JSONDecodeError:
-        return raw
-    return inner.get("messages", "") if isinstance(inner, dict) else raw
+        return None
+    if isinstance(inner, list):  # a result Claude Code saved to a file can hold the block list
+        return result_json(inner)
+    return inner if isinstance(inner, dict) else None
+
+
+def result_text(tool_response) -> str:
+    """The `messages` text inside a saved tool result."""
+    inner = result_json(tool_response)
+    if inner is None:
+        return raw_text(tool_response)
+    messages = inner.get("messages", "")
+    return messages if isinstance(messages, str) else ""
+
+
+def next_cursor(tool_response) -> str | None:
+    """The cursor for the next page, if the result says there is one."""
+    pagination = (result_json(tool_response) or {}).get("pagination_info", "")
+    match = CURSOR.search(pagination if isinstance(pagination, str) else "")
+    return match[1] if match else None
 
 
 def parse_result(tool_name: str, tool_input: dict, tool_response) -> tuple[list[Message], int]:
@@ -133,6 +158,7 @@ def parse_block(block: str, who: str | None) -> Message | None:
             {"name": r["name"], "count": int(r["count"])}
             for r in REACTION.finditer(meta.get("Reactions", ""))
         ],
+        replies=int(match[1]) if (match := REPLIES.match(meta.get("Thread", ""))) else 0,
     )
 
 
