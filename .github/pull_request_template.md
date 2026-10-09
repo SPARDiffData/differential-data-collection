@@ -23,10 +23,13 @@ Closes #
 ## Reviewer
 
 <!-- Every PR gets one review before merge. Run /review-pr <number> in a separate Claude session.
-     A human must also review anything touching consent, scrub or store. -->
+     A human must also review anything touching consent, scrub or store.
+     While Paul works solo, Paul's own read is that human review: tick the "Solo phase" box instead.
+     See "Review policy" in CONTRIBUTING.md. -->
 
 - [ ] AI review from a separate Claude session, posted as a comment below
 - [ ] Touches consent, scrub or store, so a human reviews it too: @
+- [ ] Solo phase: touches consent, scrub or store, and Paul's own read is the human review
 
 ## Checklist
 

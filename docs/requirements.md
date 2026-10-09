@@ -104,7 +104,7 @@ We build the **Produce, Collect and Store** layers, dogfooding on our own SPAR t
 | SCR-5 | Scrubbing is deterministic and logged. | F |
 | SCR-6 | Scrub runs at collection, and again as an audit in storage. | F |
 
-### 5.6 Review
+### 5.6 Review (lane: Paul, in the consent package)
 
 | ID | Requirement | Pri |
 |---|---|---|
@@ -112,7 +112,7 @@ We build the **Produce, Collect and Store** layers, dogfooding on our own SPAR t
 | REV-3 | A way for producers to give us feedback once other SPAR projects use the tool. | L |
 | REV-2 | Unflagged data releases after a review window (24 h like Alignment Hive, or 7 days). Flagged items wait for approval. | F |
 
-### 5.7 Store and recall
+### 5.7 Store and recall (lane: not assigned yet)
 
 | ID | Requirement | Pri |
 |---|---|---|
@@ -129,7 +129,7 @@ We build the **Produce, Collect and Store** layers, dogfooding on our own SPAR t
 | STO-8 | US-only storage (open). | F |
 | REC-1 | Approved users download scrubbed data. No query interface or UI. | F |
 
-### 5.8 Engineering
+### 5.8 Engineering (lane: Paul, repo)
 
 | ID | Requirement | Pri |
 |---|---|---|

@@ -15,6 +15,7 @@ You are the independent check: run in a different session from the one that wrot
 - `gh issue view <n>` for the Issue the PR closes (from `closingIssuesReferences`, or the `#n` in the body)
 - `gh pr checks $ARGUMENTS` for CI
 - `CLAUDE.md`, and each requirement ID the PR names in `docs/requirements.md`
+- The "While Paul works solo" section of `CONTRIBUTING.md`
 
 If `gh` is missing or not logged in (`gh auth status`), tell the user, then fall back to `git fetch origin` and `git diff origin/main...HEAD` on the checked-out branch, and ask them to paste the Issue text.
 
@@ -26,6 +27,9 @@ If `gh` is missing or not logged in (`gh auth status`), tell the user, then fall
 4. **Tests.** Is changed behavior covered by new or updated tests? Do the tests use only synthetic fixtures?
 5. **Lane.** The branch should be `<lane>/<short-name>`, and the changed files should stay inside `src/diffdata/<lane>/` and its tests, unless the Issue says otherwise. Lane `repo` covers docs, CI and tooling.
 6. **Human review needed?** If the diff touches `src/diffdata/consent/`, `src/diffdata/scrub/` or `src/diffdata/store/`, this AI review isn't enough: say a human must review before merge.
+   - **Solo phase.** The solo phase applies when all three hold: "While Paul works solo" in `CONTRIBUTING.md` says it's in effect, the PR author is Paul (GitHub login `PaulsForge`), and the PR ticks the "Solo phase" box. Then Paul's own read is the human review. Don't flag Paul reviewing their own PR. Use the verdict "Ready once Paul has read every changed line (solo phase)".
+   - If the box is ticked but the solo phase has ended, or the author isn't Paul, that's a must fix.
+   - If the diff touches those folders, the solo phase is in effect and the author is Paul, but the box isn't ticked, ask for it under must fix: the PR has to say what human review it got.
 7. **Description.** Could a teammate who doesn't code follow the What, Why and How it was tested?
 8. **CI.** Is it passing?
 
@@ -38,7 +42,7 @@ Write the review in exactly this shape, short and in plain words:
 ```
 ## AI review (separate session)
 
-**Verdict:** Ready to merge | Fix the must-fix items first | Needs a human review (consent, scrub or store)
+**Verdict:** Ready to merge | Fix the must-fix items first | Needs a human review (consent, scrub or store) | Ready once Paul has read every changed line (solo phase)
 
 ### Must fix
 - `path/to/file.py:42`: what's wrong, and what to do about it.
