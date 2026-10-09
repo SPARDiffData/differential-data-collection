@@ -26,6 +26,10 @@ BINARY_SUFFIXES = {
     ".mp4",
     ".wav",
 }
+UNREADABLE = (
+    "not UTF-8, so it can't be checked. If it's meant to be binary, add its type to "
+    "BINARY_SUFFIXES and check the file by hand. If it's text, save it as UTF-8."
+)
 
 
 def test_data_dir_inside_a_repo_is_refused(tmp_path):
@@ -73,7 +77,7 @@ def fixture_email_problems(folder: Path) -> list[str]:
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             # Don't skip it: a CSV saved from Excel could hide real addresses this way.
-            found.append(f"{path.name}: not UTF-8, so it can't be checked")
+            found.append(f"{path.name}: {UNREADABLE}")
             continue
         found += [
             f"{path.name}: {domain}"
@@ -85,7 +89,7 @@ def fixture_email_problems(folder: Path) -> list[str]:
 
 def test_fixture_emails_use_reserved_example_domains():
     # Synthetic data only: fake people get addresses at example.com/.org/.net (RFC 2606).
-    assert fixture_email_problems(FIXTURES) == [], "fixtures must be synthetic"
+    assert fixture_email_problems(FIXTURES) == [], "see tests/fixtures/README.md"
 
 
 def test_email_check_skips_binary_types_but_flags_other_encodings(tmp_path):
@@ -94,5 +98,6 @@ def test_email_check_skips_binary_types_but_flags_other_encodings(tmp_path):
     (tmp_path / "people.csv").write_text("José,jose@company.invalid", encoding="cp1252")
     assert fixture_email_problems(tmp_path) == [
         "notes.md: company.invalid",
-        "people.csv: not UTF-8, so it can't be checked",
+        "people.csv: not UTF-8, so it can't be checked. If it's meant to be binary, add its type "
+        "to BINARY_SUFFIXES and check the file by hand. If it's text, save it as UTF-8.",
     ]
