@@ -31,14 +31,12 @@ def export_run(config, slack_response, slack_hook):
     """One /slack-export run as the hook saves it, then the build: a channel read, then
     a read of the one thread with replies."""
 
-    def run(when=T0, channel_fixture="read_channel.txt", thread_first=False):
+    def run(when=T0, channel_fixture="read_channel.txt"):
         begin(config, ["example-channel=C00000001"], now=when)
         reads = [
             ("slack_read_channel", {"channel_id": CHANNEL}, channel_fixture),
             ("slack_read_thread", {"channel_id": CHANNEL, "message_ts": PARENT}, "read_thread.txt"),
         ]
-        if thread_first:
-            reads.reverse()
         for i, (tool, tool_input, fixture) in enumerate(reads, start=1):
             payload = slack_hook(
                 tool, tool_input, slack_response(fixture), f"toolu_{when:%d%H%M}{i}"
@@ -129,16 +127,20 @@ BROADCAST = (
 )
 
 
-@pytest.mark.parametrize("thread_first", [False, True])
+@pytest.mark.parametrize("thread_copy_first", [False, True])
 def test_a_reply_also_sent_to_the_channel_stays_in_its_thread(
-    config, export_run, tmp_path, thread_first
+    config, export_run, tmp_path, thread_copy_first
 ):
     channel_read = (SLACK_FIXTURES / "read_channel.txt").read_text(encoding="utf-8")
     kickoff = "=== Message from Alex Example <alex@example.com> (U00000001) at 2026-10-01 09:14"
     with_broadcast = tmp_path / "read_channel_broadcast.txt"  # a copy outside the fixtures
     with_broadcast.write_text(channel_read.replace(kickoff, BROADCAST + kickoff), encoding="utf-8")
 
-    export_run(channel_fixture=str(with_broadcast), thread_first=thread_first)
+    if thread_copy_first:  # an earlier run stored the thread's copy before the channel's
+        export_run()
+        export_run(T0 + timedelta(days=1), str(with_broadcast))
+    else:
+        export_run(channel_fixture=str(with_broadcast))
     day = view(config)["2026-10-01.md"]
     assert "> **Sam Sample** · 14:20 UTC" in day
     assert "\n**Sam Sample** · 14:20 UTC" not in day  # not also shown as a post of its own

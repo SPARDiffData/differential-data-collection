@@ -4,6 +4,8 @@ For the pilot there's no Slack app (DIS-6). The /slack-export command reads Slac
 Claude's Slack connector, and a hook passes each result to `save_from_hook()`, so Claude
 never retypes it. A result is saved only while an export run is open, and only for the
 channels that run named, all of which must be opted in through config.toml (CON-1).
+A channel read must show that channel's opted-in name and ID in its header, and a
+thread is saved only after its channel's read has passed that check.
 A result too big for Claude's context reaches the hook only as a notice naming the file
 Claude Code saved it in, so `save` reads that file, and only from the session's own
 tool-results folder. After each save, the hook tells Claude what it needs to carry on.
@@ -17,13 +19,19 @@ Layout under the data folder:
 import json
 import re
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from diffdata.common.config import Config, ConfigError, channel_name, load_config
 from diffdata.common.paths import UnsafeDataDirError
-from diffdata.discover.slack_parse import next_cursor, parse_result, raw_text, result_json
+from diffdata.discover.slack_parse import (
+    next_cursor,
+    parse_result,
+    raw_text,
+    result_json,
+    result_text,
+)
 
 # A run that crashed or was forgotten must not leave the hook saving, so runs expire.
 RUN_MINUTES = 60
@@ -35,6 +43,9 @@ OVERFLOW = re.compile(r"saved to:?\s+(?P<path>.+?\.(?:txt|json))\b", re.IGNORECA
 # Public channels start with C, older private ones with G. DMs (D) need both people's
 # consent first (CON-5), so they're refused.
 CHANNEL_ID = re.compile(r"[CG][A-Z0-9]{6,}")
+# A channel read starts with "Channel: #name (ID)". The hook checks it against the run, so a
+# wrong ID chosen by Claude can't bring in a channel that wasn't opted in (CON-1).
+CHANNEL_HEADER = re.compile(r"Channel: #(?P<name>[^\s()]+) \((?P<id>[A-Z0-9]+)\)")
 
 
 class SlackExportError(Exception):
@@ -49,6 +60,8 @@ class Run:
     channels: dict[str, str]  # channel ID -> channel name
     closed_at: str | None = None
     closed_why: str | None = None
+    # Channels whose read showed the opted-in name and ID. Threads are saved only for these.
+    verified: list[str] = field(default_factory=list)
 
 
 def utc_iso(when: datetime) -> str:
@@ -194,6 +207,27 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
             response = overflow.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as e:
             return fail(f"Couldn't read the file Claude Code saved a big Slack result in: {e}")
+
+    if tool == "slack_read_channel":
+        header = CHANNEL_HEADER.match(result_text(response).lstrip())
+        if (
+            header is None
+            or header["id"] != channel_id
+            or channel_name(header["name"]) != run.channels[channel_id]
+        ):
+            return fail(
+                f"This channel read doesn't show the channel opted in as "
+                f"#{run.channels[channel_id]} in config.toml, so it wasn't saved (CON-1). "
+                "Stop the export."
+            )
+        if channel_id not in run.verified:
+            run.verified.append(channel_id)
+            write_json(run_path(config.data_dir), asdict(run))
+    elif channel_id not in run.verified:
+        return fail(
+            f"A thread in #{run.channels[channel_id]} was read before the channel itself, so "
+            "diffdata couldn't check the channel and didn't save it. Stop the export."
+        )
 
     # The call's ID keeps file names unique when Claude reads several things at once.
     call = re.sub(r"[^A-Za-z0-9_-]", "", str(hook.get("tool_use_id", "")))

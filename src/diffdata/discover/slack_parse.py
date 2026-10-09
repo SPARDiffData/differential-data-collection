@@ -38,7 +38,8 @@ MARKER = re.compile(
     r"|(?P<replies>=== THREAD REPLIES \(\d+ total\) ===))[ \t]*$",
     re.MULTILINE,
 )
-AUTHOR = re.compile(r"^(?P<name>.*?)(?: <[^<>]*>)? \((?P<user_id>[A-Z][A-Z0-9]+)\)$")
+# "Name <email> (U...)". The name can't hold <, > or @, so an email can never end up in it.
+AUTHOR = re.compile(r"^(?P<name>[^<>@]*?)\s*(?:<[^<>]*>)?\s*\((?P<user_id>[A-Z][A-Z0-9]+)\)$")
 META = re.compile(r"^(?P<key>Thread|Reactions|Files): (?P<value>.*)$")
 FILE = re.compile(r"(?P<name>[^,]+?) \(ID: (?P<id>F[A-Z0-9]+), (?P<type>[^,()]+), [^()]+\)")
 REACTION = re.compile(r"(?P<name>[^\s,()]+) \((?P<count>\d+)\)")
@@ -145,12 +146,14 @@ def parse_block(block: str, who: str | None) -> Message | None:
             meta[match["key"]] = match["value"]
 
     author = AUTHOR.match(who)
-    user_id = author["user_id"] if author else ""
+    if author is None:  # a shape we don't know might carry an email, so don't keep any of it
+        return None
+    user_id = author["user_id"]
     return Message(
         ts=ts,
         thread_ts=None,
         user_id=user_id,
-        user_name=author["name"] if author else who,
+        user_name=author["name"],
         bot=user_id == "USLACKBOT" or user_id.startswith("B"),
         text="\n".join(lines).strip("\n"),
         files=parse_files(meta.get("Files", "")),

@@ -149,3 +149,38 @@ def test_permalinks():
         "https://example.slack.com/archives/C00000001/p1790864400000110"
         "?thread_ts=1790864040.000100&cid=C00000001"
     )
+
+
+def thread_parent(author: str) -> str:
+    return (
+        "=== THREAD PARENT MESSAGE ===\n"
+        f"From: {author}\n"
+        "Time: 2026-10-01 09:14:00 CDT\n"
+        f"Message TS: {PARENT}\n"
+        "Hello\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("author", "name"),
+    [
+        ("Alex Example <alex@example.com>(U00000001)", "Alex Example"),  # no space before the ID
+        ("Alex Example <alex@example.com>  (U00000001)", "Alex Example"),
+        ("Alex Example (they/them) <alex@example.com> (U00000001)", "Alex Example (they/them)"),
+    ],
+)
+def test_the_author_name_never_keeps_the_email(author, name):
+    [message], skipped = parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(author))
+    assert (message.user_name, message.user_id, skipped) == (name, "U00000001", 0)
+    assert "example.com" not in json.dumps(asdict(message))
+
+
+@pytest.mark.parametrize(
+    "author",
+    [
+        "Alex Example alex@example.com (U00000001)",  # an email outside the brackets
+        "Alex Example <alex@example.com>",  # no user ID
+    ],
+)
+def test_an_author_line_it_cant_read_is_counted_and_not_kept(author):
+    assert parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(author)) == ([], 1)

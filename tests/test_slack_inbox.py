@@ -25,7 +25,13 @@ def config(tmp_path):
     )
 
 
-def payload(tool="slack_read_channel", channel=CHANNEL, call="toolu_0001"):
+# The smallest channel read: just its header line, in the connector's wrapping.
+HEADER_ONLY = [
+    {"type": "text", "text": json.dumps({"messages": "Channel: #example-channel (C00000001)\n"})}
+]
+
+
+def payload(tool="slack_read_channel", channel=CHANNEL, call="toolu_0001", response=None):
     return json.dumps(
         {
             "session_id": "fake-session",
@@ -33,7 +39,7 @@ def payload(tool="slack_read_channel", channel=CHANNEL, call="toolu_0001"):
             "hook_event_name": "PostToolUse",
             "tool_name": f"mcp__claude_ai_Slack__{tool}",
             "tool_input": {"channel_id": channel, "response_format": "detailed"},
-            "tool_response": [{"type": "text", "text": "synthetic result"}],
+            "tool_response": HEADER_ONLY if response is None else response,
             "tool_use_id": call,
         }
     ).encode("utf-8")
@@ -89,7 +95,7 @@ def test_save_keeps_the_result_unchanged_and_drops_session_details(config):
     assert path.parent.parent.name == CHANNEL
     assert path.name == "slack_read_channel-toolu_0001.json"
     saved = json.loads(path.read_text(encoding="utf-8"))
-    assert saved["tool_response"] == [{"type": "text", "text": "synthetic result"}]
+    assert saved["tool_response"] == HEADER_ONLY
     assert saved["tool_input"]["channel_id"] == CHANNEL
     assert saved["saved_at"] == "2026-10-01T14:01:00Z"
     assert "session_id" not in saved and "transcript_path" not in saved
@@ -156,6 +162,35 @@ def hook_note(capsys) -> str:
     output = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
     assert output["hookEventName"] == "PostToolUse"
     return output["additionalContext"]
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "Channel: #other-channel (C00000001)\n",  # another channel's name
+        "Channel: #example-channel (C00000009)\n",  # another channel's ID
+        "no header at all\n",
+    ],
+)
+def test_a_channel_read_that_isnt_the_opted_in_channel_is_refused(config, capsys, header):
+    begin(config, ["example-channel=C00000001"], now=T0)
+    response = [{"type": "text", "text": json.dumps({"messages": header})}]
+    assert save(config, payload(response=response), now=T0) == 2
+    assert "CON-1" in capsys.readouterr().err
+    assert inbox_files(config) == []
+
+
+def test_a_thread_is_saved_only_after_its_channel_passed_the_check(config, capsys):
+    begin(config, ["example-channel=C00000001"], now=T0)
+    thread = payload(tool="slack_read_thread", call="toolu_0002")
+    assert save(config, thread, now=T0) == 2
+    assert "before the channel" in capsys.readouterr().err
+    assert inbox_files(config) == []
+
+    assert save(config, payload(), now=T0) == 0
+    assert open_run(config.data_dir).verified == [CHANNEL]
+    assert save(config, thread, now=T0) == 0
+    assert len(inbox_files(config)) == 2
 
 
 def test_save_tells_claude_the_next_cursor_and_the_threads_to_read(config, capsys):
