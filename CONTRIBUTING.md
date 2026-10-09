@@ -80,6 +80,6 @@ The rule ends when a second person is active in the repo, meaning they open or r
 
 ## Getting help
 
-- Stuck with Git or Claude: ask in the team Slack channel, or ask Paul.
+- Stuck with Git or Claude: First try asking your current Claude session.  If that doesn't work, start a new Claude session, explain you're learning, and need help.  If that still doesn't resolve ask in the team Slack channel, or ask Paul. A tip: When Paul ran his first Claude Code work, he kept 2 sessions going at once.  The actual code development, and another acting as a trusted mentor that could answer questions and give advice.
 - Unsure what an Issue means: comment on the Issue.
 - Unsure whether something counts as real data: assume it does, and ask before committing.
