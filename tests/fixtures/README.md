@@ -6,6 +6,8 @@ Never copy real collected data here, not even a trimmed or "anonymized" sample.
 When you add a fixture:
 
 - Invent names (Alex Example, Sam Sample) and use `example.com` for email addresses. A test fails on any other email domain.
+- Save text fixtures as UTF-8. The test fails on text it can't read, because that's where a real address could hide.
+- The test can't look inside binary fixtures (`.docx`, `.pdf`, images, recordings), so check those by hand before committing.
 - Use obviously fake IDs and links (`FAKE-DOC-0001`, `T00000000`).
 - Don't put anything that looks like a real token or key here. GitHub's push protection may block it, and fake secrets for scrub tests need their own agreed approach (SCR-1).
 

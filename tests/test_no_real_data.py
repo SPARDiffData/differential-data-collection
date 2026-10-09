@@ -11,6 +11,21 @@ from diffdata.common.paths import DataInRepoError, data_dir
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
 DATA_FOLDERS = {"data", "output", "exports"}
+EMAIL = re.compile(r"[\w.+-]+@([\w-]+(?:\.[\w-]+)+)")
+EXAMPLE_DOMAINS = {"example.com", "example.org", "example.net"}
+# Fixture types the email check can't read as text. Check these by hand before committing.
+BINARY_SUFFIXES = {
+    ".docx",
+    ".xlsx",
+    ".pptx",
+    ".pdf",
+    ".png",
+    ".jpg",
+    ".mp3",
+    ".m4a",
+    ".mp4",
+    ".wav",
+}
 
 
 def test_data_dir_inside_a_repo_is_refused(tmp_path):
@@ -48,12 +63,36 @@ def test_no_env_config_or_data_files_are_tracked():
     assert [p for p in tracked if forbidden(p)] == []
 
 
+def fixture_email_problems(folder: Path) -> list[str]:
+    """List emails outside example.com/.org/.net, and text files too unreadable to check."""
+    found = []
+    for path in sorted(folder.rglob("*")):
+        if not path.is_file() or path.suffix.lower() in BINARY_SUFFIXES:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            # Don't skip it: a CSV saved from Excel could hide real addresses this way.
+            found.append(f"{path.name}: not UTF-8, so it can't be checked")
+            continue
+        found += [
+            f"{path.name}: {domain}"
+            for domain in EMAIL.findall(text)
+            if domain.lower() not in EXAMPLE_DOMAINS
+        ]
+    return found
+
+
 def test_fixture_emails_use_reserved_example_domains():
     # Synthetic data only: fake people get addresses at example.com/.org/.net (RFC 2606).
-    email = re.compile(r"[\w.+-]+@([\w-]+(?:\.[\w-]+)+)")
-    for path in FIXTURES.rglob("*"):
-        if path.is_file():
-            for domain in email.findall(path.read_text(encoding="utf-8")):
-                assert domain.lower() in {"example.com", "example.org", "example.net"}, (
-                    f"{path.name} has an email at {domain}; fixtures must be synthetic"
-                )
+    assert fixture_email_problems(FIXTURES) == [], "fixtures must be synthetic"
+
+
+def test_email_check_skips_binary_types_but_flags_other_encodings(tmp_path):
+    (tmp_path / "sample.docx").write_bytes(b"PK\x03\x04\xff\xfe binary")
+    (tmp_path / "notes.md").write_text("Ask sam@company.invalid", encoding="utf-8")
+    (tmp_path / "people.csv").write_text("José,jose@company.invalid", encoding="cp1252")
+    assert fixture_email_problems(tmp_path) == [
+        "notes.md: company.invalid",
+        "people.csv: not UTF-8, so it can't be checked",
+    ]

@@ -32,7 +32,7 @@ If a change would break one of these, or you aren't sure, stop and ask the user.
 
 | Lane | Where | Requirements | Human review |
 |---|---|---|---|
-| consent | `src/diffdata/consent/` | CON | required |
+| consent | `src/diffdata/consent/` | CON, REV (the producer's review before release) | required |
 | discover | `src/diffdata/discover/` | DIS | |
 | collect | `src/diffdata/collect/` | COL | |
 | organize | `src/diffdata/organize/` | ORG, HIS | |

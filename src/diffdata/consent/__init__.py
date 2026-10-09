@@ -1,4 +1,4 @@
-"""Connect and consent: which sources a producer agrees to share, and with whom (CON-1 to CON-6).
+"""Connect, consent and review: what a producer agrees to share, and what they approve for release.
 
-Lane: consent. A human must review every change here.
+Covers CON-1 to CON-6 and REV-1 to REV-3. Lane: consent. A human must review every change here.
 """
