@@ -117,12 +117,18 @@ def read_store(path: Path) -> list[dict]:
     return [json.loads(line) for line in lines if line.strip()]
 
 
+def store_key(record: dict) -> tuple:
+    # thread_ts is part of the key: a reply also sent to the channel shows up in the channel
+    # read as a plain post, and the thread read's copy is what says which thread it's in.
+    return record["ts"], record["content_hash"], record["thread_ts"] or ""
+
+
 def add_to_store(path: Path, records: list[dict]) -> int:
     """Append the message versions the store doesn't have yet. Returns how many."""
-    seen = {(r["ts"], r["content_hash"]) for r in read_store(path)}
+    seen = {store_key(r) for r in read_store(path)}
     new = []
     for record in records:
-        key = (record["ts"], record["content_hash"])
+        key = store_key(record)
         if key not in seen:
             seen.add(key)
             new.append(record)
@@ -152,15 +158,18 @@ def write_view(
     """Write one markdown file per UTC day, with thread replies under their parent post,
     even when a reply came days later. Returns how many files changed."""
     latest: dict[str, dict] = {}
-    versions: Counter = Counter()
+    thread_of: dict[str, str] = {}
+    hashes: dict[str, set] = defaultdict(set)
     for record in store:  # in the order collected, so the newest version wins
         latest[record["ts"]] = record
-        versions[record["ts"]] += 1
+        hashes[record["ts"]].add(record["content_hash"])
+        if record["thread_ts"]:  # any copy that knows its thread places the message
+            thread_of[record["ts"]] = record["thread_ts"]
     people = {r["user_id"]: r["user_name"] for r in store if r["user_id"]}
 
     posts, replies = [], defaultdict(list)
     for record in latest.values():
-        parent = record["thread_ts"]
+        parent = thread_of.get(record["ts"])
         if parent and parent != record["ts"] and parent in latest:
             replies[parent].append(record)
         else:
@@ -174,7 +183,7 @@ def write_view(
         stamp = f"{when:%H:%M}" if when.date().isoformat() == day else f"{when:%Y-%m-%d %H:%M}"
         head = f"**{record['user_name']}**" + (" (bot)" if record["bot"] else "")
         head += f" · {stamp} UTC · [link]({record['permalink']})"
-        if versions[record["ts"]] > 1:
+        if len(hashes[record["ts"]]) > 1:
             head += " · edited"
         lines = [head]
         if record["text"]:

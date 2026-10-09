@@ -31,12 +31,14 @@ def export_run(config, slack_response, slack_hook):
     """One /slack-export run as the hook saves it, then the build: a channel read, then
     a read of the one thread with replies."""
 
-    def run(when=T0, channel_fixture="read_channel.txt"):
+    def run(when=T0, channel_fixture="read_channel.txt", thread_first=False):
         begin(config, ["example-channel=C00000001"], now=when)
         reads = [
             ("slack_read_channel", {"channel_id": CHANNEL}, channel_fixture),
             ("slack_read_thread", {"channel_id": CHANNEL, "message_ts": PARENT}, "read_thread.txt"),
         ]
+        if thread_first:
+            reads.reverse()
         for i, (tool, tool_input, fixture) in enumerate(reads, start=1):
             payload = slack_hook(
                 tool, tool_input, slack_response(fixture), f"toolu_{when:%d%H%M}{i}"
@@ -116,6 +118,31 @@ def test_an_edited_message_keeps_both_versions(config, export_run, tmp_path):
     ]
     day = view(config)["2026-10-03.md"]
     assert "11:00 PT" in day and "11:30 PT" not in day and " · edited" in day
+
+
+# Sam's thread reply, as the channel read shows it when it was also sent to the channel.
+BROADCAST = (
+    "=== Message from Sam Sample <sam@example.com> (U00000002) at 2026-10-01 09:20:00 CDT ===\n"
+    "Message TS: 1790864400.000110\n"
+    "Added my comments, <@U00000001|Alex Example>. The plan canvas is here: "
+    "<https://example.slack.com/docs/T00000000/F00000002>\n\n"
+)
+
+
+@pytest.mark.parametrize("thread_first", [False, True])
+def test_a_reply_also_sent_to_the_channel_stays_in_its_thread(
+    config, export_run, tmp_path, thread_first
+):
+    channel_read = (SLACK_FIXTURES / "read_channel.txt").read_text(encoding="utf-8")
+    kickoff = "=== Message from Alex Example <alex@example.com> (U00000001) at 2026-10-01 09:14"
+    with_broadcast = tmp_path / "read_channel_broadcast.txt"  # a copy outside the fixtures
+    with_broadcast.write_text(channel_read.replace(kickoff, BROADCAST + kickoff), encoding="utf-8")
+
+    export_run(channel_fixture=str(with_broadcast), thread_first=thread_first)
+    day = view(config)["2026-10-01.md"]
+    assert "> **Sam Sample** · 14:20 UTC" in day
+    assert "\n**Sam Sample** · 14:20 UTC" not in day  # not also shown as a post of its own
+    assert "edited" not in day
 
 
 def test_the_store_keeps_ids_and_names_but_not_author_emails(config, export_run):
