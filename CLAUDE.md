@@ -45,14 +45,17 @@ If a change would break one of these, or you aren't sure, stop and ask the user.
 
 ```
 src/diffdata/
-  cli.py            the `diffdata` command: discover, collect, scrub, push (stubs for now)
+  cli.py            the `diffdata` command; `discover slack` is built, the rest are stubs
   consent/ discover/ collect/ organize/ scrub/ store/    one package per stage
-  common/           shared pieces; paths.py holds the data folder guard
+  discover/slack_*.py   Slack export (DIS-1): inbox, parser, store and markdown view
+  common/           shared pieces; paths.py holds the data folder guards, config.py reads config.toml
 tests/              pytest; fixtures/ holds synthetic data only
 docs/requirements.md
 config.example.toml copy to config.toml (gitignored) and fill in
 .env.example        copy to .env (gitignored) and fill in
-.claude/commands/review-pr.md   /review-pr, the independent PR review
+.claude/commands/review-pr.md      /review-pr, the independent PR review
+.claude/commands/slack-export.md   /slack-export, reads Slack through the connector (DIS-1)
+.claude/settings.json              denies every Slack and Google write tool in this repo
 .github/            PR template, Issue template, CI workflow
 ```
 

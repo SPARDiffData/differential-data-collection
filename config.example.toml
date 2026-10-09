@@ -6,6 +6,7 @@
 # CON-1: listing a channel or folder here is your opt-in to collecting it.
 # Remove it and collection stops on the next run (CON-3).
 slack_channels = ["example-channel"]  # channel names, without the '#'
+slack_workspace_url = "https://example.slack.com"  # your workspace's address, for message links
 folders = []                          # fixed places to check, e.g. ["~/Documents/transcripts"]
 
 [local]

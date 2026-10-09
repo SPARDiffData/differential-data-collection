@@ -1,0 +1,26 @@
+Channel: #example-channel (C00000001)
+
+=== Message from Alex Example <alex@example.com> (U00000001) at 2026-10-03 05:00:00 CDT ===
+Message TS: 1791021600.000500
+Meeting moved to 11:30 PT on Monday. <!here>
+Reactions: +1 (1)
+
+=== Message from Sam Sample <sam@example.com> (U00000002) at 2026-10-02 13:00:00 CDT ===
+Message TS: 1790964000.000400
+Same doc as yesterday: <https://docs.google.com/document/d/FAKE-DOC-0001/edit> &amp; more in <#C00000001|example-channel>
+Reactions: white_check_mark (1), eyes (2)
+
+=== Message from Slackbot (USLACKBOT) at 2026-10-02 10:32:57 CDT ===
+Message TS: 1790955177.000300
+Alex Example made updates to a canvas tab: F00000002
+
+=== Message from Riley Placeholder <riley@example.com> (U00000003) at 2026-10-01 11:05:00 CDT ===
+Message TS: 1790870700.000200
+Questions about the interview guide go to <mailto:riley@example.com|riley@example.com>.
+A second line in the same message.
+
+=== Message from Alex Example <alex@example.com> (U00000001) at 2026-10-01 09:14:00 CDT ===
+Message TS: 1790864040.000100
+Kickoff notes are in the doc: <https://docs.google.com/document/d/FAKE-DOC-0001/edit|Kickoff notes>
+Thread: 3 replies (latest: 2026-10-03 04:02:00 CDT)
+Reactions: +1 (2)

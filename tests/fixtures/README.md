@@ -14,4 +14,11 @@ When you add a fixture:
 - Use obviously fake IDs and links (`FAKE-DOC-0001`, `T00000000`).
 - Don't put anything that looks like a real token or key here. GitHub's push protection may block it, and fake secrets for scrub tests need their own agreed approach (SCR-1).
 
-`slack_channel_sample.md` is a small illustrative channel. Its shape isn't the export format; DIS-1 will define that.
+## `slack/`
+
+Made-up Slack connector results, for the DIS-1 export tests:
+
+- `read_channel.txt` and `read_thread.txt` copy the exact layout of what `slack_read_channel` and `slack_read_thread` return in detailed mode, with every name, ID, link and message invented. `tests/conftest.py` wraps them the way the connector does: a list of text blocks holding JSON, whose `messages` field is the file's text.
+- `expected/` holds the markdown view the export should build from them, one file per day. If you change the view on purpose, update these files and check the difference by eye.
+
+To learn the layout, run a live read and look at it on your own computer, then write the fixture by hand. Never paste a real result into this folder, even for a moment.
