@@ -39,7 +39,7 @@ You can also open Claude Code in an empty folder and say: "Walk me through the o
 3. **Work with Claude.** Start with: *"Read Issue #12 and propose a plan."* Claude reads `CLAUDE.md` for our rules. Check the plan before saying go.
 4. **Run the tests:** *"Run the tests and the linter."* (That's `uv run pytest` and `uv run ruff check`.)
 5. **Push and open a PR:** *"Commit, push and open a PR with the template."* Check it says `Closes #12` and lists the requirement IDs.
-6. **Get a review.** Open a new, separate Claude session in the repo (a fresh terminal window, not the one that wrote the code) and run `/review-pr 34` with your PR number. It writes a short review split into must-fix and nice-to-have, and posts it on the PR when you say yes. Fix the must-fix items, push, and run it again. If your PR touches consent, scrub or store, a human must review it too: ask the lane lead or Paul.
+6. **Get a review.** Open a new, separate Claude session in the repo (a fresh terminal window, not the one that wrote the code) and run `/review-pr 34` with your PR number. It writes a short review split into must-fix and nice-to-have, and posts it on the PR when you say yes. Fix the must-fix items, push, and run it again. If your PR touches consent, scrub or store, a human must review it too: ask the lane lead or Paul. (While Paul works solo, Paul's own read counts. See [Review policy](#review-policy).)
 7. **Merge.** When CI is green and the review is done, click **Squash and merge** on the PR page. GitHub deletes the branch for you.
 8. **Tidy up:** *"Switch back to main and pull."*
 
@@ -67,6 +67,16 @@ Find your lane from the requirement IDs in your Issue.
 ## Review policy
 
 Every PR gets one review before merge. An AI review from a separate Claude session (`/review-pr`) is enough for most code. A human reviews anything touching consent, scrub or store.
+
+### While Paul works solo
+
+**Status: in effect since 2026-10-09.**
+
+While Paul is the only active contributor, there's no second person to review. So for Paul's PRs that touch consent, scrub or store, the AI review plus Paul's own read counts as the human review. Paul reads every changed line before merging. The PR says so by ticking the "Solo phase" box in the template's Reviewer section, and `/review-pr` accepts that instead of flagging it.
+
+This is a deliberate trade-off. It keeps work moving, but the riskiest code gets no second pair of human eyes for now.
+
+The rule ends when a second person is active in the repo, meaning they open or review a PR. Then Paul changes the status line above to "Ended on <date>", and consent, scrub and store PRs again need a human reviewer other than the author.
 
 ## Getting help
 
