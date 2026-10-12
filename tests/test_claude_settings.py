@@ -33,6 +33,18 @@ SLACK_WRITE_TOOLS = [
     "slack_update_list",
     "slack_update_list_record",
 ]
+# Made-up names for write tools the connector might add later, one per write verb.
+FUTURE_SLACK_WRITE_TOOLS = [
+    "slack_edit_message",
+    "slack_post_message",
+    "slack_pin_message",
+    "slack_invite_user",
+    "slack_join_channel",
+    "slack_archive_channel",
+    "slack_set_channel_topic",
+    "slack_mark_read",
+    "slack_rename_channel",
+]
 SLACK_READ_TOOLS = [
     "slack_get_reactions",
     "slack_list_channel_members",
@@ -72,6 +84,11 @@ def frontmatter_line(name):
 
 @pytest.mark.parametrize("tool", SLACK_WRITE_TOOLS)
 def test_every_slack_write_tool_is_denied(tool):
+    assert denied(SLACK + tool)
+
+
+@pytest.mark.parametrize("tool", FUTURE_SLACK_WRITE_TOOLS)
+def test_future_slack_write_verbs_are_denied(tool):
     assert denied(SLACK + tool)
 
 
