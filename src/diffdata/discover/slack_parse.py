@@ -40,7 +40,16 @@ MARKER = re.compile(
 )
 # "Name <email> (U...)". The name can't hold <, > or @, so an email can never end up in it.
 AUTHOR = re.compile(r"^(?P<name>[^<>@]*?)\s*(?:<[^<>]*>)?\s*\((?P<user_id>[A-Z][A-Z0-9]+)\)$")
-META = re.compile(r"^(?P<key>Thread|Reactions|Files): (?P<value>.*)$")
+# The detail lines at the end of a message, in the connector's exact formats. A line of text
+# that only starts like one, such as "Reactions: mostly positive", stays part of the text.
+META = {
+    "Thread": re.compile(r"\d+ repl(?:y|ies) \(latest: .+\)"),  # "3 replies (latest: ...)"
+    "Reactions": re.compile(r"[^\s,()]+ \(\d+\)(?:, [^\s,()]+ \(\d+\))*"),  # "+1 (2), eyes (1)"
+    "Files": re.compile(r".+ \(ID: F[A-Z0-9]+, [^()]+\)"),  # "name (ID: F..., type, size)"
+}
+# Seconds, a dot, then a sequence number. Ten digits of seconds last until the year 2286;
+# anything else would crash the build when it's turned into a date.
+TS = re.compile(r"[0-9]{1,10}\.[0-9]+")
 FILE = re.compile(r"(?P<name>[^,]+?) \(ID: (?P<id>F[A-Z0-9]+), (?P<type>[^,()]+), [^()]+\)")
 REACTION = re.compile(r"(?P<name>[^\s,()]+) \((?P<count>\d+)\)")
 SLACK_MARKUP = re.compile(r"<([^<>\n]+)>")
@@ -137,13 +146,13 @@ def parse_block(block: str, who: str | None) -> Message | None:
             ts = value.strip()
         elif key != "Time":
             return None
-    if ts is None or who is None:
+    if ts is None or who is None or not TS.fullmatch(ts):
         return None
 
     meta: dict[str, str] = {}
-    while lines and (not lines[-1].strip() or META.match(lines[-1])):
-        if match := META.match(lines.pop()):
-            meta[match["key"]] = match["value"]
+    while lines and (not lines[-1].strip() or detail_line(lines[-1])):
+        if detail := detail_line(lines.pop()):
+            meta[detail[0]] = detail[1]
 
     author = AUTHOR.match(who)
     if author is None:  # a shape we don't know might carry an email, so don't keep any of it
@@ -163,6 +172,13 @@ def parse_block(block: str, who: str | None) -> Message | None:
         ],
         replies=int(match[1]) if (match := REPLIES.match(meta.get("Thread", ""))) else 0,
     )
+
+
+def detail_line(line: str) -> tuple[str, str] | None:
+    """A Thread, Reactions or Files line in the connector's format, as (key, value)."""
+    key, _, value = line.rstrip().partition(": ")
+    pattern = META.get(key)
+    return (key, value) if pattern and pattern.fullmatch(value) else None
 
 
 def parse_files(value: str) -> list[dict]:
