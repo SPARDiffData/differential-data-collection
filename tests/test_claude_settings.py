@@ -33,6 +33,18 @@ SLACK_WRITE_TOOLS = [
     "slack_update_list",
     "slack_update_list_record",
 ]
+# Made-up names for write tools the connector might add later, one per write verb.
+FUTURE_SLACK_WRITE_TOOLS = [
+    "slack_edit_message",
+    "slack_post_message",
+    "slack_pin_message",
+    "slack_invite_user",
+    "slack_join_channel",
+    "slack_archive_channel",
+    "slack_set_channel_topic",
+    "slack_mark_read",
+    "slack_rename_channel",
+]
 SLACK_READ_TOOLS = [
     "slack_get_reactions",
     "slack_list_channel_members",
@@ -60,18 +72,23 @@ def denied(tool):
     return any(fnmatchcase(tool, rule) for rule in deny_rules())
 
 
-def command_frontmatter():
-    text = (ROOT / ".claude" / "commands" / "slack-export.md").read_text(encoding="utf-8")
+def command_frontmatter(command="slack-export"):
+    text = (ROOT / ".claude" / "commands" / f"{command}.md").read_text(encoding="utf-8")
     return text.split("---")[1]
 
 
-def frontmatter_line(name):
-    match = re.search(rf"^{name}: (.+)$", command_frontmatter(), re.MULTILINE)
+def frontmatter_line(name, command="slack-export"):
+    match = re.search(rf"^{name}: (.+)$", command_frontmatter(command), re.MULTILINE)
     return match.group(1).split()
 
 
 @pytest.mark.parametrize("tool", SLACK_WRITE_TOOLS)
 def test_every_slack_write_tool_is_denied(tool):
+    assert denied(SLACK + tool)
+
+
+@pytest.mark.parametrize("tool", FUTURE_SLACK_WRITE_TOOLS)
+def test_future_slack_write_verbs_are_denied(tool):
     assert denied(SLACK + tool)
 
 
@@ -98,3 +115,10 @@ def test_the_hook_saves_channel_and_thread_reads_only():
     matcher = re.search(r'matcher: "(.+)"', command_frontmatter()).group(1)
     saved = [t for t in SLACK_READ_TOOLS + SLACK_WRITE_TOOLS if re.fullmatch(matcher, SLACK + t)]
     assert saved == ["slack_read_channel", "slack_read_thread"]
+
+
+def test_review_pr_removes_the_file_editing_tools():
+    # ENG-5: the review only reports, so it runs without Write and Edit.
+    assert {"Write", "Edit", "NotebookEdit"} <= set(
+        frontmatter_line("disallowed-tools", "review-pr")
+    )

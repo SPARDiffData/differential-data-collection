@@ -2,6 +2,7 @@
 description: Independent review of a pull request against its Issue and our rules. Run it in a separate Claude session from the one that wrote the code.
 argument-hint: <PR number>
 allowed-tools: Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr checks:*), Bash(gh issue view:*), Bash(gh auth status:*), Bash(git fetch:*), Bash(git diff:*), Bash(git log:*), Read, Grep, Glob
+disallowed-tools: Write Edit NotebookEdit
 ---
 
 Review pull request #$ARGUMENTS in this repo. If no number was given, review the PR for the current branch (`gh pr view` with no number).
@@ -27,9 +28,10 @@ If `gh` is missing or not logged in (`gh auth status`), tell the user, then fall
 4. **Tests.** Is changed behavior covered by new or updated tests? Do the tests use only synthetic fixtures?
 5. **Lane.** The branch should be `<lane>/<short-name>`, and the changed files should stay inside `src/diffdata/<lane>/` and its tests, unless the Issue says otherwise. Lane `repo` covers docs, CI and tooling.
 6. **Human review needed?** If the diff touches `src/diffdata/consent/`, `src/diffdata/scrub/` or `src/diffdata/store/`, this AI review isn't enough: say a human must review before merge.
-   - **Solo phase.** The solo phase applies when all three hold: "While Paul works solo" in `CONTRIBUTING.md` says it's in effect, the PR author is Paul (GitHub login `PaulsForge`), and the PR ticks the "Solo phase" box. Then Paul's own read is the human review. Don't flag Paul reviewing their own PR. Use the verdict "Ready once Paul has read every changed line (solo phase)".
+   - **Solo phase.** The solo phase applies when all three hold: "While Paul works solo" in `CONTRIBUTING.md` says it's in effect, the PR author is Paul (GitHub login `PaulsForge`), and the PR ticks the "Solo phase" box. Then Paul's own read is the human review. Don't flag Paul reviewing their own PR. Use the verdict "Ready once Paul has read every changed line (solo phase)", but only when there's nothing under Must fix. Otherwise the verdict is "Fix the must-fix items first".
    - If the box is ticked but the solo phase has ended, or the author isn't Paul, that's a must fix.
    - If the diff touches those folders, the solo phase is in effect and the author is Paul, but the box isn't ticked, ask for it under must fix: the PR has to say what human review it got.
+   - **Ending the solo phase.** For every PR, whatever it touches: if the author isn't Paul and "While Paul works solo" still says "in effect", a second person is now active, so the solo phase is over. Add the "Solo phase" line to the report, reminding Paul to change the status line to "Ended on <date>".
 7. **Description.** Could a teammate who doesn't code follow the What, Why and How it was tested?
 8. **CI.** Is it passing?
 
@@ -44,6 +46,8 @@ Write the review in exactly this shape, short and in plain words:
 
 **Verdict:** Ready to merge | Fix the must-fix items first | Needs a human review (consent, scrub or store) | Ready once Paul has read every changed line (solo phase)
 
+**Solo phase:** This PR is from @<login>, so the solo phase is over. Paul: change the status line under "While Paul works solo" in CONTRIBUTING.md to "Ended on <date>".
+
 ### Must fix
 - `path/to/file.py:42`: what's wrong, and what to do about it.
 
@@ -52,6 +56,8 @@ Write the review in exactly this shape, short and in plain words:
 
 <sub>Reviewed at <short commit SHA> with /review-pr. Re-run after pushing fixes.</sub>
 ```
+
+Leave out the "Solo phase" line unless check 6 asks for it.
 
 ## 4. Post
 

@@ -164,3 +164,13 @@ def test_everything_is_written_under_the_data_folder(config, export_run, tmp_pat
 def test_build_needs_the_workspace_address(tmp_path):
     with pytest.raises(SlackExportError, match="slack_workspace_url"):
         build(Config(data_dir=tmp_path / "data", slack_channels=("example-channel",)))
+
+
+def test_a_malformed_message_ts_is_counted_and_the_build_finishes(config, export_run, tmp_path):
+    channel_read = (SLACK_FIXTURES / "read_channel.txt").read_text(encoding="utf-8")
+    broken = tmp_path / "read_channel_bad_ts.txt"  # a copy outside the fixtures
+    broken.write_text(channel_read.replace("1790955177.000300", "1790955177.oops"), "utf-8")
+
+    report = export_run(channel_fixture=str(broken))
+    assert "8 message(s) read" in report
+    assert "Couldn't read 1 message(s) and 0 result file(s)" in report

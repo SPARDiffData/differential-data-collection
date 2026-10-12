@@ -53,6 +53,27 @@ def test_channels_must_be_a_list_of_names(tmp_path):
         load_config(path)
 
 
+def test_workspace_url_must_start_with_https(tmp_path):
+    data = (tmp_path / "data").as_posix()
+    path = write_config(
+        tmp_path,
+        f'[sources]\nslack_workspace_url = "http://example.slack.com"\n'
+        f'[local]\ndata_dir = "{data}"\n',
+    )
+    with pytest.raises(ConfigError, match="https://"):
+        load_config(path)
+
+
+def test_workspace_url_loses_its_trailing_slash(tmp_path):
+    data = (tmp_path / "data").as_posix()
+    path = write_config(
+        tmp_path,
+        f'[sources]\nslack_workspace_url = "https://example.slack.com/"\n'
+        f'[local]\ndata_dir = "{data}"\n',
+    )
+    assert load_config(path).slack_workspace_url == "https://example.slack.com"
+
+
 def test_data_dir_goes_through_the_repo_guard(tmp_path):
     (tmp_path / "repo" / ".git").mkdir(parents=True)
     data = (tmp_path / "repo" / "data").as_posix()

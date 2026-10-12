@@ -163,13 +163,15 @@ def test_permalinks():
     )
 
 
-def thread_parent(author: str) -> str:
+def thread_parent(
+    author: str = "Alex Example <alex@example.com> (U00000001)", ts: str = PARENT, text="Hello"
+) -> str:
     return (
         "=== THREAD PARENT MESSAGE ===\n"
         f"From: {author}\n"
         "Time: 2026-10-01 09:14:00 CDT\n"
-        f"Message TS: {PARENT}\n"
-        "Hello\n"
+        f"Message TS: {ts}\n"
+        f"{text}\n"
     )
 
 
@@ -196,3 +198,52 @@ def test_the_author_name_never_keeps_the_email(author, name):
 )
 def test_an_author_line_it_cant_read_is_counted_and_not_kept(author):
     assert parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(author)) == ([], 1)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Reactions: mostly positive, see the doc",
+        "Thread: let's keep replies short",
+        "Files: everything is in the shared folder",
+        "Thread: 2 replies so far",
+        "Reactions: +1",
+    ],
+)
+def test_text_that_only_looks_like_a_detail_line_is_kept(line):
+    text = f"Quick update.\n{line}"
+    [message], skipped = parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(text=text))
+    assert (message.text, message.reactions, message.files, skipped) == (text, [], [], 0)
+
+
+def test_detail_lines_after_a_look_alike_are_still_details():
+    text = (
+        "Thread: notes below\n"
+        "Thread: 1 reply (latest: 2026-10-01 09:20:00 CDT)\n"
+        "Reactions: eyes (1)"
+    )
+    [message], _ = parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(text=text))
+    assert message.text == "Thread: notes below"
+    assert (message.replies, message.reactions) == (1, [{"name": "eyes", "count": 1}])
+
+
+def test_a_files_line_with_a_comma_in_the_name_is_still_a_detail():
+    text = "See attached.\nFiles: notes, final.txt (ID: F00000004, text/plain, 1.0 KB)"
+    [message], _ = parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(text=text))
+    assert message.text == "See attached."
+    assert [f["id"] for f in message.files] == ["F00000004"]
+
+
+@pytest.mark.parametrize(
+    "ts",
+    [
+        "not-a-ts",
+        "1790864040",
+        "1790864040.",
+        ".000100",
+        "1790864040.0001.00",
+        "99999999999.000100",
+    ],
+)
+def test_a_malformed_message_ts_is_counted_and_not_kept(ts):
+    assert parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(ts=ts)) == ([], 1)
