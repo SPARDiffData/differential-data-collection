@@ -23,6 +23,7 @@ If a change would break one of these, or you aren't sure, stop and ask the user.
 - Always work on a branch named `<lane>/<short-name>` (for example `discover/slack-export`). Never commit to `main` or push to it.
 - Stay inside the lane's package and its tests unless the Issue says otherwise.
 - Link the Issue (`Closes #N`) and the requirement IDs in every PR.
+- If the Issue has an agreed plan (a comment that starts with `## Plan`), follow it. Where you depart from it, say so in the PR, and why.
 - Ask before adding a dependency (anything new in `pyproject.toml`). Prefer the standard library, then a well-known library over writing our own (requirements §2, "Don't reinvent the wheel").
 - Add or update tests with every change in behavior. Before pushing, run `uv run ruff format`, `uv run ruff check` and `uv run pytest`.
 - Write PR descriptions a non-coder can follow, using the PR template.
@@ -53,6 +54,7 @@ tests/              pytest; fixtures/ holds synthetic data only
 docs/requirements.md
 config.example.toml copy to config.toml (gitignored) and fill in
 .env.example        copy to .env (gitignored) and fill in
+.claude/commands/plan-issue.md     /plan-issue, an optional planning step before coding
 .claude/commands/review-pr.md      /review-pr, the independent PR review
 .claude/commands/slack-export.md   /slack-export, reads Slack through the connector (DIS-1)
 .claude/settings.json              denies every Slack and Google write tool in this repo

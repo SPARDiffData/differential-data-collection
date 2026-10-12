@@ -122,3 +122,23 @@ def test_review_pr_removes_the_file_editing_tools():
     assert {"Write", "Edit", "NotebookEdit"} <= set(
         frontmatter_line("disallowed-tools", "review-pr")
     )
+
+
+# ENG-5: /plan-issue may run these read-only tools without asking. Posting the plan to the
+# Issue is left out on purpose, so it's never pre-approved.
+PLAN_ISSUE_READS = {
+    "Bash(gh issue view:*)",
+    "Bash(gh pr view:*)",
+    "Bash(gh auth status:*)",
+    "Bash(gh api user:*)",
+    "Bash(git log:*)",
+    "Bash(git diff:*)",
+    "Read",
+    "Grep",
+    "Glob",
+}
+
+
+def test_plan_issue_pre_approves_reads_only():
+    line = re.search(r"^allowed-tools: (.+)$", command_frontmatter("plan-issue"), re.MULTILINE)
+    assert set(line.group(1).split(", ")) == PLAN_ISSUE_READS
