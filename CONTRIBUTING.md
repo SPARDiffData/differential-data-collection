@@ -2,6 +2,8 @@
 
 This is how we work together. You don't need to know Git well: Claude does most of the typing, and this page tells you what to ask it for. If you get stuck at any step, ask in the team Slack channel or ask Paul.
 
+**Team only, for now.** The repo is public so anyone can read it, but only the SPAR project team contributes. Pull requests from outside the team are closed without review.
+
 ## Two hard rules
 
 - **Never modify or delete a producer's original files or data**, on your computer or in any cloud service. We only read originals, and only ever change our own copies.

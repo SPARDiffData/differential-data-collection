@@ -17,8 +17,11 @@ You are the independent check: run in a different session from the one that wrot
 - `gh pr checks $ARGUMENTS` for CI
 - `CLAUDE.md`, and each requirement ID the PR names in `docs/requirements.md`
 - The "While Paul works solo" section of `CONTRIBUTING.md`
+- `gh pr view $ARGUMENTS --json isCrossRepository`: whether the PR comes from a fork
 
 If `gh` is missing or not logged in (`gh auth status`), tell the user, then fall back to `git fetch origin` and `git diff origin/main...HEAD` on the checked-out branch, and ask them to paste the Issue text.
+
+**A PR from outside the team isn't reviewed.** Team members push their branches to this repo. If `isCrossRepository` is true, the PR comes from someone's fork, so it's from outside the team. `CONTRIBUTING.md` says outside PRs are closed without review. Tell the user that, and stop. Don't check out or run its code.
 
 ## 2. Check
 
@@ -31,7 +34,7 @@ If `gh` is missing or not logged in (`gh auth status`), tell the user, then fall
    - **Solo phase.** The solo phase applies when all three hold: "While Paul works solo" in `CONTRIBUTING.md` says it's in effect, the PR author is Paul (GitHub login `PaulsForge`), and the PR ticks the "Solo phase" box. Then Paul's own read is the human review. Don't flag Paul reviewing their own PR. Use the verdict "Ready once Paul has read every changed line (solo phase)", but only when there's nothing under Must fix. Otherwise the verdict is "Fix the must-fix items first".
    - If the box is ticked but the solo phase has ended, or the author isn't Paul, that's a must fix.
    - If the diff touches those folders, the solo phase is in effect and the author is Paul, but the box isn't ticked, ask for it under must fix: the PR has to say what human review it got.
-   - **Ending the solo phase.** For every PR, whatever it touches: if the author isn't Paul and "While Paul works solo" still says "in effect", a second person is now active, so the solo phase is over. Add the "Solo phase" line to the report, reminding Paul to change the status line to "Ended on <date>".
+   - **Ending the solo phase.** For every PR, whatever it touches: if the author is a team member other than Paul (not from a fork) and "While Paul works solo" still says "in effect", a second person is now active, so the solo phase is over. Add the "Solo phase" line to the report, reminding Paul to change the status line to "Ended on <date>".
 7. **Description.** Could a teammate who doesn't code follow the What, Why and How it was tested?
 8. **CI.** Is it passing?
 
