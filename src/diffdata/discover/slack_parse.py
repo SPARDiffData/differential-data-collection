@@ -41,7 +41,11 @@ MARKER = re.compile(
 # "Name <email> (U...)". The name can't hold <, > or @, so an email can never end up in it.
 AUTHOR = re.compile(r"^(?P<name>[^<>@]*?)\s*(?:<[^<>]*>)?\s*\((?P<user_id>[A-Z][A-Z0-9]+)\)$")
 META = re.compile(r"^(?P<key>Thread|Reactions|Files): (?P<value>.*)$")
-FILE = re.compile(r"(?P<name>[^,]+?) \(ID: (?P<id>F[A-Z0-9]+), (?P<type>[^,()]+), [^()]+\)")
+# A file starts at the line's start or after "), ", where the one before it ends, so its
+# name can hold commas: "notes, final.txt (ID: F..., type, size), b.png (ID: F..., ...)".
+FILE = re.compile(
+    r"(?:^|(?<=\), ))(?P<name>.+?) \(ID: (?P<id>F[A-Z0-9]+), (?P<type>[^,()]+), [^()]+\)"
+)
 REACTION = re.compile(r"(?P<name>[^\s,()]+) \((?P<count>\d+)\)")
 SLACK_MARKUP = re.compile(r"<([^<>\n]+)>")
 CURSOR = re.compile(r"cursor:?\s*`([^`]+)`")  # "...use cursor: `bmV4dF90czox...`"

@@ -7,6 +7,7 @@ import pytest
 
 from diffdata.discover.slack_parse import (
     next_cursor,
+    parse_files,
     parse_result,
     permalink,
     result_text,
@@ -99,6 +100,17 @@ def test_thread_replies_point_at_their_parent(thread):
 def test_lists_attached_files(thread):
     assert thread[2].files == [{"id": "F00000003", "name": "call-notes.txt", "type": "text/plain"}]
     assert thread[2].text == "Thanks! Notes from Tuesday's call are attached."
+
+
+def test_a_file_name_keeps_its_commas():
+    files = parse_files(
+        "notes, final.txt (ID: F00000004, text/plain, 1.0 KB), "
+        "plan (v2), draft.png (ID: F00000005, image/png, 2.0 MB)"
+    )
+    assert files == [
+        {"id": "F00000004", "name": "notes, final.txt", "type": "text/plain"},
+        {"id": "F00000005", "name": "plan (v2), draft.png", "type": "image/png"},
+    ]
 
 
 def test_author_emails_are_not_kept(channel, thread):
