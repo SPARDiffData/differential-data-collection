@@ -22,15 +22,23 @@ This is a reading aid, not the review. `/review-pr` stays the independent check 
 
 ## 2. Choose what goes on the page
 
-Be selective. The page is useful because it's short.
+Be selective. The page is useful because it's short: someone who reads only the top should still know what matters.
 
-1. **Asked for, and delivered.** The Issue's "Done when" items (or the user's request), each marked done, partly done or not done, with one line on how. Note anything delivered that wasn't asked for.
-2. **Decisions to check.** At most five judgement calls most likely to differ from what the user meant. For each: what you chose, why, the main alternative, and what it would take to change it. Put the one that's most expensive to undo first: data formats, storage layout, access scopes, the consent model, what leaves the machine. If there are none, say so.
-3. **Side effects.** Anything touched beyond the obvious: settings, permissions, CI, other lanes' files, GitHub Issues or comments created, files outside the repo, the data folder. "None" is a fine answer.
-4. **How it was checked.** The tests and checks that ran, with their results (for example "151 passed", "CI green on Windows, macOS and Linux"), and what was **not** checked. Be honest about gaps.
-5. **Your next step.** One line: for example "merge", "answer decision 2 first" or "run /review-pr".
+**At the top, in this order:**
 
-Leave out file-by-file summaries, restated diffs, and anything that needs no decision. Link to the PR, the Issue and exact lines on GitHub (`<PR url>/files`, or `https://github.com/<owner>/<repo>/blob/<headRefOid>/<path>#L<n>`) instead of pasting code.
+1. **Links:** the PR on GitHub, its changed files (`<PR url>/files`) and the Issue. For a session without a PR, the branch and the Issue.
+2. **Work summary:** one or two sentences on what the work was about, in plain words.
+3. **Most important thing:** one or two sentences on the single thing to pay attention to if the user reads nothing else. Usually the riskiest decision or the biggest gap in checking. Say why it matters.
+4. **Your next step:** one line, for example "merge", "answer decision 2 first" or "run /review-pr".
+
+**Then the details:**
+
+5. **Asked for, and delivered.** The Issue's "Done when" items (or the user's request), each marked done, partly done or not done, with one line on how. Note anything delivered that wasn't asked for.
+6. **Decisions to check.** At most five judgement calls most likely to differ from what the user meant. For each: what you chose, why, the main alternative, and what it would take to change it. Put the one that's most expensive to undo first: data formats, storage layout, access scopes, the consent model, what leaves the machine. If there are none, say so.
+7. **Side effects.** Anything touched beyond the obvious: settings, permissions, CI, other lanes' files, GitHub Issues or comments created, files outside the repo, the data folder. "None" is a fine answer.
+8. **How it was checked.** The tests and checks that ran, with their results (for example "151 passed", "CI green on Windows, macOS and Linux"), and what was **not** checked. Be honest about gaps.
+
+Leave out file-by-file summaries, restated diffs, and anything that needs no decision. Link to exact lines on GitHub (`https://github.com/<owner>/<repo>/blob/<headRefOid>/<path>#L<n>`) instead of pasting code.
 
 ## 3. Keep it safe
 
@@ -44,6 +52,6 @@ The page is hosted on claude.ai. It starts private, but treat it like a public p
 1. Load the `artifact-design` skill first; the Artifact tool requires it.
 2. Write one self-contained HTML file in a temporary folder outside the repo (the session's scratchpad if it has one), in plain words a teammate who doesn't code could follow. Give it a short title, such as "PR 36 debrief".
 3. Publish it with the Artifact tool. It stays private unless the user shares it. Use the icon "checklist".
-4. Reply with the link and one line: how many decisions need the user.
+4. Reply with the link and the most important thing, in one or two sentences.
 
 If the Artifact tool or the `artifact-design` skill isn't available, write the same page as a local HTML file outside the repo and give the user its path instead.
