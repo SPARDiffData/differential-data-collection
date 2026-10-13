@@ -24,13 +24,14 @@ If you think real data, a password or a token got into a commit or a PR, don't t
    git config --global user.email "12345678+username@users.noreply.github.com"
    ```
 3. **Log in to GitHub** from a terminal: `gh auth login`. Choose GitHub.com, then HTTPS, then log in with a web browser.
-4. **Get the code:**
+4. **Get access to the repo.** Ask Paul to add you as a collaborator, then accept the invitation (it arrives by email and at github.com/notifications). You need it to push your branches. If Git, GitHub or Claude ever offers to make a fork, say no: a PR from a fork counts as outside the team, and `/review-pr` won't review it.
+5. **Get the code:**
    ```
    gh repo clone SPARDiffData/differential-data-collection
    cd differential-data-collection
    uv sync
    ```
-5. **Make your private settings files.** Copy `config.example.toml` to `config.toml` and `.env.example` to `.env`, then fill them in. Both copies stay on your computer and are never committed. Keep `data_dir` pointing outside the repo; the tool refuses a folder inside it.
+6. **Make your private settings files.** Copy `config.example.toml` to `config.toml` and `.env.example` to `.env`, then fill them in. Both copies stay on your computer and are never committed. Keep `data_dir` pointing outside the repo; the tool refuses a folder inside it.
 
 You can also open Claude Code in an empty folder and say: "Walk me through the one-time setup in CONTRIBUTING.md of SPARDiffData/differential-data-collection."
 
@@ -78,7 +79,7 @@ While Paul is the only active contributor, there's no second person to review. S
 
 This is a deliberate trade-off. It keeps work moving, but the riskiest code gets no second pair of human eyes for now.
 
-The rule ends when a second person is active in the repo, meaning they open or review a PR. Then Paul changes the status line above to "Ended on <date>", and consent, scrub and store PRs again need a human reviewer other than the author.
+The rule ends when a second team member is active in the repo, meaning they open or review a PR. Then Paul changes the status line above to "Ended on <date>", and consent, scrub and store PRs again need a human reviewer other than the author.
 
 ## Getting help
 
