@@ -38,7 +38,7 @@ You can also open Claude Code in an empty folder and say: "Walk me through the o
 
 1. **Claim an Issue.** Open it on GitHub and assign yourself (right-hand side, "Assignees"). If there's no Issue for what you want to do, ask Paul to open one.
 2. **Start a branch from the latest `main`.** Branches are named `<lane>/<short-name>`, for example `discover/slack-export`. Tell Claude: *"Pull main and make a branch called discover/slack-export."*
-3. **Work with Claude.** Start with: *"Read Issue #12 and propose a plan."* Claude reads `CLAUDE.md` for our rules. Check the plan before saying go.
+3. **Work with Claude.** Start with: *"Read Issue #12 and propose a plan."* Claude reads `CLAUDE.md` for our rules. Check the plan before saying go. If you'd like a more structured plan, run `/plan-issue 12` instead. Claude asks its open questions first, then writes the plan in plan mode, and once you approve, posts it on the Issue so it isn't lost when the session ends. It's optional: plan whichever way suits you.
 4. **Run the tests:** *"Run the tests and the linter."* (That's `uv run pytest` and `uv run ruff check`.)
 5. **Push and open a PR:** *"Commit, push and open a PR with the template."* Check it says `Closes #12` and lists the requirement IDs.
 6. **Get a review.** Open a new, separate Claude session in the repo (a fresh terminal window, not the one that wrote the code) and run `/review-pr 34` with your PR number. It writes a short review split into must-fix and nice-to-have, and posts it on the PR when you say yes. Fix the must-fix items, push, and run it again. If your PR touches consent, scrub or store, a human must review it too: ask the lane lead or Paul. (While Paul works solo, Paul's own read counts. See [Review policy](#review-policy).)
