@@ -2,7 +2,9 @@
 Synthetic data only."""
 
 import json
+import os
 import re
+from pathlib import Path
 
 import pytest
 
@@ -224,6 +226,34 @@ def test_comments_md_shows_each_thread_under_its_quoted_text(tmp_path):
     assert not (document_dir(tmp_path, CANVAS.source, CANVAS.id) / "comments.md").exists()
 
 
+def test_a_comment_with_no_time_still_leads_its_thread(tmp_path):
+    raw = "raw/1/a.json"
+    events = [
+        Event("comment", day(5), raw, None, ALEX, "c1", "Whose part?", anchor=Anchor("Plan")),
+        Event("reply", day(5), raw, day(3), SAM, "c1-r1", "Mine.", parent="c1"),
+    ]
+    write_document(tmp_path, CANVAS, [Version("Plan\n", day(1), raw)], events)
+    assert read(tmp_path, CANVAS, "comments.md").endswith(
+        "## Thread 1\n\n> Plan\n\n**Alex Example** · seen 2026-10-05 12:00 UTC\nWhose part?\n\n"
+        "**Sam Sample** · 2026-10-03 12:00 UTC · reply\nMine.\n"
+    )
+
+
+def test_revisions_made_in_the_same_second_keep_their_order(tmp_path):
+    def revision(text, ms):
+        made = f"2026-10-01T09:00:00.{ms}Z"
+        return Version(text, day(5), "raw/1/a.json", made, native_id=f"rev-{ms}")
+
+    newest_first = [revision("D\n", 900), revision("A\n", 700), revision("B\n", 400)]
+    write_document(tmp_path, GOOGLE, [*newest_first, revision("A\n", 100)])
+    entries = log(tmp_path, GOOGLE)
+    assert [e["native_id"] for e in entries] == ["rev-100", "rev-400", "rev-700", "rev-900"]
+    # Text A comes back within the same second, and still gets its own file and event ID.
+    assert len({e["version"] for e in entries}) == len({e["event_id"] for e in entries}) == 4
+    current = next((tmp_path / "documents" / "current").iterdir()).read_text(encoding="utf-8")
+    assert current.endswith("---\n\nD\n")
+
+
 def test_a_raw_file_is_never_changed(tmp_path):
     path = save_raw(tmp_path, "slack-canvas", "F00000001", "fetch-1", "read.json", '{"n": 1}')
     assert (
@@ -232,6 +262,50 @@ def test_a_raw_file_is_never_changed(tmp_path):
     with pytest.raises(DocumentError, match="never changed"):
         save_raw(tmp_path, "slack-canvas", "F00000001", "fetch-1", "read.json", '{"n": 2}')
     assert path.read_text(encoding="utf-8") == '{"n": 1}'
+
+
+def test_a_raw_save_cut_short_leaves_nothing_and_never_replaces_another(tmp_path, monkeypatch):
+    folder = document_dir(tmp_path, "slack-canvas", "F00000001") / "raw" / "fetch-1"
+    real_link = os.link
+
+    def cut_short(source, target):
+        raise OSError("the disk is full")
+
+    monkeypatch.setattr(os, "link", cut_short)
+    with pytest.raises(OSError):
+        save_raw(tmp_path, "slack-canvas", "F00000001", "fetch-1", "read.json", '{"n": 1}')
+    assert list(folder.iterdir()) == []  # no partial file, and no temporary one
+
+    def another_save_first(source, target):
+        Path(target).write_text('{"n": 2}', encoding="utf-8")
+        real_link(source, target)
+
+    monkeypatch.setattr(os, "link", another_save_first)
+    with pytest.raises(DocumentError, match="never changed"):
+        save_raw(tmp_path, "slack-canvas", "F00000001", "fetch-1", "read.json", '{"n": 1}')
+    assert [p.read_text(encoding="utf-8") for p in folder.iterdir()] == ['{"n": 2}']
+
+
+def test_bad_input_is_refused_before_anything_is_written(tmp_path):
+    raw = "raw/1/a.json"
+    one = [Version("A\n", day(1), raw)]
+    clashing = Document("slack-canvas", "F00000001", "Plan", tags={"title": "Other"})
+    attempts = {
+        "no time zone": lambda: write_document(
+            tmp_path, CANVAS, [Version("A\n", "2026-10-01T12:00:00", raw)]
+        ),
+        "at least one version": lambda: write_document(tmp_path, CANVAS, []),
+        "standard ones": lambda: write_document(tmp_path, clashing, one),
+        "isn't an event type": lambda: write_document(
+            tmp_path, CANVAS, one, [Event("like", day(1), raw)]
+        ),
+        # A source with _ could share a clean copy's name with another document.
+        "can't name": lambda: save_raw(tmp_path, "slack_canvas", "F00000001", "1", "a.json", "{}"),
+    }
+    for message, attempt in attempts.items():
+        with pytest.raises(DocumentError, match=message):
+            attempt()
+    assert list(tmp_path.rglob("*")) == []
 
 
 @pytest.mark.parametrize("bad", ["..", "../F00000001", "a/b", "a\\b", ""])
@@ -252,7 +326,7 @@ def test_a_name_that_could_leave_the_documents_folder_is_refused(tmp_path, bad):
     assert list(tmp_path.rglob("*")) == []
 
 
-def test_no_email_reaches_the_event_log_or_meta(tmp_path):
+def test_no_email_in_an_actor_or_tag_reaches_the_log_or_meta(tmp_path):
     with pytest.raises(DocumentError, match="email"):
         Actor("U00000001", "Alex Example <alex@example.com>")
     with pytest.raises(DocumentError, match="email"):

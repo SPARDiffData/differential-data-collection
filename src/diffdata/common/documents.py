@@ -13,25 +13,30 @@ Layout under the data folder:
                                                header, then the text with names shown
   documents/<source>/<id>/
     raw/<fetch id>/<name>       every fetch, exactly as received: the only original
-    versions/<time>-<hash>.md   one file per distinct text, exactly as fetched
+    versions/<time>-<hash>.md   one file per distinct text, exactly as fetched (-2 is added
+                                if the same text comes back within the same second)
     events.jsonl                edits, comments and suggestions: one JSON object per line,
                                 in time order
     comments.md                 the comment threads, readable; only if there are comments
     meta.json                   the document's tags (COL-10)
 
 Rules:
-- Raw is the only original, and a saved raw file is never changed. Everything else is
-  rebuilt from raw on every build and written only when it changed, so deleting everything
-  but raw/ and building again gives the same files.
+- Raw is the only original, and a saved raw file is never changed. A save is written to a
+  temporary file first, so one cut short leaves nothing behind. Everything else is rebuilt
+  from raw on every build and written only when it changed, so deleting everything but
+  raw/ and building again gives the same files.
 - A version is kept only when its text differs from the version before it, so going back
   to older text is a new version (COL-9). Versions are full texts, not diffs.
 - Comments and suggestions live in events.jsonl, never in a version or the clean copy.
-- No emails. An actor is the source's ID for someone and their display name. If a source
-  shows only an email, give the ID alone. Raw keeps what the source sent until scrubbing
-  (SCR-2).
-- Times are UTC, written like 2026-10-13T14:00:00Z.
-- Sources, IDs and fetch IDs are letters, digits, - and _ only (raw file names may add
-  dots), so nothing can land outside the document's folder.
+- No emails in who did something, or in tags. An actor is the source's ID for someone and
+  their display name. If a source shows only an email, give the ID alone. A document's
+  own words (its text, title, comments and quotes) are kept as written, and scrubbing
+  handles them, as it does raw (SCR-2).
+- Times are UTC, written like 2026-10-13T14:00:00Z. Versions are put in order by the full
+  time the source gives, so two revisions made in the same second stay in order.
+- Source names are letters, digits and - only. IDs and fetch IDs may also have _, and raw
+  file names may add dots. So nothing can land outside the document's folder, and no two
+  documents share a clean copy's name.
 
 Every event has `type`, `event_id` (stable, so a rebuild gives the same file), `at` (when
 it happened, if the source says), `seen_at` (when we first collected it), `actor` ({id,
@@ -47,12 +52,17 @@ name}, or null) and `raw` (the raw file it came from, like raw/<fetch id>/<name>
                `version` (the version current at `at`, if known; for snapshots, the last
                one seen by then) and `native_id`.
   suggestion   Adds `kind` (insert or delete), `text`, `anchor` and `native_id`.
+Events with the same type and native ID are one event, seen again. So give each reply,
+resolve and reopen its own native ID, as Google does: a second resolve that reused its
+comment's ID would be lost.
 Anything reading events.jsonl skips types it doesn't know, so adding a type breaks nothing.
 """
 
 import hashlib
 import json
+import os
 import re
+import tempfile
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -60,7 +70,9 @@ from pathlib import Path
 
 from diffdata import __version__
 
-# Sources, IDs and fetch IDs become folder names. Raw file names may also have dots.
+# Sources, IDs and fetch IDs become folder names. A source has no _, because the clean
+# copy's name uses _ to separate it from the title. Raw file names may also have dots.
+SAFE_SOURCE = re.compile(r"[A-Za-z0-9-]+")
 SAFE_NAME = re.compile(r"[A-Za-z0-9_-]+")
 SAFE_FILE = re.compile(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*")
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
@@ -157,13 +169,13 @@ def documents_dir(data: Path) -> Path:
 
 def safe(value: str, pattern: re.Pattern = SAFE_NAME) -> str:
     if not isinstance(value, str) or not pattern.fullmatch(value):
-        raise DocumentError(f"{value!r} can't name a folder: use letters, digits, - and _ only.")
+        raise DocumentError(f"{value!r} can't name a folder or file: it has a character we refuse.")
     return value
 
 
 def document_dir(data: Path, source: str, doc_id: str) -> Path:
     """A document's folder. A source or ID that could point anywhere else is refused."""
-    return documents_dir(data) / safe(source) / safe(doc_id)
+    return documents_dir(data) / safe(source, SAFE_SOURCE) / safe(doc_id)
 
 
 def save_raw(
@@ -173,15 +185,26 @@ def save_raw(
     Saving the same file again does nothing; other content under its name is refused."""
     path = document_dir(data, source, doc_id) / "raw" / safe(fetch_id) / safe(name, SAFE_FILE)
     body = content.encode("utf-8") if isinstance(content, str) else content
-    if path.is_file():
-        if path.read_bytes() != body:
-            raise DocumentError(
-                f"raw/{fetch_id}/{name} is already saved with other content, and raw files "
-                "are never changed."
-            )
-        return path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(body)
+    if not path.is_file():
+        # Write a temporary file, then link it in under its real name. A save cut short leaves
+        # no partial raw file, and linking never replaces a file another save just made.
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".saving-")
+        try:
+            with os.fdopen(handle, "wb") as f:
+                f.write(body)
+                f.flush()
+                os.fsync(f.fileno())
+            os.link(temporary, path)
+        except FileExistsError:
+            pass  # another save got there first; its file is checked below
+        finally:
+            os.unlink(temporary)
+    if path.read_bytes() != body:
+        raise DocumentError(
+            f"raw/{fetch_id}/{name} is already saved with other content, and raw files are "
+            "never changed."
+        )
     return path
 
 
@@ -203,9 +226,11 @@ def write_document(
         raise DocumentError("A document needs at least one version of its text.")
     show = names or (lambda text: text)
     kept = keep_changes(versions)
+    # Times here are to the second. Python's sort keeps ties in the order given, so versions
+    # made in the same second stay in their order, and so do comments.
     rows = sorted(
         [event for event, _ in kept] + comment_rows(events, kept),
-        key=lambda row: (row["at"] or row["seen_at"], row["seen_at"], row["event_id"]),
+        key=lambda row: (row["at"] or row["seen_at"], row["seen_at"]),
     )
     latest, text = kept[-1]
     changed_at = latest["at"] or latest["seen_at"]
@@ -270,10 +295,18 @@ def keep_changes(versions: list[Version]) -> list[tuple[dict, str]]:
     event and its text."""
     kept: list[tuple[dict, str]] = []
     before = None
-    for v in sorted(versions, key=lambda v: (utc(v.made_at or v.seen_at), utc(v.seen_at))):
+
+    def order(v: Version) -> tuple:
+        # Full times first, then the source's ID and the text, so the order never depends on
+        # the order a reader gave them in.
+        return exact(v.made_at or v.seen_at), exact(v.seen_at), v.native_id or "", digest(v.text)
+
+    for v in sorted(versions, key=order):
         if before is None or v.text != before.text:
             at, seen_at = utc(v.made_at), utc(v.seen_at)
-            name = f"{(at or seen_at).replace('-', '').replace(':', '')}-{digest(v.text)}.md"
+            stem = f"{(at or seen_at).replace('-', '').replace(':', '')}-{digest(v.text)}"
+            again = sum(event["version"].startswith(stem) for event, _ in kept)
+            name = f"{stem}-{again + 1}.md" if again else f"{stem}.md"
             event = {
                 "type": "version",
                 "event_id": f"version-{name.removesuffix('.md')}",
@@ -316,7 +349,10 @@ def comment_rows(events: list[Event], kept: list[tuple[dict, str]]) -> list[dict
         row = {"type": e.type, "event_id": event_id, "at": at, "seen_at": utc(e.seen_at)}
         row |= {"actor": actor, "raw": e.raw}
         rows[event_id] = row | {name: fields[name] for name in EVENT_FIELDS[e.type]}
-    return list(rows.values())
+    return sorted(
+        rows.values(),
+        key=lambda row: (row["at"] or row["seen_at"], row["seen_at"], row["event_id"]),
+    )
 
 
 def render_comments(title: str, rows: list[dict], show: Callable[[str], str]) -> str:
@@ -326,6 +362,8 @@ def render_comments(title: str, rows: list[dict], show: Callable[[str], str]) ->
         threads.setdefault(row["parent"] or row["native_id"] or row["event_id"], []).append(row)
     lines = [f"# Comments: {title}"] if threads else []
     for number, thread in enumerate(threads.values(), start=1):
+        # The comment leads its thread, even if the source gave no time and we saw it late.
+        thread.sort(key=lambda row: row["type"] != "comment")
         lines += ["", f"## Thread {number}", ""]
         if thread[0]["type"] != "comment":
             lines += ["_The comment this thread belongs to wasn't collected._", ""]
@@ -351,17 +389,20 @@ def write_if_changed(path: Path, text: str) -> bool:
     return True
 
 
-def utc(value: str | None) -> str | None:
-    """A time in UTC, like 2026-10-13T14:00:00Z. A time with no time zone is refused."""
-    if value is None:
-        return None
+def exact(value: str) -> datetime:
+    """A time in UTC, as precise as the source gave it. A time with no time zone is refused."""
     try:
         when = datetime.fromisoformat(value)
     except (TypeError, ValueError) as e:
         raise DocumentError(f"{value!r} isn't a time.") from e
     if when.tzinfo is None:
         raise DocumentError(f"The time {value!r} has no time zone, so it can't be put in UTC.")
-    return when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return when.astimezone(UTC)
+
+
+def utc(value: str | None) -> str | None:
+    """A time as written in our files: UTC, to the second, like 2026-10-13T14:00:00Z."""
+    return None if value is None else exact(value).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def stamp(when: str) -> str:
