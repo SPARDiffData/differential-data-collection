@@ -1,7 +1,7 @@
 ---
 description: Plan an Issue before coding. Settle the judgement calls with the user first, then write the plan in plan mode and post it on the Issue once they approve. Optional.
 argument-hint: <Issue number>
-allowed-tools: Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh auth status:*), Bash(gh api user --jq .login), Bash(git log:*), Bash(git diff:*), Read, Grep, Glob
+allowed-tools: Bash(gh issue view:*), Bash(gh pr view:*), Bash(gh auth status), Bash(gh api user --jq .login), Read, Grep, Glob
 ---
 
 Plan Issue #$ARGUMENTS with the user before anyone writes code. If no number was given, ask for one.

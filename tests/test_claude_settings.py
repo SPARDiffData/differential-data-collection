@@ -129,16 +129,36 @@ def test_review_pr_removes_the_file_editing_tools():
 PLAN_ISSUE_READS = {
     "Bash(gh issue view:*)",
     "Bash(gh pr view:*)",
-    "Bash(gh auth status:*)",
+    "Bash(gh auth status)",  # exactly this: "gh auth status:*" also allows --show-token
     "Bash(gh api user --jq .login)",  # not "gh api user:*", which also allows -X PATCH
-    "Bash(git log:*)",
-    "Bash(git diff:*)",
+    "Read",
+    "Grep",
+    "Glob",
+}
+# ENG-5: the same for /review-pr. "git diff:*" and "git log:*" would also allow --output,
+# which writes a file, so the fallback commands are pre-approved in exactly the form it uses.
+REVIEW_PR_READS = {
+    "Bash(gh pr view:*)",
+    "Bash(gh pr diff:*)",
+    "Bash(gh pr checks:*)",
+    "Bash(gh issue view:*)",
+    "Bash(gh auth status)",
+    "Bash(git fetch origin)",
+    "Bash(git diff origin/main...HEAD)",
     "Read",
     "Grep",
     "Glob",
 }
 
 
+def pre_approved(command):
+    line = re.search(r"^allowed-tools: (.+)$", command_frontmatter(command), re.MULTILINE)
+    return set(line.group(1).split(", "))
+
+
 def test_plan_issue_pre_approves_reads_only():
-    line = re.search(r"^allowed-tools: (.+)$", command_frontmatter("plan-issue"), re.MULTILINE)
-    assert set(line.group(1).split(", ")) == PLAN_ISSUE_READS
+    assert pre_approved("plan-issue") == PLAN_ISSUE_READS
+
+
+def test_review_pr_pre_approves_reads_only():
+    assert pre_approved("review-pr") == REVIEW_PR_READS
