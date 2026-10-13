@@ -1,7 +1,11 @@
 """Reading config.toml, and the data folder guards it goes through."""
 
+from pathlib import Path
+
 import pytest
 
+from diffdata import cli
+from diffdata.common import config as config_module
 from diffdata.common.config import ConfigError, load_config
 from diffdata.common.paths import DataInRepoError, DataInSyncedFolderError
 
@@ -85,3 +89,59 @@ def test_data_dir_goes_through_the_synced_folder_guard(tmp_path):
     data = (tmp_path / "Dropbox" / "data").as_posix()
     with pytest.raises(DataInSyncedFolderError):
         load_config(write_config(tmp_path, f'[local]\ndata_dir = "{data}"\n'))
+
+
+def config_text(tmp_path, channels="[]"):
+    data = (tmp_path / "data").as_posix()
+    return f'[sources]\nslack_channels = {channels}\n[local]\ndata_dir = "{data}"\n'
+
+
+def test_tests_never_read_the_real_config(no_real_config):
+    assert config_module.user_config_file() == no_real_config
+    assert no_real_config != Path.home() / ".diffdata" / "config.toml"
+
+
+def test_reads_config_from_the_diffdata_folder_first(tmp_path, monkeypatch, no_real_config):
+    no_real_config.parent.mkdir(parents=True)
+    path = write_config(no_real_config.parent, config_text(tmp_path, '["outside"]'))
+    monkeypatch.chdir(tmp_path)  # no config.toml here
+    config = load_config()
+    assert config.slack_channels == ("outside",)
+    assert config.path.samefile(path)
+
+
+def test_falls_back_to_the_current_folder(tmp_path, monkeypatch):
+    path = write_config(tmp_path, config_text(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    assert load_config().path.samefile(path)
+
+
+def test_two_config_files_are_refused(tmp_path, monkeypatch, no_real_config):
+    no_real_config.parent.mkdir(parents=True)
+    write_config(no_real_config.parent, config_text(tmp_path))
+    write_config(tmp_path, config_text(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ConfigError, match="two config.toml"):
+        load_config()
+
+
+def test_no_config_says_where_to_put_it(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ConfigError, match=r"\.diffdata.*config\.example\.toml"):
+        load_config()
+
+
+def test_channels_lists_the_opted_in_channels(tmp_path, monkeypatch, capsys):
+    write_config(tmp_path, config_text(tmp_path, '["#Example-Channel", "other"]'))
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["discover", "slack", "channels"]) == 0
+    first, *names = capsys.readouterr().out.splitlines()
+    assert first.startswith("Opted-in channels, from ") and first.endswith("config.toml:")
+    assert names == ["example-channel", "other"]
+
+
+def test_channels_stops_when_none_are_listed(tmp_path, monkeypatch, capsys):
+    write_config(tmp_path, config_text(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["discover", "slack", "channels"]) == 1
+    assert "slack_channels" in capsys.readouterr().err

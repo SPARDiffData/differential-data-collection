@@ -18,13 +18,13 @@ uv run diffdata --help
 uv run pytest
 ```
 
-To configure it, copy `config.example.toml` to `config.toml` and `.env.example` to `.env`, then fill them in. Both stay on your computer.
+To configure it, copy `config.example.toml` to `config.toml` in a `.diffdata` folder in your home folder (`C:\Users\<you>\.diffdata\config.toml` on Windows, `~/.diffdata/config.toml` on a Mac), and `.env.example` to `.env`, then fill them in. Both stay on your computer. Keeping `config.toml` outside the repo means tools working in the repo, such as Codex, can't read it.
 
 ## Export a Slack channel (DIS-1)
 
 For the pilot there's no Slack app: Claude Code reads Slack for you through its Slack connector, as you. Nothing writes to Slack. This repo's `.claude/settings.json` removes every Slack write tool from Claude while it works in this folder.
 
-1. **Set up `config.toml`.** List the channels to export under `slack_channels`; listing a channel is your opt-in. Set `slack_workspace_url` to your workspace's address. Keep `data_dir` outside the repo and outside OneDrive, Dropbox, Google Drive and iCloud: `diffdata` refuses those.
+1. **Set up `config.toml`** in `~/.diffdata/`. List the channels to export under `slack_channels`; listing a channel is your opt-in. Set `slack_workspace_url` to your workspace's address. Keep `data_dir` outside the repo and outside OneDrive, Dropbox, Google Drive and iCloud: `diffdata` refuses those.
 2. **Try it.** Open Claude Code in the repo folder and type `/slack-export test`. It reads only the 5 newest messages of the first channel.
 3. **Run it.** Type `/slack-export`. Claude reads each channel and its threads. A hook saves each result unchanged to your data folder, so Claude never retypes it, and then `diffdata` builds:
    - `slack/export/<channel>/<date>.md`: one readable file per day (UTC), with thread replies under their post

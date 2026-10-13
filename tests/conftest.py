@@ -8,6 +8,17 @@ import pytest
 SLACK_FIXTURES = Path(__file__).parent / "fixtures" / "slack"
 
 
+@pytest.fixture(autouse=True)
+def no_real_config(tmp_path_factory, monkeypatch):
+    """No test ever reads the person's real ~/.diffdata/config.toml: point that lookup at
+    an empty folder. Tests that need one write it there, or pass a path."""
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setattr(
+        "diffdata.common.config.user_config_file", lambda: home / ".diffdata" / "config.toml"
+    )
+    return home / ".diffdata" / "config.toml"
+
+
 @pytest.fixture
 def slack_response():
     """A Slack connector result in the connector's own shape, made from a fixture file:

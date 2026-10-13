@@ -1,6 +1,8 @@
 # diffdata configuration.
-# Copy this file to config.toml and fill in your own values.
-# config.toml is gitignored and stays on your computer. Never commit it.
+# Copy this file to config.toml in a .diffdata folder in your home folder
+# (C:\Users\<you>\.diffdata\config.toml on Windows, ~/.diffdata/config.toml on a Mac)
+# and fill in your own values. Outside the repo, tools working in it can't read it.
+# A config.toml in the repo folder also works; it's gitignored. Never commit it.
 
 [sources]
 # CON-1: listing a channel or folder here is your opt-in to collecting it.
