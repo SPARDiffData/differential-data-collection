@@ -77,6 +77,6 @@ CI runs lint and tests on Windows, macOS and Linux for every PR.
 
 ## Reviews and versions
 
-Every PR gets one review before merge: `/review-pr <number>`, run in a separate Claude session. A human must also review anything touching consent, scrub or store. While Paul works solo, Paul's own read is that human review, and the PR ticks the template's "Solo phase" box. The full workflow, including when the solo phase ends, is in [CONTRIBUTING.md](CONTRIBUTING.md).
+Every PR gets reviewed before merge, starting with `/review-pr <number>`, run in a separate Claude session. Paul then reviews teammates' PRs, adding a Codex review for PRs that change `src/`. A human must also review anything touching consent, scrub or store. While Paul works solo, Paul's own read is that human review, and the PR ticks the template's "Solo phase" box. The full workflow, including when the solo phase ends, is in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The version lives in `pyproject.toml` only (0.MINOR.PATCH, matching the phases in the requirements). Paul tags releases and keeps [CHANGELOG.md](CHANGELOG.md).
