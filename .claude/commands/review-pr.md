@@ -66,3 +66,13 @@ Leave out the "Solo phase" line unless check 6 asks for it.
 ## 4. Post
 
 Show the review, then ask: "Post this as a comment on PR #<n>?" Only on a yes, save it to a temporary file outside the repo and run `gh pr comment <n> --body-file <that file>`.
+
+## 5. A Codex line, for PRs that change `src/`
+
+If the diff changes any file under `src/`, finish by giving the user one line to paste for a second review by OpenAI's Codex. Codex reviews the checked-out branch, and it can't reach GitHub, so the line carries the Issue's context. Build it like this, all on one line, in plain words, with no quotes or backticks inside:
+
+```
+/codex:adversarial-review --base main --scope branch Check this change against Issue #<n>. Done when: <each "Done when" item, shortened, separated by semicolons>. Plan: <the agreed plan's decisions in a sentence or two, or none>.
+```
+
+Tell the user to check out the PR's branch first (`gh pr checkout <n>`, with `main` up to date), then paste the line. Codex is optional: skip this step if the user says they don't have it. Never put anything from `.env`, `config.toml` or the data folder in the line.

@@ -42,7 +42,7 @@ You can also open Claude Code in an empty folder and say: "Walk me through the o
 3. **Work with Claude.** Start with: *"Read Issue #12 and propose a plan."* Claude reads `CLAUDE.md` for our rules. Check the plan before saying go. If you'd like a more structured plan, run `/plan-issue 12` instead. Claude asks its open questions first, then writes the plan in plan mode, and once you approve, posts it on the Issue so it isn't lost when the session ends. It's optional: plan whichever way suits you.
 4. **Run the tests:** *"Run the tests and the linter."* (That's `uv run pytest` and `uv run ruff check`.)
 5. **Push and open a PR:** *"Commit, push and open a PR with the template."* Check it says `Closes #12` and lists the requirement IDs.
-6. **Get a review.** Open a new, separate Claude session in the repo (a fresh terminal window, not the one that wrote the code) and run `/review-pr 34` with your PR number. It writes a short review split into must-fix and nice-to-have, and posts it on the PR when you say yes. Fix the must-fix items, push, and run it again. If your PR touches consent, scrub or store, a human must review it too: ask the lane lead or Paul. (While Paul works solo, Paul's own read counts. See [Review policy](#review-policy).) To check a PR quickly, a reviewer can also run `/debrief 34`. It makes a one-page summary, as a private claude.ai page, of what was asked, what was delivered and which decisions need a look. It's optional and doesn't replace `/review-pr`.
+6. **Get a review.** Open a new, separate Claude session in the repo (a fresh terminal window, not the one that wrote the code) and run `/review-pr 34` with your PR number. It writes a short review split into must-fix and nice-to-have, and posts it on the PR when you say yes. Fix the must-fix items, push, and run it again. Then ask Paul to review it: on the PR page, click **Reviewers** on the right and choose Paul. See [Review policy](#review-policy). To check a PR quickly, a reviewer can also run `/debrief 34`. It makes a one-page summary, as a private claude.ai page, of what was asked, what was delivered and which decisions need a look. It's optional and doesn't replace `/review-pr`.
 7. **Merge.** When CI is green and the review is done, click **Squash and merge** on the PR page. GitHub deletes the branch for you.
 8. **Tidy up:** *"Switch back to main and pull."*
 
@@ -69,7 +69,14 @@ Find your lane from the requirement IDs in your Issue.
 
 ## Review policy
 
-Every PR gets one review before merge. An AI review from a separate Claude session (`/review-pr`) is enough for most code. A human reviews anything touching consent, scrub or store.
+Every PR gets reviewed before merge:
+
+- **Everyone runs `/review-pr` first,** in a separate Claude session. It's a quick self-check that catches must-fix items before anyone else spends time on them.
+- **Paul reviews teammates' PRs.** Paul reads each one with `/review-pr` and, for PRs that change code under `src/`, a second AI review from OpenAI's Codex. `/review-pr` prints the line to paste for it. Two AI models from different companies, plus a human read, catch more than any one of them.
+- **A human reviews anything touching consent, scrub or store.** For a teammate's PR, that's Paul.
+- **If Paul becomes a bottleneck,** we'll change this. Any human can review, whichever AI they use.
+
+Codex is only on Paul's machine for now. It never gets the data folder or `config.toml`, because it sends what it reads to OpenAI.
 
 ### While Paul works solo
 
