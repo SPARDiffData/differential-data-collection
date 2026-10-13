@@ -31,7 +31,7 @@ If you think real data, a password or a token got into a commit or a PR, don't t
    cd differential-data-collection
    uv sync
    ```
-6. **Make your private settings files.** Copy `config.example.toml` to `config.toml` and `.env.example` to `.env`, then fill them in. Both copies stay on your computer and are never committed. Keep `data_dir` pointing outside the repo; the tool refuses a folder inside it.
+6. **Make your private settings files.** Make a folder called `.diffdata` in your home folder (`C:\Users\<you>\.diffdata` on Windows, `~/.diffdata` on a Mac). Copy `config.example.toml` into it as `config.toml`, and copy `.env.example` to `.env` in the repo folder, then fill them in. Keeping `config.toml` outside the repo means tools working in the repo, such as Codex, can't read it. Both copies stay on your computer and are never committed. Keep `data_dir` pointing outside the repo; the tool refuses a folder inside it.
 
 You can also open Claude Code in an empty folder and say: "Walk me through the one-time setup in CONTRIBUTING.md of SPARDiffData/differential-data-collection."
 

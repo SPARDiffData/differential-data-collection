@@ -52,7 +52,7 @@ src/diffdata/
   common/           shared pieces; paths.py holds the data folder guards, config.py reads config.toml
 tests/              pytest; fixtures/ holds synthetic data only
 docs/requirements.md
-config.example.toml copy to config.toml (gitignored) and fill in
+config.example.toml copy to ~/.diffdata/config.toml, outside the repo, and fill in
 .env.example        copy to .env (gitignored) and fill in
 .claude/commands/plan-issue.md     /plan-issue, an optional planning step before coding
 .claude/commands/review-pr.md      /review-pr, the independent PR review

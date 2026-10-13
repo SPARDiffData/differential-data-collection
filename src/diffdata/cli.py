@@ -22,6 +22,7 @@ COMMANDS = {
 STUBS = ("collect", "scrub", "push")
 
 SLACK_STEPS = {
+    "channels": "List the opted-in channels from config.toml, and which file it read.",
     "begin": "Open an export run for channels given as name=ID (run by /slack-export).",
     "save": "Save one Slack result from stdin to the inbox (run by the /slack-export hook).",
     "build": "Build the message store and the markdown view from the inbox, then close the run.",
@@ -76,7 +77,11 @@ def run_slack_step(args: argparse.Namespace) -> int:
         return slack_inbox.save_from_hook(sys.stdin.buffer.read())
     try:
         config = load_config()
-        if args.step == "begin":
+        if args.step == "channels":
+            if not config.slack_channels:
+                raise ConfigError(f"No channels are listed under slack_channels in {config.path}.")
+            report = "\n".join([f"Opted-in channels, from {config.path}:", *config.slack_channels])
+        elif args.step == "begin":
             report = slack_inbox.begin(config, args.channels)
         elif args.step == "abort":
             report = slack_inbox.abort(config)

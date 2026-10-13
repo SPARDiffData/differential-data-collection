@@ -31,7 +31,7 @@ If the arguments say `test`, this is a **test run**: use only the first channel,
 
 ## Steps
 
-1. **Channels.** Read `config.toml` and take the channel names from `slack_channels` under `[sources]`. If the file or the list is missing, stop and tell the user to copy `config.example.toml` to `config.toml` and fill it in.
+1. **Channels.** Run `uv run diffdata discover slack channels`. It prints the opted-in channel names from `config.toml`, one per line after the first. Don't open `config.toml` yourself. If the command fails, stop and show its message: it says where `config.toml` belongs.
 2. **Open a run.** For each name, find its channel ID with `slack_search_channels`, with `keywords` set to the name and `channel_types` set to `public_channel,private_channel`. Use only a result whose name matches exactly; if there isn't one, stop and say which name wasn't found. Then run:
    ```
    uv run diffdata discover slack begin <name>=<ID> <name>=<ID> ...
