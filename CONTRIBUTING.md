@@ -72,11 +72,11 @@ Find your lane from the requirement IDs in your Issue.
 Every PR gets reviewed before merge:
 
 - **Everyone runs `/review-pr` first,** in a separate Claude session. It's a quick self-check that catches must-fix items before anyone else spends time on them.
-- **Paul reviews teammates' PRs.** Paul reads each one with `/review-pr` and, for PRs that change code under `src/`, a second AI review from OpenAI's Codex. `/review-pr` prints the line to paste for it. Two AI models from different companies, plus a human read, catch more than any one of them.
+- **Paul reviews teammates' PRs.** Paul reads each one with `/review-pr` and, for PRs that change code under `src/`, a second AI review from OpenAI's Codex. `/review-pr` prints the line to paste for it. Two AI models from different companies, plus a human read, catch more than any one of them. `src/` is where we start: as we learn where Codex helps most, this may narrow to foundational, large or risky changes.
 - **A human reviews anything touching consent, scrub or store.** For a teammate's PR, that's Paul.
 - **If Paul becomes a bottleneck,** we'll change this. Any human can review, whichever AI they use.
 
-Codex is only on Paul's machine for now. It never gets the data folder or `config.toml`, because it sends what it reads to OpenAI.
+Codex is only on Paul's machine for now. It never gets the data folder, `config.toml` or `.env`, because it sends what it reads to OpenAI. `.env` moves out of the repo folder, to `~/.diffdata/`, before it holds a real token (Issue #45).
 
 ### While Paul works solo
 

@@ -90,10 +90,10 @@ When the plan covers all the PRs, keep Goal, Done when, Decisions, Hard rules ch
 
 The plan goes on a public Issue. Describe real data without quoting it: counts and shapes, never message text, names, emails, channel names or IDs. Never include tokens or secrets.
 
-**For consent, scrub and store Issues, offer a Codex review of the plan first.** Codex's review commands look at code changes, and a plan has none yet, so this uses Codex's read-only mode on the plan file. Give the user this line to run in PowerShell in the repo folder:
+**For consent, scrub and store Issues, offer a Codex review of the plan first.** Codex's review commands look at code changes, and a plan has none yet, so this uses Codex's read-only mode on the plan file. Without plan mode there's no plan file yet: save the plan to a temporary file outside the repo now, and use its path. Give the user this line to run in PowerShell in the repo folder. Its first part makes PowerShell send the plan as UTF-8, so Windows PowerShell 5.1 doesn't turn characters such as é or — into question marks:
 
 ```
-Get-Content "<the plan file's path>" | codex exec --sandbox read-only "Challenge this plan for Issue #<n> in this repo. Read AGENTS.md first. Question its assumptions and risks, especially for privacy, consent and real data. Change nothing."
+$OutputEncoding = [Text.UTF8Encoding]::new($false); Get-Content -Raw -Encoding UTF8 "<the plan file's path>" | codex exec --sandbox read-only "Challenge this plan for Issue #<n> in this repo. Read AGENTS.md first. Question its assumptions and risks, especially for privacy, consent and real data. Change nothing."
 ```
 
 Wait for the user to paste back what Codex says, or to say skip. Revise the plan for any point the user agrees with. Codex is optional: skip this if the user doesn't have it.

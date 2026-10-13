@@ -32,6 +32,7 @@ If `gh` is missing or not logged in (`gh auth status`), tell the user, then fall
 4. **Tests.** Is changed behavior covered by new or updated tests? Do the tests use only synthetic fixtures?
 5. **Lane.** The branch should be `<lane>/<short-name>`, and the changed files should stay inside `src/diffdata/<lane>/` and its tests, unless the Issue says otherwise. Lane `repo` covers docs, CI and tooling.
 6. **Human review needed?** If the diff touches `src/diffdata/consent/`, `src/diffdata/scrub/` or `src/diffdata/store/`, this AI review isn't enough: say a human must review before merge.
+   - **Teammates' PRs.** If the author isn't Paul, Paul reviews the PR before merge, whatever it touches ("Review policy" in `CONTRIBUTING.md`). With nothing under Must fix, the verdict is "Ready for Paul's review", never "Ready to merge" or "Needs a human review".
    - **Solo phase.** The solo phase applies when all three hold: "While Paul works solo" in `CONTRIBUTING.md` says it's in effect, the PR author is Paul (GitHub login `PaulsForge`), and the PR ticks the "Solo phase" box. Then Paul's own read is the human review. Don't flag Paul reviewing their own PR. Use the verdict "Ready once Paul has read every changed line (solo phase)", but only when there's nothing under Must fix. Otherwise the verdict is "Fix the must-fix items first".
    - If the box is ticked but the solo phase has ended, or the author isn't Paul, that's a must fix.
    - If the diff touches those folders, the solo phase is in effect and the author is Paul, but the box isn't ticked, ask for it under must fix: the PR has to say what human review it got.
@@ -48,7 +49,7 @@ Write the review in exactly this shape, short and in plain words:
 ```
 ## AI review (separate session)
 
-**Verdict:** Ready to merge | Fix the must-fix items first | Needs a human review (consent, scrub or store) | Ready once Paul has read every changed line (solo phase)
+**Verdict:** Ready to merge | Ready for Paul's review | Fix the must-fix items first | Needs a human review (consent, scrub or store) | Ready once Paul has read every changed line (solo phase)
 
 **Solo phase:** This PR is from @<login>, so the solo phase is over. Paul: change the status line under "While Paul works solo" in CONTRIBUTING.md to "Ended on <date>".
 
@@ -75,4 +76,4 @@ If the diff changes any file under `src/`, finish by giving the user one line to
 /codex:adversarial-review --base main --scope branch Check this change against Issue #<n>. Done when: <each "Done when" item, shortened, separated by semicolons>. Plan: <the agreed plan's decisions in a sentence or two, or none>.
 ```
 
-Tell the user to check out the PR's branch first (`gh pr checkout <n>`, with `main` up to date), then paste the line. Codex is optional: skip this step if the user says they don't have it. Never put anything from `.env`, `config.toml` or the data folder in the line.
+Tell the user where and how to run it. In a Claude Code session in the repo folder (this one is fine), first ask Claude: "Switch to main, pull, then check out PR #<n>." That runs `git checkout main`, `git pull` and `gh pr checkout <n>`. `--base main` compares with the local `main`, so it has to be up to date. Then paste the line. Codex is optional: skip this step if the user says they don't have it. Never put anything from `.env`, `config.toml` or the data folder in the line.
