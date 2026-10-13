@@ -60,6 +60,7 @@ config.example.toml copy to config.toml (gitignored) and fill in
 .claude/commands/slack-export.md   /slack-export, reads Slack through the connector (DIS-1)
 .claude/settings.json              denies every Slack and Google write tool in this repo
 .github/            PR template, Issue template, CI workflow
+AGENTS.md           points other AI agents, such as Codex, to these rules
 ```
 
 ## Run and test
