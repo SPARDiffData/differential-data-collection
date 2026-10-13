@@ -50,6 +50,7 @@ src/diffdata/
   consent/ discover/ collect/ organize/ scrub/ store/    one package per stage
   discover/slack_*.py   Slack export (DIS-1): inbox, parser, store and markdown view
   common/           shared pieces; paths.py holds the data folder guards, config.py reads config.toml
+  common/documents.py   the shared document format (ORG-2): raw, versions, event log, clean copies
 tests/              pytest; fixtures/ holds synthetic data only
 docs/requirements.md
 config.example.toml copy to ~/.diffdata/config.toml, outside the repo, and fill in
