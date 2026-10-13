@@ -151,6 +151,21 @@ REVIEW_PR_READS = {
 }
 
 
+# ENG-5: the same for /debrief, which reads the PR or this branch's changes and publishes a page.
+DEBRIEF_READS = {
+    "Bash(gh pr view:*)",
+    "Bash(gh pr diff:*)",
+    "Bash(gh pr checks:*)",
+    "Bash(gh issue view:*)",
+    "Bash(git log --oneline main..HEAD)",
+    "Bash(git diff --stat main...HEAD)",
+    "Bash(git diff main...HEAD)",
+    "Read",
+    "Grep",
+    "Glob",
+}
+
+
 def pre_approved(command):
     line = re.search(r"^allowed-tools: (.+)$", command_frontmatter(command), re.MULTILINE)
     return set(line.group(1).split(", "))
@@ -162,3 +177,12 @@ def test_plan_issue_pre_approves_reads_only():
 
 def test_review_pr_pre_approves_reads_only():
     assert pre_approved("review-pr") == REVIEW_PR_READS
+
+
+def test_debrief_pre_approves_reads_only():
+    assert pre_approved("debrief") == DEBRIEF_READS
+
+
+def test_debrief_cant_edit_code():
+    # It writes one page outside the repo, so Write stays; Edit isn't needed.
+    assert {"Edit", "NotebookEdit"} <= set(frontmatter_line("disallowed-tools", "debrief"))

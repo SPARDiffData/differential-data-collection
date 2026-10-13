@@ -54,6 +54,7 @@ tests/              pytest; fixtures/ holds synthetic data only
 docs/requirements.md
 config.example.toml copy to config.toml (gitignored) and fill in
 .env.example        copy to .env (gitignored) and fill in
+.claude/commands/debrief.md        /debrief, an optional one-page summary of a PR or session
 .claude/commands/plan-issue.md     /plan-issue, an optional planning step before coding
 .claude/commands/review-pr.md      /review-pr, the independent PR review
 .claude/commands/slack-export.md   /slack-export, reads Slack through the connector (DIS-1)
