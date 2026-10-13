@@ -130,7 +130,7 @@ PLAN_ISSUE_READS = {
     "Bash(gh issue view:*)",
     "Bash(gh pr view:*)",
     "Bash(gh auth status:*)",
-    "Bash(gh api user:*)",
+    "Bash(gh api user --jq .login)",  # not "gh api user:*", which also allows -X PATCH
     "Bash(git log:*)",
     "Bash(git diff:*)",
     "Read",
