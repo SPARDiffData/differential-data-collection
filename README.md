@@ -36,6 +36,18 @@ By hand: `uv run diffdata discover slack build` rebuilds the export from what's 
 
 Not yet: each run reads every channel from the start. Reading only what's new, including late replies in older threads, comes next.
 
+## Collect Slack canvases (COL-2)
+
+`/slack-export` also reads the canvases you list, after the channels.
+
+1. **List them** under `slack_canvases` in `config.toml`, by ID (`F...`) or by link (`https://<workspace>.slack.com/docs/T.../F...`). Listing a canvas is your opt-in: no other canvas is read.
+2. **Run `/slack-export`** as above. `/slack-export test` reads only the first canvas. The build then writes, in your data folder:
+   - `documents/current/slack-canvas_<title>_<id>.md`: each canvas's latest text, with mentions shown as names
+   - `documents/slack-canvas/<id>/versions/`: one file per distinct text, so a new one appears only when the canvas changed
+   - `documents/slack-canvas/<id>/raw/`: every read, exactly as received
+
+Links in a canvas (Docs, images, other canvases) stay links: nothing fetches them. Canvas comments aren't collected yet (COL-3). Not yet: skipping canvases that haven't changed. For now, each run reads every listed canvas in full.
+
 ## Two hard rules
 
 - We never modify or delete a producer's original files or data. We read originals and only change our own copies.

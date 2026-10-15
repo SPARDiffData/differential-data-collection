@@ -1,0 +1,25 @@
+{
+  "canvas_id": "F00000003",
+  "markdown_content": "# Example Project Plan\n\nOwner: <@U00000001>. Questions go in <#C00000001>.\n\n## Goals\n\n- Collect the team's working notes\n- Keep everything read-only, always\n\n## Links\n\n- [Plan doc](https://docs.google.com/document/d/FAKE-DOC-0001/edit)\n- [Notes canvas](https://example.slack.com/docs/T00000001/F00000002)\n\n::: {.layout}\n![diagram.png](https://example.slack.com/files/U00000001/F00000009/diagram.png)\n:::\n\n## Decisions\n\n- Canvases are a step in the Slack export\n\n## Open questions\n\nAsk <@U00000009> about the timing :question:\n",
+  "section_id_mapping": {
+    "temp:C:FAKE0000000000000000000000000001": "# Example Project Plan",
+    "temp:C:FAKE0000000000000000000000000002": "Owner: <@U00000001>. Questions go in <#C00000001>.",
+    "temp:C:FAKE0000000000000000000000000003": "## Goals",
+    "temp:C:FAKE0000000000000000000000000004": "- Collect the team's working notes\n- Keep everything read-only, always",
+    "temp:C:FAKE0000000000000000000000000005": "## Links",
+    "temp:C:FAKE0000000000000000000000000006": "- [Plan doc](https://docs.google.com/document/d/FAKE-DOC-0001/edit)\n- [Notes canvas](https://example.slack.com/docs/T00000001/F00000002)",
+    "temp:C:FAKE0000000000000000000000000007": "::: {.layout}\n![diagram.png](https://example.slack.com/files/U00000001/F00000009/diagram.png)\n:::",
+    "temp:C:FAKE0000000000000000000000000012": "## Decisions",
+    "temp:C:FAKE0000000000000000000000000013": "- Canvases are a step in the Slack export",
+    "temp:C:FAKE0000000000000000000000000008": "## Open questions",
+    "temp:C:FAKE0000000000000000000000000009": "Ask <@U00000009> about the timing :question:"
+  },
+  "comment_threads": [
+    {
+      "section_id": "temp:C:FAKE0000000000000000000000000099",
+      "thread_ts": "1790950000.000100",
+      "channel_id": "C00000003",
+      "permalink": "https://example.slack.com/archives/C00000003/p1790950000000100"
+    }
+  ]
+}

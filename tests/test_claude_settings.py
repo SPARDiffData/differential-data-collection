@@ -111,10 +111,17 @@ def test_slack_export_removes_the_file_editing_tools():
     assert {"Write", "Edit", "NotebookEdit"} <= set(frontmatter_line("disallowed-tools"))
 
 
-def test_the_hook_saves_channel_and_thread_reads_only():
+def test_the_hook_saves_channel_thread_and_canvas_reads_only():
     matcher = re.search(r'matcher: "(.+)"', command_frontmatter()).group(1)
     saved = [t for t in SLACK_READ_TOOLS + SLACK_WRITE_TOOLS if re.fullmatch(matcher, SLACK + t)]
-    assert saved == ["slack_read_channel", "slack_read_thread"]
+    assert saved == ["slack_read_canvas", "slack_read_channel", "slack_read_thread"]
+
+
+def test_slack_export_reads_canvases_but_cant_write_them():
+    # COL-2: the command pre-approves the canvas read, and the deny list blocks every write.
+    assert SLACK + "slack_read_canvas" in frontmatter_line("allowed-tools")
+    for tool in ("slack_create_canvas", "slack_update_canvas"):
+        assert denied(SLACK + tool)
 
 
 def test_review_pr_removes_the_file_editing_tools():

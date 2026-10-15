@@ -78,6 +78,39 @@ def test_workspace_url_loses_its_trailing_slash(tmp_path):
     assert load_config(path).slack_workspace_url == "https://example.slack.com"
 
 
+def canvases_config(tmp_path, canvases: str):
+    data = (tmp_path / "data").as_posix()
+    return write_config(
+        tmp_path, f'[sources]\nslack_canvases = {canvases}\n[local]\ndata_dir = "{data}"\n'
+    )
+
+
+def test_canvases_are_listed_by_id_or_link(tmp_path):
+    link = "https://example.slack.com/docs/T00000001/F00000004"
+    path = canvases_config(tmp_path, f'["F00000003", " {link}/ ", "F00000004", "F00000003"]')
+    assert load_config(path).slack_canvases == ("F00000003", "F00000004")
+
+
+def test_no_canvases_by_default(tmp_path):
+    write_config(tmp_path, f'[local]\ndata_dir = "{(tmp_path / "data").as_posix()}"\n')
+    assert load_config(tmp_path / "config.toml").slack_canvases == ()
+
+
+@pytest.mark.parametrize(
+    "canvases",
+    [
+        '["C00000001"]',  # a channel, not a canvas
+        '["https://example.com/docs/T00000001/F00000003"]',  # not a Slack link
+        '["https://example.slack.com/files/U00000001/F00000003/a.png"]',  # a file, not a canvas
+        '["project plan"]',
+        '"F00000003"',  # not a list
+    ],
+)
+def test_anything_else_in_canvases_is_refused(tmp_path, canvases):
+    with pytest.raises(ConfigError, match="slack_canvases"):
+        load_config(canvases_config(tmp_path, canvases))
+
+
 def test_data_dir_goes_through_the_repo_guard(tmp_path):
     (tmp_path / "repo" / ".git").mkdir(parents=True)
     data = (tmp_path / "repo" / "data").as_posix()

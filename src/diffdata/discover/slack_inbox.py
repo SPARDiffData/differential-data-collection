@@ -9,6 +9,8 @@ thread is saved only after its channel's read has passed that check.
 A result too big for Claude's context reaches the hook only as a notice naming the file
 Claude Code saved it in, so `save` reads that file, and only from the session's own
 tool-results folder. After each save, the hook tells Claude what it needs to carry on.
+Canvas reads go to collect/slack_canvas.py (COL-2), and only for the canvases listed in
+config.toml, which every run names.
 
 Layout under the data folder:
   slack/run.json                                   the open run, if any
@@ -23,6 +25,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from diffdata.collect import slack_canvas
 from diffdata.common.config import Config, ConfigError, channel_name, load_config
 from diffdata.common.paths import UnsafeDataDirError
 from diffdata.discover.slack_parse import (
@@ -35,7 +38,8 @@ from diffdata.discover.slack_parse import (
 
 # A run that crashed or was forgotten must not leave the hook saving, so runs expire.
 RUN_MINUTES = 60
-# The connector tools whose results we save. The command's hook matches the same two.
+# The connector tools whose results go to the inbox. The command's hook matches these two,
+# and canvas reads, which go to the canvas's own folder.
 SAVED_TOOLS = ("slack_read_channel", "slack_read_thread")
 # When a result is too big for Claude's context, Claude Code saves it to a file in the
 # session's tool-results folder, and the hook gets only a notice naming that file.
@@ -62,6 +66,8 @@ class Run:
     closed_why: str | None = None
     # Channels whose read showed the opted-in name and ID. Threads are saved only for these.
     verified: list[str] = field(default_factory=list)
+    # The canvases listed in config.toml when the run opened. Only these reads are saved.
+    canvases: list[str] = field(default_factory=list)
 
 
 def utc_iso(when: datetime) -> str:
@@ -152,12 +158,15 @@ def begin(config: Config, pairs: list[str], now: datetime | None = None) -> str:
         started_at=utc_iso(now),
         expires_at=utc_iso(now + timedelta(minutes=RUN_MINUTES)),
         channels=channels,
+        canvases=list(config.slack_canvases),
     )
     write_json(run_path(config.data_dir), asdict(run))
     notes.append(
-        f"Export run {run.run_id} is open for {len(channels)} channel(s). "
-        f"It expires at {run.expires_at[11:16]} UTC."
+        f"Export run {run.run_id} is open for {len(channels)} channel(s) and "
+        f"{len(run.canvases)} canvas(es). It expires at {run.expires_at[11:16]} UTC."
     )
+    if run.canvases:
+        notes.append("Canvases to read: " + ", ".join(run.canvases))
     return "\n".join(notes)
 
 
@@ -170,7 +179,8 @@ def abort(config: Config, now: datetime | None = None) -> str:
 
 
 def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
-    """Save one hook payload to the inbox. Returns the hook's exit code.
+    """Save one hook payload: a channel or thread read to the inbox, a canvas read to its
+    document folder. Returns the hook's exit code.
 
     0 means saved, or nothing to save. 2 means a run is open but this result couldn't be
     saved; Claude Code shows our stderr message to Claude, so the export can stop.
@@ -188,10 +198,17 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
     try:
         hook = json.loads(payload.decode("utf-8"))
         tool = hook["tool_name"].rsplit("__", 1)[-1]
-        channel_id = hook["tool_input"]["channel_id"]
+        # What was read: a canvas for a canvas read, else a channel.
+        read_id = hook["tool_input"]["canvas_id" if tool == slack_canvas.TOOL else "channel_id"]
     except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, AttributeError):
         return fail("The hook passed a Slack result diffdata can't read, so it wasn't saved.")
-    if tool not in SAVED_TOOLS or not isinstance(channel_id, str) or channel_id not in run.channels:
+    if tool == slack_canvas.TOOL:
+        if read_id not in run.canvases:
+            return fail(
+                "This canvas isn't listed in slack_canvases in config.toml, so it wasn't saved "
+                "(CON-1). Stop the export."
+            )
+    elif tool not in SAVED_TOOLS or not isinstance(read_id, str) or read_id not in run.channels:
         return 0
 
     response = hook.get("tool_response")
@@ -208,6 +225,27 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
         except (OSError, UnicodeDecodeError) as e:
             return fail(f"Couldn't read the file Claude Code saved a big Slack result in: {e}")
 
+    # The call's ID keeps file names unique when Claude reads several things at once.
+    call = re.sub(r"[^A-Za-z0-9_-]", "", str(hook.get("tool_use_id", "")))
+    call = call or now.strftime("%Y%m%dT%H%M%S%fZ")
+    record = {
+        "saved_at": utc_iso(now),
+        "run_id": run.run_id,
+        "tool_name": hook["tool_name"],
+        "tool_input": hook["tool_input"],
+        "tool_response": response,
+    }
+    if overflow is not None:
+        record["overflow_file"] = overflow.name
+    if tool == slack_canvas.TOOL:
+        try:
+            return tell_claude(
+                slack_canvas.save_read(config.data_dir, run.run_id, read_id, record, call)
+            )
+        except slack_canvas.CanvasError as e:
+            return fail(str(e))
+
+    channel_id = read_id
     if tool == "slack_read_channel":
         header = CHANNEL_HEADER.match(result_text(response).lstrip())
         if (
@@ -229,25 +267,18 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
             "diffdata couldn't check the channel and didn't save it. Stop the export."
         )
 
-    # The call's ID keeps file names unique when Claude reads several things at once.
-    call = re.sub(r"[^A-Za-z0-9_-]", "", str(hook.get("tool_use_id", "")))
-    call = call or now.strftime("%Y%m%dT%H%M%S%fZ")
     path = inbox_dir(config.data_dir) / channel_id / run.run_id / f"{tool}-{call}.json"
-    record = {
-        "saved_at": utc_iso(now),
-        "run_id": run.run_id,
-        "tool_name": hook["tool_name"],
-        "tool_input": hook["tool_input"],
-        "tool_response": response,
-    }
-    if overflow is not None:
-        record["overflow_file"] = overflow.name
     try:
         write_json(path, record)
     except OSError as e:
         return fail(f"Couldn't save a Slack result to the inbox: {e}")
+    return tell_claude(
+        saved_note(tool, hook["tool_name"], hook["tool_input"], response, overflow is not None)
+    )
 
-    note = saved_note(tool, hook["tool_name"], hook["tool_input"], response, overflow is not None)
+
+def tell_claude(note: str) -> int:
+    """Pass the hook's note to Claude, after a save."""
     hook_output = {"hookEventName": "PostToolUse", "additionalContext": note}
     print(json.dumps({"hookSpecificOutput": hook_output}))
     return 0

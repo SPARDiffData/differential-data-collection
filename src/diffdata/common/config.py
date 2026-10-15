@@ -6,6 +6,7 @@ gitignored. The data folder always comes through `data_dir()`, so a folder insid
 or a synced folder is refused.
 """
 
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,9 @@ from pathlib import Path
 from diffdata.common.paths import data_dir
 
 CONFIG_NAME = "config.toml"
+# A canvas is listed by its ID, or by its link: https://<workspace>.slack.com/docs/<team>/<ID>
+CANVAS_ID = re.compile(r"F[A-Z0-9]{6,}")
+CANVAS_LINK = re.compile(r"https://[a-z0-9-]+\.slack\.com/docs/T[A-Z0-9]+/(F[A-Z0-9]{6,})/?")
 
 
 class ConfigError(Exception):
@@ -26,6 +30,8 @@ class Config:
     slack_channels: tuple[str, ...]
     # The workspace's address, like https://example.slack.com, for message links.
     slack_workspace_url: str = ""
+    # CON-1: listing a canvas is the opt-in to collecting it (COL-2). Canvas IDs.
+    slack_canvases: tuple[str, ...] = ()
     # Which config.toml these settings came from.
     path: Path | None = None
 
@@ -33,6 +39,15 @@ class Config:
 def channel_name(name: str) -> str:
     """Slack channel names are lowercase; people sometimes type the '#'."""
     return name.strip().lstrip("#").lower()
+
+
+def canvas_id(value: str) -> str | None:
+    """A canvas's ID, from its ID or its link. None if it's neither."""
+    value = value.strip()
+    if CANVAS_ID.fullmatch(value):
+        return value
+    link = CANVAS_LINK.fullmatch(value)
+    return link[1] if link else None
 
 
 def user_config_file() -> Path:
@@ -81,10 +96,24 @@ def load_config(path: str | Path | None = None) -> Config:
     workspace = sources.get("slack_workspace_url", "")
     if not isinstance(workspace, str) or (workspace and not workspace.startswith("https://")):
         raise ConfigError(f"slack_workspace_url in {path} must start with https://")
+    canvases = sources.get("slack_canvases", [])
+    if not isinstance(canvases, list) or not all(isinstance(c, str) for c in canvases):
+        raise ConfigError(f"slack_canvases in {path} must be a list of canvas IDs or links.")
+    canvas_ids = []
+    for listed in canvases:
+        found = canvas_id(listed)
+        if found is None:
+            raise ConfigError(
+                f"'{listed}' in slack_canvases in {path} isn't a canvas ID (F...) or a canvas "
+                "link (https://<workspace>.slack.com/docs/T.../F...)."
+            )
+        if found not in canvas_ids:
+            canvas_ids.append(found)
 
     return Config(
         data_dir=data_dir(configured),
         slack_channels=tuple(channel_name(c) for c in channels),
         slack_workspace_url=workspace.rstrip("/"),
+        slack_canvases=tuple(canvas_ids),
         path=path,
     )

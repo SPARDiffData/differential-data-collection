@@ -7,6 +7,9 @@ Under the data folder:
 Every build reads the whole inbox, so the store can be rebuilt after a parser fix. A message
 version the store already has is skipped, so building twice adds nothing. If a message's text
 or files changed, both versions are kept, and the view shows the newest one.
+
+The build also writes the canvases (COL-2), using the store's names for their mentions. See
+collect/slack_canvas.py.
 """
 
 import json
@@ -16,7 +19,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from diffdata import __version__
+from diffdata.collect import slack_canvas
 from diffdata.common.config import Config
+from diffdata.common.documents import documents_dir
 from diffdata.discover.slack_inbox import (
     close_run,
     inbox_dir,
@@ -48,6 +53,13 @@ def build(config: Config) -> str:
             folder, channel_id, name, names, config.slack_workspace_url, read_store(store_file)
         )
 
+    people = {}
+    for store_file in sorted((slack_dir(data) / "store").glob("*/messages.jsonl")):
+        people.update(
+            {r["user_id"]: r["user_name"] for r in read_store(store_file) if r["user_id"]}
+        )
+    canvases = slack_canvas.build(data, config.slack_workspace_url, people, names)
+
     report = [
         f"{len(channel_dirs)} channel(s): {totals['results']} result file(s), "
         f"{totals['messages']} message(s) read, {totals['new']} new or changed, "
@@ -61,6 +73,17 @@ def build(config: Config) -> str:
         )
     if totals["empty"]:
         report.append(f"{totals['empty']} result file(s) had no messages in them.")
+    if canvases["canvases"]:
+        report.append(
+            f"{canvases['canvases']} canvas(es): {canvases['reads']} read(s), "
+            f"{canvases['versions']} version(s), {canvases['written']} file(s) written."
+        )
+    if canvases["unreadable"] or canvases["failed"]:
+        report.append(
+            f"Couldn't read {canvases['unreadable']} saved canvas read(s), and couldn't write "
+            f"{canvases['failed']} canvas(es). Nothing is lost: the raw reads stay in the "
+            "data folder."
+        )
     if run is None:
         report.append("No export run was open, so this rebuilt from the inbox.")
     else:
@@ -68,6 +91,9 @@ def build(config: Config) -> str:
             report.append(
                 "No results were saved during this run. Is the hook running, and is uv on PATH?"
             )
+        canvas_reads = documents_dir(data) / slack_canvas.SOURCE
+        if run.canvases and not any(canvas_reads.glob(f"*/raw/{run.run_id}/*.json")):
+            report.append(f"This run listed {len(run.canvases)} canvas(es), but saved no reads.")
         close_run(data, run, "built")
         report.append(f"Closed export run {run.run_id}.")
     return "\n".join(report)

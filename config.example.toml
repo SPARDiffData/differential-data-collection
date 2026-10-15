@@ -9,6 +9,7 @@
 # Remove it and collection stops on the next run (CON-3).
 slack_channels = ["example-channel"]  # channel names, without the '#'
 slack_workspace_url = "https://example.slack.com"  # your workspace's address, for message links
+slack_canvases = []                   # canvas IDs ("F...") or canvas links; read on each /slack-export
 folders = []                          # fixed places to check, e.g. ["~/Documents/transcripts"]
 
 [local]
