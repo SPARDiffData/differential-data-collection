@@ -91,9 +91,16 @@ def build(config: Config) -> str:
             report.append(
                 "No results were saved during this run. Is the hook running, and is uv on PATH?"
             )
-        canvas_reads = documents_dir(data) / slack_canvas.SOURCE
-        if run.canvases and not any(canvas_reads.glob(f"*/raw/{run.run_id}/*.json")):
-            report.append(f"This run listed {len(run.canvases)} canvas(es), but saved no reads.")
+        if run.canvases:
+            # A count, not a warning: a test run reads only the first canvas.
+            canvas_reads = documents_dir(data) / slack_canvas.SOURCE
+            saved = sum(
+                any((canvas_reads / canvas / "raw" / run.run_id).glob("*.json"))
+                for canvas in run.canvases
+            )
+            report.append(
+                f"This run saved reads for {saved} of {len(run.canvases)} listed canvas(es)."
+            )
         close_run(data, run, "built")
         report.append(f"Closed export run {run.run_id}.")
     return "\n".join(report)

@@ -2,6 +2,7 @@
 from saved reads. Synthetic fixtures only."""
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -246,13 +247,24 @@ def test_the_report_gives_counts_only(export_run):
         assert private not in report
 
 
-def test_a_run_that_listed_canvases_but_saved_none_says_so(config, slack_response, slack_hook):
+@pytest.mark.parametrize("read", [0, 1, 2])
+def test_the_report_counts_the_listed_canvases_this_run_saved(
+    config, slack_response, slack_hook, read
+):
+    # A test run reads only the first canvas, and a hook that missed the big ones saves fewer.
+    listed = (CANVAS, "F00000004")
+    config = replace(config, slack_canvases=listed)
     begin(config, ["example-channel=C00000001"], now=T0)
-    read = slack_hook(
+    channel = slack_hook(
         "slack_read_channel", {"channel_id": CHANNEL}, slack_response("read_channel.txt")
     )
-    assert save(config, read, now=T0) == 0
-    assert "This run listed 1 canvas(es), but saved no reads." in build(config)
+    assert save(config, channel, now=T0) == 0
+    for i, canvas in enumerate(listed[:read]):
+        payload = canvas_payload(
+            slack_hook, canvas_read().replace(CANVAS, canvas), canvas=canvas, call=f"toolu_c{i}"
+        )
+        assert save(config, payload, now=T0) == 0
+    assert f"This run saved reads for {read} of 2 listed canvas(es)." in build(config)
 
 
 def test_the_title_is_the_first_heading_else_the_id():

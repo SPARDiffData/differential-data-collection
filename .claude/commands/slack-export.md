@@ -22,7 +22,7 @@ After each read, the hook adds a note that starts "diffdata saved this result". 
 
 - **Read-only.** Only read and search Slack. Never send, post, react, upload or edit anything, in Slack or anywhere else.
 - **Don't copy results anywhere.** The hook saves them. Don't retype tool results into files, commands or your reply.
-- **Report counts only.** Never repeat message or canvas text, names, emails, channel IDs or links from the results. They're private, and this session's output may be shared.
+- **Report counts only.** Never repeat message or canvas text, names, emails, channel or canvas IDs, or links from the results. They're private, and this session's output may be shared.
 - **Stop on a hook error or a missing note.** If a tool result comes back with a `diffdata:` error from the hook, or with no "diffdata saved this result" note, stop. Run `uv run diffdata discover slack abort` and tell the user what happened, quoting the error if there was one.
 
 Arguments: $ARGUMENTS
