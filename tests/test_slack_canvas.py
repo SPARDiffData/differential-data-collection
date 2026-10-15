@@ -109,7 +109,7 @@ def test_an_opted_in_canvas_read_is_saved_unchanged(config, slack_hook, capsys):
     assert path == canvas_dir(config) / "raw" / run_id / "slack_read_canvas-toolu_canvas01.json"
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved["tool_response"] == [{"type": "text", "text": canvas_read()}]
-    assert saved["saved_at"] == "2026-10-04T12:01:00Z"
+    assert saved["saved_at"] == "2026-10-04T12:01:00.000000Z"  # to the microsecond
     assert "session_id" not in saved and "transcript_path" not in saved
     note = hook_note(capsys)
     assert note.startswith("diffdata saved this result: one canvas, ")
@@ -265,6 +265,35 @@ def test_the_report_counts_the_listed_canvases_this_run_saved(
         )
         assert save(config, payload, now=T0) == 0
     assert f"This run saved reads for {read} of 2 listed canvas(es)." in build(config)
+
+
+def test_a_canvas_with_an_unreadable_read_is_left_as_it_was(config, export_run):
+    export_run()
+    export_run(T0 + timedelta(days=1), fixture="read_canvas_v2.json")
+    before = {p: p.read_bytes() for p in documents(config)}
+    broken = canvas_dir(config) / "raw" / "20261005T120000Z" / "slack_read_canvas-broken.json"
+    broken.write_text("not JSON", encoding="utf-8")
+    report = build(config)
+    assert "Couldn't read 1 saved canvas read(s), so 1 canvas(es) were left as they were" in report
+    # Both versions and the newer clean copy are still there, unchanged.
+    assert {p: p.read_bytes() for p in documents(config) if p != broken} == before
+
+
+@pytest.mark.parametrize("newer_first", [False, True])
+def test_two_reads_in_the_same_second_keep_their_order(config, slack_hook, newer_first):
+    # Saved times keep the microseconds, so the newer read wins whatever order they arrive in.
+    reads = [
+        (T0 + timedelta(microseconds=100_000), "# Older\n\nold text\n"),
+        (T0 + timedelta(microseconds=900_000), "# Newer\n\nnew text\n"),
+    ]
+    begin(config, ["example-channel=C00000001"], now=T0)
+    for i, (when, text) in enumerate(reversed(reads) if newer_first else reads):
+        read = json.dumps({"canvas_id": CANVAS, "markdown_content": text})
+        assert save(config, canvas_payload(slack_hook, read, call=f"toolu_s{i}"), now=when) == 0
+    build(config)
+    [current] = (config.data_dir / "documents" / "current").glob("*.md")
+    assert current.name == "slack-canvas_newer_F00000003.md"
+    assert current.read_text(encoding="utf-8").endswith("# Newer\n\nnew text\n")
 
 
 def test_the_title_is_the_first_heading_else_the_id():

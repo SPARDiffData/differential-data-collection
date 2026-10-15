@@ -4,6 +4,12 @@ argument-hint: "[test]"
 allowed-tools: mcp__claude_ai_Slack__slack_search_channels mcp__claude_ai_Slack__slack_read_channel mcp__claude_ai_Slack__slack_read_thread mcp__claude_ai_Slack__slack_read_canvas Bash(uv run diffdata discover slack *)
 disallowed-tools: Write Edit NotebookEdit
 hooks:
+  PreToolUse:
+    - matcher: "mcp__claude_ai_Slack__slack_read_(channel|thread|canvas)"
+      hooks:
+        - type: command
+          command: uv
+          args: ["run", "--directory", "${CLAUDE_PROJECT_DIR}", "diffdata", "discover", "slack", "check"]
   PostToolUse:
     - matcher: "mcp__claude_ai_Slack__slack_read_(channel|thread|canvas)"
       hooks:
@@ -14,7 +20,7 @@ hooks:
 
 Export the Slack channels and canvases listed in `config.toml` to markdown in the user's data folder.
 
-How it works: you read Slack through the Slack connector. After each `slack_read_channel`, `slack_read_thread` or `slack_read_canvas` call, a hook saves the result to the data folder, unchanged. Then `diffdata` builds the export from what was saved.
+How it works: you read Slack through the Slack connector. Before each read, a hook checks that the run names the channel or canvas, and stops the read if it doesn't. After each `slack_read_channel`, `slack_read_thread` or `slack_read_canvas` call, a hook saves the result to the data folder, unchanged. Then `diffdata` builds the export from what was saved.
 
 After each read, the hook adds a note that starts "diffdata saved this result". It gives the number of messages saved, the next page's cursor, and, for a channel read, the posts that have replies. For a canvas, it gives the text's length. **Use the note to decide your next call.** A big result may show you only a preview that doesn't reach the cursor or every thread. The note covers the whole result, so don't open the saved file to look.
 
@@ -23,7 +29,7 @@ After each read, the hook adds a note that starts "diffdata saved this result". 
 - **Read-only.** Only read and search Slack. Never send, post, react, upload or edit anything, in Slack or anywhere else.
 - **Don't copy results anywhere.** The hook saves them. Don't retype tool results into files, commands or your reply.
 - **Report counts only.** Never repeat message or canvas text, names, emails, channel or canvas IDs, or links from the results. They're private, and this session's output may be shared.
-- **Stop on a hook error or a missing note.** If a tool result comes back with a `diffdata:` error from the hook, or with no "diffdata saved this result" note, stop. Run `uv run diffdata discover slack abort` and tell the user what happened, quoting the error if there was one.
+- **Stop on a hook error or a missing note.** If a hook stops a read with a `diffdata:` message, or a tool result comes back with a `diffdata:` error or with no "diffdata saved this result" note, stop. Run `uv run diffdata discover slack abort` and tell the user what happened, quoting the error if there was one.
 
 Arguments: $ARGUMENTS
 

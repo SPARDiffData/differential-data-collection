@@ -8,9 +8,10 @@ turns every saved read into a version and writes the canvas in the shared docume
 
 A read is JSON: `canvas_id`, `markdown_content` (the text), `section_id_mapping` and, when
 there are unresolved comments, `comment_threads`. It has no title, edit time or author, so
-the title is the first heading, and every version is our own snapshot. The section mapping
-and comment threads stay in raw for COL-3. Links to images, Docs and other canvases stay
-links: nothing here fetches them.
+the title is the latest text's first heading, and every version is our own snapshot. A read
+is saved with its time to the microsecond, so two reads in the same second keep their
+order. The section mapping and comment threads stay in raw for COL-3. Links to images,
+Docs and other canvases stay links: nothing here fetches them.
 
 Under the data folder:
   documents/slack-canvas/<canvas id>/raw/<run id>/slack_read_canvas-<call>.json
@@ -27,6 +28,8 @@ from diffdata.common.documents import (
     DocumentError,
     Version,
     documents_dir,
+    exact,
+    keep_changes,
     save_raw,
     write_document,
 )
@@ -83,11 +86,19 @@ def read_versions(folder: Path) -> tuple[list[Version], int]:
             text = result_json(record["tool_response"])["markdown_content"]
             if not isinstance(text, str):
                 raise TypeError
+            exact(record["saved_at"])  # refuses a time it can't read
             raw = path.relative_to(folder).as_posix()
             versions.append(Version(text=text, seen_at=record["saved_at"], raw=raw))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError):
+        except (
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            DocumentError,
+        ):
             unreadable += 1
-    return sorted(versions, key=lambda v: (v.seen_at, v.raw)), unreadable
+    return sorted(versions, key=lambda v: (exact(v.seen_at), v.raw)), unreadable
 
 
 def title(text: str, canvas_id: str) -> str:
@@ -114,14 +125,20 @@ def build(data: Path, workspace: str, people: dict[str, str], channels: dict[str
     folders = sorted(p for p in (documents_dir(data) / SOURCE).glob("*") if p.is_dir())
     for folder in folders:
         versions, unreadable = read_versions(folder)
-        counts["unreadable"] += unreadable
+        if unreadable:
+            # Building from only part of raw would drop good versions and could show older
+            # text, so a canvas with an unreadable read is left as it was.
+            counts.update(unreadable=unreadable, skipped=1)
+            continue
         if not versions:
             continue
         canvas_id = folder.name
+        # The latest text as the shared format orders it, so the title matches the clean copy.
+        _, latest = keep_changes(versions)[-1]
         document = Document(
             source=SOURCE,
             id=canvas_id,
-            title=title(versions[-1].text, canvas_id),
+            title=title(latest, canvas_id),
             tags={"workspace": workspace},
         )
         try:

@@ -78,11 +78,16 @@ def build(config: Config) -> str:
             f"{canvases['canvases']} canvas(es): {canvases['reads']} read(s), "
             f"{canvases['versions']} version(s), {canvases['written']} file(s) written."
         )
-    if canvases["unreadable"] or canvases["failed"]:
+    if canvases["skipped"]:
         report.append(
-            f"Couldn't read {canvases['unreadable']} saved canvas read(s), and couldn't write "
-            f"{canvases['failed']} canvas(es). Nothing is lost: the raw reads stay in the "
-            "data folder."
+            f"Couldn't read {canvases['unreadable']} saved canvas read(s), so "
+            f"{canvases['skipped']} canvas(es) were left as they were. Nothing is lost: the "
+            "raw reads stay in the data folder."
+        )
+    if canvases["failed"]:
+        report.append(
+            f"Couldn't write {canvases['failed']} canvas(es). Nothing is lost: the raw reads "
+            "stay in the data folder."
         )
     if run is None:
         report.append("No export run was open, so this rebuilt from the inbox.")

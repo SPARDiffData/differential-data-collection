@@ -10,7 +10,8 @@ A result too big for Claude's context reaches the hook only as a notice naming t
 Claude Code saved it in, so `save` reads that file, and only from the session's own
 tool-results folder. After each save, the hook tells Claude what it needs to carry on.
 Canvas reads go to collect/slack_canvas.py (COL-2), and only for the canvases listed in
-config.toml, which every run names.
+config.toml, which every run names. A second hook runs `check()` before each read, so a
+read the run doesn't name is stopped before anything is fetched.
 
 Layout under the data folder:
   slack/run.json                                   the open run, if any
@@ -47,6 +48,13 @@ OVERFLOW = re.compile(r"saved to:?\s+(?P<path>.+?\.(?:txt|json))\b", re.IGNORECA
 # Public channels start with C, older private ones with G. DMs (D) need both people's
 # consent first (CON-5), so they're refused.
 CHANNEL_ID = re.compile(r"[CG][A-Z0-9]{6,}")
+# The reads `check()` lets through only when the open run names what they read, and the
+# input field that names it. The command's PreToolUse hook matches the same three.
+CHECKED_READS = {
+    "slack_read_channel": "channel_id",
+    "slack_read_thread": "channel_id",
+    "slack_read_canvas": "canvas_id",
+}
 # A channel read starts with "Channel: #name (ID)". The hook checks it against the run, so a
 # wrong ID chosen by Claude can't bring in a channel that wasn't opted in (CON-1).
 CHANNEL_HEADER = re.compile(r"Channel: #(?P<name>[^\s()]+) \((?P<id>[A-Z0-9]+)\)")
@@ -238,6 +246,8 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
     if overflow is not None:
         record["overflow_file"] = overflow.name
     if tool == slack_canvas.TOOL:
+        # To the microsecond, so two reads in the same second keep their order (COL-9).
+        record["saved_at"] = now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         try:
             return tell_claude(
                 slack_canvas.save_read(config.data_dir, run.run_id, read_id, record, call)
@@ -275,6 +285,32 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
     return tell_claude(
         saved_note(tool, hook["tool_name"], hook["tool_input"], response, overflow is not None)
     )
+
+
+def check(config: Config, payload: bytes, now: datetime | None = None) -> int:
+    """Before a Slack read: let it go ahead only if the open run names the channel or canvas
+    it reads (CON-1). Returns the hook's exit code: 0 lets the read go ahead, and 2 stops it
+    before anything is fetched, with our stderr message shown to Claude. Writes nothing."""
+    now = now or datetime.now(UTC)
+    try:
+        hook = json.loads(payload.decode("utf-8"))
+        field_name = CHECKED_READS[hook["tool_name"].rsplit("__", 1)[-1]]
+        read_id = hook["tool_input"][field_name]
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, AttributeError):
+        return fail("diffdata couldn't tell what this Slack read is for, so it was stopped.")
+    run = open_run(config.data_dir)
+    if run is None or is_expired(run, now):
+        return fail(
+            "No export run is open, so this Slack read was stopped. Start again with /slack-export."
+        )
+    named = run.canvases if field_name == "canvas_id" else run.channels
+    if not isinstance(read_id, str) or read_id not in named:
+        what = "canvas" if field_name == "canvas_id" else "channel"
+        return fail(
+            f"This {what} isn't one the export run took from config.toml, so the read was "
+            "stopped before it ran (CON-1). Stop the export."
+        )
+    return 0
 
 
 def tell_claude(note: str) -> int:
@@ -318,6 +354,16 @@ def saved_note(tool: str, tool_name: str, tool_input: dict, response, overflowed
 def fail(message: str) -> int:
     print(f"diffdata: {message}", file=sys.stderr)
     return 2
+
+
+def check_from_hook(payload: bytes) -> int:
+    """Entry point for the before-read hook. Without a usable config no run can be checked,
+    so the read is stopped."""
+    try:
+        config = load_config()
+    except (ConfigError, UnsafeDataDirError):
+        return fail("diffdata couldn't read config.toml, so this Slack read was stopped.")
+    return check(config, payload)
 
 
 def save_from_hook(payload: bytes) -> int:

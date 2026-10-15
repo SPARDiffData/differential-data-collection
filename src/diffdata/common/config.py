@@ -99,16 +99,22 @@ def load_config(path: str | Path | None = None) -> Config:
     canvases = sources.get("slack_canvases", [])
     if not isinstance(canvases, list) or not all(isinstance(c, str) for c in canvases):
         raise ConfigError(f"slack_canvases in {path} must be a list of canvas IDs or links.")
-    canvas_ids = []
-    for listed in canvases:
+    # Messages name an entry's place in the list, not its ID, so no ID reaches shared output.
+    canvas_ids: list[str] = []
+    for number, listed in enumerate(canvases, start=1):
         found = canvas_id(listed)
         if found is None:
             raise ConfigError(
-                f"'{listed}' in slack_canvases in {path} isn't a canvas ID (F...) or a canvas "
-                "link (https://<workspace>.slack.com/docs/T.../F...)."
+                f"Entry {number} in slack_canvases in {path} isn't a canvas ID (F...) or a "
+                "canvas link (https://<workspace>.slack.com/docs/T.../F...)."
             )
-        if found not in canvas_ids:
-            canvas_ids.append(found)
+        if found in canvas_ids:
+            # Often a paste of the wrong line, so the canvas meant here is missing.
+            raise ConfigError(
+                f"Entries {canvas_ids.index(found) + 1} and {number} in slack_canvases in {path} "
+                "are the same canvas. Remove one, or replace it with the canvas you meant."
+            )
+        canvas_ids.append(found)
 
     return Config(
         data_dir=data_dir(configured),
