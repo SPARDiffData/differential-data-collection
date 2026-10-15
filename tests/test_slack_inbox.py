@@ -340,3 +340,25 @@ def test_cli_check_passes_the_hook_payload_to_the_check(monkeypatch):
     monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(b'{"fake": 1}')))
     monkeypatch.setattr(slack_inbox, "check_from_hook", lambda p: 2 if p == b'{"fake": 1}' else 0)
     assert cli.main(["discover", "slack", "check"]) == 2
+
+
+@pytest.mark.parametrize("damage", ["not JSON", '{"run_id": "20261001T140000Z"}', "[]"])
+def test_check_stops_the_read_when_the_run_file_is_damaged(
+    tmp_path, monkeypatch, capsys, slack_hook, damage
+):
+    # Claude Code lets a call run after any hook failure but exit code 2, so a crash must not
+    # let the read through.
+    data = tmp_path / "data"
+    (tmp_path / "config.toml").write_text(
+        '[sources]\nslack_channels = ["example-channel"]\n'
+        'slack_workspace_url = "https://example.slack.com"\n'
+        f'[local]\ndata_dir = "{data.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    run_file = data / "slack" / "run.json"
+    run_file.parent.mkdir(parents=True)
+    run_file.write_text(damage, encoding="utf-8")
+    read = slack_hook("slack_read_channel", {"channel_id": CHANNEL}, None)
+    assert slack_inbox.check_from_hook(read) == 2
+    assert "so it was stopped" in capsys.readouterr().err

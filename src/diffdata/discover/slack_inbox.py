@@ -357,13 +357,17 @@ def fail(message: str) -> int:
 
 
 def check_from_hook(payload: bytes) -> int:
-    """Entry point for the before-read hook. Without a usable config no run can be checked,
-    so the read is stopped."""
+    """Entry point for the before-read hook. Claude Code stops a call only when the hook
+    exits with code 2, and lets it run after any other failure. So anything that goes wrong
+    here, such as an unreadable config.toml or a damaged run.json, stops the read too."""
     try:
-        config = load_config()
+        return check(load_config(), payload)
     except (ConfigError, UnsafeDataDirError):
         return fail("diffdata couldn't read config.toml, so this Slack read was stopped.")
-    return check(config, payload)
+    except Exception as e:
+        return fail(
+            f"diffdata couldn't check this Slack read ({type(e).__name__}), so it was stopped."
+        )
 
 
 def save_from_hook(payload: bytes) -> int:
