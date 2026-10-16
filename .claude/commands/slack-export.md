@@ -10,17 +10,19 @@ hooks:
         - type: command
           command: uv
           args: ["run", "--directory", "${CLAUDE_PROJECT_DIR}", "diffdata", "discover", "slack", "check"]
+          onFailure: block
   PostToolUse:
     - matcher: "mcp__claude_ai_Slack__slack_read_(channel|thread|canvas)"
       hooks:
         - type: command
           command: uv
           args: ["run", "--directory", "${CLAUDE_PROJECT_DIR}", "diffdata", "discover", "slack", "save"]
+          onFailure: block
 ---
 
 Export the Slack channels and canvases listed in `config.toml` to markdown in the user's data folder.
 
-How it works: you read Slack through the Slack connector. Before each read, a hook checks that the run names the channel or canvas, and stops the read if it doesn't. After each `slack_read_channel`, `slack_read_thread` or `slack_read_canvas` call, a hook saves the result to the data folder, unchanged. Then `diffdata` builds the export from what was saved.
+How it works: you read Slack through the Slack connector. Before each read, a hook checks that the run names the channel or canvas, and stops the read if it doesn't, or if the check itself can't run. After each `slack_read_channel`, `slack_read_thread` or `slack_read_canvas` call, a hook saves the result to the data folder, unchanged. Then `diffdata` builds the export from what was saved.
 
 After each read, the hook adds a note that starts "diffdata saved this result". It gives the number of messages saved, the next page's cursor, and, for a channel read, the posts that have replies. For a canvas, it gives the text's length. **Use the note to decide your next call.** A big result may show you only a preview that doesn't reach the cursor or every thread. The note covers the whole result, so don't open the saved file to look.
 

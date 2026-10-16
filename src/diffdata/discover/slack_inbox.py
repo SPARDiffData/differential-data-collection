@@ -11,7 +11,8 @@ Claude Code saved it in, so `save` reads that file, and only from the session's 
 tool-results folder. After each save, the hook tells Claude what it needs to carry on.
 Canvas reads go to collect/slack_canvas.py (COL-2), and only for the canvases listed in
 config.toml, which every run names. A second hook runs `check()` before each read, so a
-read the run doesn't name is stopped before anything is fetched.
+read the run doesn't name is stopped before anything is fetched. Both hooks set onFailure:
+block, so a hook that can't start or times out stops the read too.
 
 Layout under the data folder:
   slack/run.json                                   the open run, if any
@@ -357,9 +358,11 @@ def fail(message: str) -> int:
 
 
 def check_from_hook(payload: bytes) -> int:
-    """Entry point for the before-read hook. Claude Code stops a call only when the hook
-    exits with code 2, and lets it run after any other failure. So anything that goes wrong
-    here, such as an unreadable config.toml or a damaged run.json, stops the read too."""
+    """Entry point for the before-read hook. Claude Code stops a call when the hook exits
+    with code 2. The command's onFailure: block also stops it when the hook can't start or
+    times out, but an exit code we choose gives Claude a clearer reason. So anything that
+    goes wrong here, such as an unreadable config.toml or a damaged run.json, stops the
+    read with a message."""
     try:
         return check(load_config(), payload)
     except (ConfigError, UnsafeDataDirError):

@@ -112,20 +112,25 @@ def test_slack_export_removes_the_file_editing_tools():
 
 
 def slack_export_hooks():
-    """Each hook event in /slack-export's frontmatter: its matcher and its diffdata step."""
+    """Each hook event in /slack-export's frontmatter: its matcher, its diffdata step and
+    what Claude Code does if the hook fails."""
     found = re.findall(
-        r'^  (\w+):\n    - matcher: "([^"\n]+)"\n(?:.*\n)*?.*"slack", "(\w+)"\]',
+        r'^  (\w+):\n    - matcher: "([^"\n]+)"\n(?:.*\n)*?.*"slack", "(\w+)"\]\n'
+        r"(?:\s+onFailure: (\w+)\n)?",
         command_frontmatter(),
         re.MULTILINE,
     )
-    return {event: (matcher, step) for event, matcher, step in found}
+    return {event: (matcher, step, on_failure) for event, matcher, step, on_failure in found}
 
 
 @pytest.mark.parametrize("event, step", [("PreToolUse", "check"), ("PostToolUse", "save")])
 def test_the_hooks_check_and_save_channel_thread_and_canvas_reads_only(event, step):
     # CON-1: the read is checked before it runs, and the result is checked before it's saved.
-    matcher, hook_step = slack_export_hooks()[event]
+    matcher, hook_step, on_failure = slack_export_hooks()[event]
     assert hook_step == step
+    # A hook that can't start, crashes or times out blocks the read too. Without this, Claude
+    # Code carries on as if the check had passed (needs Claude Code 2.1.295 or later).
+    assert on_failure == "block"
     matched = [t for t in SLACK_READ_TOOLS + SLACK_WRITE_TOOLS if re.fullmatch(matcher, SLACK + t)]
     assert matched == ["slack_read_canvas", "slack_read_channel", "slack_read_thread"]
 
