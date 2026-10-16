@@ -264,9 +264,33 @@ def test_an_email_never_leaves_raw(tmp_path):
 
 def test_a_doc_with_an_unreadable_fetch_is_left_as_it_was(tmp_path):
     full_fetch(tmp_path)
-    (document_dir(tmp_path, "google-doc", DOC) / "raw" / "20261009T000000Z").mkdir()
+    broken = document_dir(tmp_path, "google-doc", DOC) / "raw" / "20261009T000000Z"
+    broken.mkdir()
+    (broken / "fetch.json").write_text("{not json", encoding="utf-8")
     counts = build(tmp_path)
     assert counts["skipped"] == 1 and counts["docs"] == 0
+
+
+def test_a_half_saved_fetch_is_not_built_from_until_it_is_finished(tmp_path):
+    first = {"export.txt": "One\n"}
+    save_fetch(tmp_path, DOC, "20261001T120000Z", "2026-10-01T12:00:00Z", "connector", first)
+    later = {"export.txt": "One\nTwo\n"}
+    with pytest.raises(GoogleDocError):  # the second file's name is refused, after export.txt
+        save_fetch(
+            tmp_path,
+            DOC,
+            "20261002T120000Z",
+            "2026-10-02T12:00:00Z",
+            "connector",
+            later | {"bad name?.txt": "x"},
+        )
+    counts = build(tmp_path)
+    assert counts["unfinished fetches"] == 1 and counts["docs"] == 1
+    assert len(of_type(tmp_path, "version")) == 1
+    # Saving it again under the same fetch ID finishes it.
+    save_fetch(tmp_path, DOC, "20261002T120000Z", "2026-10-02T12:00:00Z", "connector", later)
+    assert build(tmp_path)["unfinished fetches"] == 0
+    assert len(of_type(tmp_path, "version")) == 2
 
 
 @pytest.mark.parametrize(
@@ -360,3 +384,93 @@ def test_suggestion_text_follows_fixed_typing_and_marks_taken_back(tmp_path):
     )
     suggestions = {e["native_id"]: e["text"] for e in found if e["type"] == "suggestion"}
     assert suggestions == {"sug-1": "Very ", "sug-2": "Plain"}
+
+
+def test_drive_pages_saved_as_sent_and_in_several_files(tmp_path):
+    first, second = (
+        json.loads(comments()),
+        [{"id": "c2", "createdTime": "2026-10-05T13:00:00Z", "content": "Second page."}],
+    )
+    revisions = {
+        "kind": "drive#revisionList",
+        "revisions": [{"id": "1", "modifiedTime": "2026-10-01T10:00:00Z"}],
+    }
+    files = {
+        # Drive's comments.list exactly as sent: an object, with the list inside.
+        "comments.json": json.dumps(
+            {"kind": "drive#commentList", "comments": first, "nextPageToken": "page-2"}
+        ),
+        "comments-2.json": json.dumps({"kind": "drive#commentList", "comments": second}),
+        "revisions.json": json.dumps(revisions),
+        "revision-1.txt": "One\n",
+    }
+    save_fetch(tmp_path, DOC, "20261006T090000Z", "2026-10-06T09:00:00Z", "google-login", files)
+    assert build(tmp_path)["docs"] == 1
+    comments_seen = of_type(tmp_path, "comment")
+    assert [c["native_id"] for c in comments_seen] == ["c1", "c2"]
+    assert comments_seen[1]["raw"] == "raw/20261006T090000Z/comments-2.json"
+    assert of_type(tmp_path, "version")[0]["at"] == "2026-10-01T10:00:00Z"
+
+
+def test_a_raw_file_in_a_shape_we_dont_expect_fails_only_that_doc(tmp_path):
+    other = "FAKE-DOC-0002"
+    when = "2026-10-06T09:00:00Z"
+    save_fetch(
+        tmp_path,
+        DOC,
+        "20261006T090000Z",
+        when,
+        "google-login",
+        {"comments.json": '"not a list"', "export.txt": "One\n"},
+    )
+    save_fetch(tmp_path, other, "20261006T090000Z", when, "connector", {"export.txt": "Two\n"})
+    counts = build(tmp_path)
+    assert counts["failed"] == 1 and counts["docs"] == 1
+
+
+def test_fetching_again_keeps_when_old_history_was_first_seen(tmp_path):
+    body = json.dumps(
+        {
+            "chunkedSnapshot": [],
+            "changelog": [
+                entry({"ty": "is", "ibi": 1, "s": "One\n"}, "2026-10-05T10:00:00Z", "1", 1, "A"),
+                entry(
+                    {"ty": "iss", "ibi": 5, "s": "Two", "sugid": "sug-1"},
+                    "2026-10-05T10:05:00Z",
+                    "1",
+                    2,
+                    "A",
+                ),
+            ],
+        }
+    )
+    files = {"changelog.json": body}
+    save_fetch(tmp_path, DOC, "f1", "2026-10-06T09:00:00Z", "browser-file", files)
+    build(tmp_path)
+    log = document_dir(tmp_path, "google-doc", DOC) / "events.jsonl"
+    before = log.read_bytes()
+    # The same history fetched again three days later.
+    save_fetch(tmp_path, DOC, "f2", "2026-10-09T09:00:00Z", "browser-file", files)
+    build(tmp_path)
+    assert log.read_bytes() == before
+    (version,) = of_type(tmp_path, "version")
+    (suggestion,) = of_type(tmp_path, "suggestion")
+    assert (version["seen_at"], version["raw"]) == ("2026-10-06T09:00:00Z", "raw/f1/changelog.json")
+    assert suggestion["seen_at"] == "2026-10-06T09:00:00Z"
+
+
+def test_replay_warnings_are_counted(tmp_path):
+    # An insert far past the end of the doc: the replay places it, but warns.
+    body = json.dumps(
+        {
+            "chunkedSnapshot": [],
+            "changelog": [
+                entry({"ty": "is", "ibi": 1, "s": "One\n"}, "2026-10-05T10:00:00Z", "1", 1, "A"),
+                entry({"ty": "is", "ibi": 99, "s": "x"}, "2026-10-05T10:00:05Z", "1", 2, "A"),
+            ],
+        }
+    )
+    save_fetch(
+        tmp_path, DOC, "f1", "2026-10-06T09:00:00Z", "browser-file", {"changelog.json": body}
+    )
+    assert build(tmp_path)["replay warnings"] == 1

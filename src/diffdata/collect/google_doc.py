@@ -16,7 +16,10 @@ saved by hand from the browser), the fetcher saves what it got with `save_fetch(
     changelog.json        the Docs changelog, as Google sends it (the )]}' prefix is fine)
 
 Every file but fetch.json can be left out, and a fetch can save other files too (they
-stay in raw, unread). What the reader makes of them:
+stay in raw, unread). comments.json and revisions.json can be Drive's page exactly as
+sent ({"comments": [...], "nextPageToken": ...}) or just the list. A list Drive sends in
+several pages is saved one page a file: comments.json, then comments-2.json and so on.
+What the reader makes of them:
 - Versions, best first. The newest changelog gives the full history: it's replayed, and
   each stretch of editing becomes a version (a new one when the editor or the editing
   session changes, or after IDLE without edits). Else each revision-<id>.txt is a
@@ -33,6 +36,7 @@ format has no event type for them yet.
 
 import html
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -60,6 +64,8 @@ IDLE = timedelta(minutes=30)
 # Google puts this in front of the changelog's JSON so a browser won't run it as a script.
 XSSI_PREFIX = ")]}'"
 REPLY_TYPES = {"resolve": "resolve", "reopen": "reopen"}
+# One page of a Drive list: comments.json, comments-2.json, revisions.json and so on.
+PAGE = re.compile(r"(comments|revisions)(?:-(\d+))?\.json")
 
 
 class GoogleDocError(Exception):
@@ -91,6 +97,19 @@ class Fetch:
             return None
         return self.files[name].read_text(encoding="utf-8-sig")
 
+    def pages(self, stem: str) -> list[tuple[str, dict]]:
+        """Every item of a Drive list saved as <stem>.json, <stem>-2.json and so on, with
+        the raw file it came from. Each file is Drive's page as sent, or just its list."""
+        names = [n for n in self.files if (m := PAGE.fullmatch(n)) and m[1] == stem]
+        found = []
+        for name in sorted(names, key=lambda n: int(PAGE.fullmatch(n)[2] or 1)):
+            page = self.json(name)
+            items = page.get(stem, []) if isinstance(page, dict) else page
+            if not isinstance(items, list) or not all(isinstance(i, dict) for i in items):
+                raise GoogleDocError(f"{self.raw(name)} isn't a list of {stem}.")
+            found += [(self.raw(name), item) for item in items]
+        return found
+
 
 def save_fetch(
     data: Path, doc_id: str, fetch_id: str, fetched_at: str, route: str, files: dict[str, str]
@@ -107,17 +126,23 @@ def save_fetch(
         raise GoogleDocError("fetch.json is written by save_fetch, from fetched_at and route.")
     manifest = json.dumps({"fetched_at": fetched_at, "route": route}, indent=2) + "\n"
     try:
-        for name, content in {"fetch.json": manifest, **files}.items():
+        # fetch.json goes last: until it's there, the reader sees the fetch as unfinished,
+        # so a save cut short is never built from.
+        for name, content in {**files, "fetch.json": manifest}.items():
             path = save_raw(data, SOURCE, doc_id, fetch_id, name, content)
     except DocumentError as e:
         raise GoogleDocError(f"Couldn't save a Google Doc fetch: {e}") from e
     return path.parent
 
 
-def read_fetches(folder: Path) -> tuple[list[Fetch], int]:
-    """Every saved fetch of one doc, oldest first, and how many couldn't be read."""
-    fetches, unreadable = [], 0
+def read_fetches(folder: Path) -> tuple[list[Fetch], int, int]:
+    """Every finished fetch of one doc, oldest first; how many couldn't be read; and how
+    many are unfinished (no fetch.json yet, as a save cut short leaves them)."""
+    fetches, unreadable, unfinished = [], 0, 0
     for path in folder.glob("raw/*/"):
+        if not (path / "fetch.json").exists():
+            unfinished += 1  # saving it again with the same fetch ID finishes it
+            continue
         try:
             manifest = json.loads((path / "fetch.json").read_text(encoding="utf-8"))
             exact(manifest["fetched_at"])
@@ -137,7 +162,8 @@ def read_fetches(folder: Path) -> tuple[list[Fetch], int]:
             DocumentError,
         ):
             unreadable += 1
-    return sorted(fetches, key=lambda f: (exact(f.fetched_at), f.folder.name)), unreadable
+    fetches.sort(key=lambda f: (exact(f.fetched_at), f.folder.name))
+    return fetches, unreadable, unfinished
 
 
 def drive_actor(user: dict | None) -> Actor | None:
@@ -154,13 +180,13 @@ def drive_actor(user: dict | None) -> Actor | None:
 
 def comment_events(fetch: Fetch) -> list[Event]:
     events = []
-    for comment in fetch.json("comments.json") or []:
+    for raw, comment in fetch.pages("comments"):
         quote = (comment.get("quotedFileContent") or {}).get("value")
         events.append(
             Event(
                 "comment",
                 fetch.fetched_at,
-                fetch.raw("comments.json"),
+                raw,
                 at=comment.get("createdTime"),
                 actor=drive_actor(comment.get("author")),
                 native_id=comment["id"],
@@ -173,7 +199,7 @@ def comment_events(fetch: Fetch) -> list[Event]:
                 Event(
                     REPLY_TYPES.get(reply.get("action"), "reply"),
                     fetch.fetched_at,
-                    fetch.raw("comments.json"),
+                    raw,
                     at=reply.get("createdTime"),
                     actor=drive_actor(reply.get("author")),
                     native_id=reply["id"],
@@ -184,12 +210,20 @@ def comment_events(fetch: Fetch) -> list[Event]:
     return events
 
 
-def changelog_history(fetch: Fetch) -> tuple[list[Version], list[Event]]:
-    """Replay one fetch's changelog. Returns a version per stretch of editing and a
-    suggestion per suggestion ID."""
-    raw = fetch.raw("changelog.json")
+def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event], int]:
+    """Replay the newest changelog among `fetches` (oldest first; each holds the whole
+    history up to when it was fetched). Returns a version per stretch of editing, a
+    suggestion per suggestion ID, and how many warnings the replay gave."""
+    newest = fetches[-1]
     state, versions, suggestions = DocState(), [], {}
     stretch = None  # {session, at (its last edit), editor, rev}
+
+    def first_seen(at: str | None) -> tuple[str, str]:
+        """When we first collected something made at `at`, and the raw file it was in:
+        the first changelog fetched after it. So fetching again changes nothing old."""
+        made = exact(at) if at else None
+        fetch = next((f for f in fetches if made and exact(f.fetched_at) >= made), newest)
+        return fetch.fetched_at, fetch.raw("changelog.json")
 
     def close() -> None:
         text = state.base_text()
@@ -197,9 +231,9 @@ def changelog_history(fetch: Fetch) -> tuple[list[Version], list[Event]]:
             return  # the empty doc before anyone typed isn't a version
         actor = Actor(stretch["editor"]) if stretch["editor"] else None
         rev = f"rev-{stretch['rev']}"
-        versions.append(Version(text, fetch.fetched_at, raw, stretch["at"], actor, rev))
+        versions.append(Version(text, *first_seen(stretch["at"]), stretch["at"], actor, rev))
 
-    for edit in edit_events(fetch.json("changelog.json")):
+    for edit in edit_events(newest.json("changelog.json")):
         at = iso(edit["ts_ms"])
         if edit["source"] == "changelog":
             # Google leaves the session out of some entries, so a missing one isn't a new
@@ -233,8 +267,7 @@ def changelog_history(fetch: Fetch) -> tuple[list[Version], list[Event]]:
         events.append(
             Event(
                 "suggestion",
-                fetch.fetched_at,
-                raw,
+                *first_seen(found["at"]),
                 at=found["at"],
                 actor=actor,
                 native_id=native_id,
@@ -242,7 +275,7 @@ def changelog_history(fetch: Fetch) -> tuple[list[Version], list[Event]]:
                 kind=found["kind"],
             )
         )
-    return versions, events
+    return versions, events, len(state.warnings)
 
 
 def revision_versions(fetch: Fetch, revisions: dict[str, dict]) -> list[Version]:
@@ -293,6 +326,9 @@ class Reading:
     versions: list[Version]
     events: list[Event]
     history: str  # "changelog", "revisions" or "snapshots"
+    # Edits the replay couldn't place exactly (an index out of range and so on). More than
+    # none means the changelog's format may have changed: check the versions by eye.
+    replay_warnings: int = 0
 
 
 def read(folder: Path, fetches: list[Fetch]) -> Reading | None:
@@ -301,13 +337,13 @@ def read(folder: Path, fetches: list[Fetch]) -> Reading | None:
     events = [event for fetch in fetches for event in comment_events(fetch)]
     revisions = {}
     for fetch in fetches:
-        revisions |= {str(r.get("id")): r for r in fetch.json("revisions.json") or []}
+        revisions |= {str(r.get("id")): r for _, r in fetch.pages("revisions")}
 
     # The changelog always holds the whole history, so the newest one has everything.
     with_changelog = [f for f in fetches if "changelog.json" in f.files]
-    covered_to = None
+    covered_to, warnings = None, 0
     if with_changelog:
-        native, suggestions = changelog_history(with_changelog[-1])
+        native, suggestions, warnings = changelog_history(with_changelog)
         # The changelog covers the doc up to when it was fetched, so an export from then or
         # before adds nothing. (Drive's text export also lays out lists and paragraphs
         # differently from the replay, so the two texts never match exactly.)
@@ -335,7 +371,7 @@ def read(folder: Path, fetches: list[Fetch]) -> Reading | None:
         created_at=meta.get("createdTime"),
         tags={"history": history},
     )
-    return Reading(document, versions, events, history)
+    return Reading(document, versions, events, history, warnings)
 
 
 def build(data: Path) -> Counter:
@@ -343,11 +379,14 @@ def build(data: Path) -> Counter:
     counts: Counter = Counter()
     folders = sorted(p for p in (documents_dir(data) / SOURCE).glob("*") if p.is_dir())
     for folder in folders:
-        fetches, unreadable = read_fetches(folder)
+        fetches, unreadable, unfinished = read_fetches(folder)
+        counts["unfinished fetches"] += unfinished
         if unreadable:
             # Building from only part of raw could drop good versions, so a doc with an
             # unreadable fetch is left as it was.
             counts.update(unreadable=unreadable, skipped=1)
+            continue
+        if not fetches:
             continue
         try:
             reading = read(folder, fetches)
@@ -355,7 +394,18 @@ def build(data: Path) -> Counter:
                 counts["empty"] += 1
                 continue
             written = write_document(data, reading.document, reading.versions, reading.events)
-        except (DocumentError, OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError) as e:
+        except (
+            DocumentError,
+            GoogleDocError,
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            AttributeError,
+            ValueError,
+        ) as e:
+            # A raw file in a shape we didn't expect fails this doc only, not the build.
             counts["failed"] += 1
             counts[f"failed: {type(e).__name__}"] += 1
             continue
@@ -367,4 +417,5 @@ def build(data: Path) -> Counter:
             written=written["written"],
         )
         counts[f"history: {reading.history}"] += 1
+        counts["replay warnings"] += reading.replay_warnings
     return counts
