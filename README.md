@@ -22,7 +22,7 @@ To configure it, copy `config.example.toml` to `config.toml` in a `.diffdata` fo
 
 ## Export a Slack channel (DIS-1)
 
-For the pilot there's no Slack app: Claude Code reads Slack for you through its Slack connector, as you. Nothing writes to Slack. This repo's `.claude/settings.json` removes every Slack write tool from Claude while it works in this folder. During `/slack-export`, a hook also stops any read of a channel or canvas that the export run doesn't name, before it runs. The run takes its channels and canvases from `config.toml`. If that check can't run, the read is stopped too. The check stays on for the rest of that Claude session, so start a new session for each export, and for any other Slack work afterwards. This needs Claude Code 2.1.295 or later (`claude --version`).
+For the pilot there's no Slack app: Claude Code reads Slack for you through its Slack connector, as you. Nothing writes to Slack. This repo's `.claude/settings.json` removes every Slack write tool from Claude while it works in this folder. During `/slack-export`, a hook also stops any read of a channel or canvas that the export run doesn't name, and any search other than a files search of one of the run's channels, before it runs. The run takes its channels and canvases from `config.toml`. If that check can't run, the read is stopped too. The check stays on for the rest of that Claude session, so start a new session for each export, and for any other Slack work afterwards. This needs Claude Code 2.1.295 or later (`claude --version`).
 
 1. **Set up `config.toml`** in `~/.diffdata/`. List the channels to export under `slack_channels`; listing a channel is your opt-in. Set `slack_workspace_url` to your workspace's address. Keep `data_dir` outside the repo and outside OneDrive, Dropbox, Google Drive and iCloud: `diffdata` refuses those.
 2. **Try it.** Open Claude Code in the repo folder and type `/slack-export test`. It reads only the 5 newest messages of the first channel.
@@ -38,15 +38,23 @@ Not yet: each run reads every channel from the start. Reading only what's new, i
 
 ## Collect Slack canvases (COL-2)
 
-`/slack-export` also reads the canvases you list, after the channels.
+`/slack-export` also reads the canvases you list, after the channels, but only the ones that may have changed.
 
 1. **List them** under `slack_canvases` in `config.toml`, by ID (`F...`) or by link (`https://<workspace>.slack.com/docs/T.../F...`). Listing a canvas is your opt-in: no other canvas is read. The same canvas listed twice is refused, since it's usually a paste of the wrong line.
-2. **Run `/slack-export`** as above. `/slack-export test` reads only the first canvas. The build then writes, in your data folder:
+2. **Run `/slack-export`** as above. `/slack-export test` reads at most one canvas. The build then writes, in your data folder:
    - `documents/current/slack-canvas_<title>_<id>.md`: each canvas's latest text, with mentions shown as names
    - `documents/slack-canvas/<id>/versions/`: one file per distinct text, so a new one appears only when the canvas changed
    - `documents/slack-canvas/<id>/raw/`: every read, exactly as received
 
-Links in a canvas (Docs, images, other canvases) stay links: nothing fetches them. Canvas comments aren't collected yet (COL-3). Not yet: skipping canvases that haven't changed. For now, each run reads every listed canvas in full.
+**Which canvases are read.** A read puts the whole canvas in Claude's context, so unchanged canvases are skipped. Before the reads, Claude searches each channel's files, which shows each canvas's size. The hook keeps only the sizes of the canvases you listed, and drops every other file before anything is saved. Then `diffdata discover slack canvases-due` says which canvases to read. A canvas is read if:
+- it has never been read, or it's missing from the search
+- its size differs from its size at its last read
+- Slackbot has posted "made updates to a canvas tab" about it since its last read
+- its last read is older than `canvas_refresh_days` in `config.toml` (7 if you leave it out), because sizes are rounded to 0.1 KB and miss small edits
+
+The first run after updating reads every canvas once, since their earlier reads have no size on record.
+
+Links in a canvas (Docs, images, other canvases) stay links: nothing fetches them. Canvas comments aren't collected yet (COL-3).
 
 ## Two hard rules
 

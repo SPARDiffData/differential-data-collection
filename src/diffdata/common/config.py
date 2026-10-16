@@ -17,6 +17,8 @@ CONFIG_NAME = "config.toml"
 # A canvas is listed by its ID, or by its link: https://<workspace>.slack.com/docs/<team>/<ID>
 CANVAS_ID = re.compile(r"F[A-Z0-9]{6,}")
 CANVAS_LINK = re.compile(r"https://[a-z0-9-]+\.slack\.com/docs/T[A-Z0-9]+/(F[A-Z0-9]{6,})/?")
+# A canvas is read again at least this often, even if nothing says it changed (COL-8).
+CANVAS_REFRESH_DAYS = 7
 
 
 class ConfigError(Exception):
@@ -32,6 +34,8 @@ class Config:
     slack_workspace_url: str = ""
     # CON-1: listing a canvas is the opt-in to collecting it (COL-2). Canvas IDs.
     slack_canvases: tuple[str, ...] = ()
+    # COL-8: read a canvas again after this many days, even if nothing says it changed.
+    canvas_refresh_days: int = CANVAS_REFRESH_DAYS
     # Which config.toml these settings came from.
     path: Path | None = None
 
@@ -115,11 +119,18 @@ def load_config(path: str | Path | None = None) -> Config:
                 "are the same canvas. Remove one, or replace it with the canvas you meant."
             )
         canvas_ids.append(found)
+    refresh_days = sources.get("canvas_refresh_days", CANVAS_REFRESH_DAYS)
+    # bool is a kind of int in Python, so true would otherwise pass as 1.
+    if isinstance(refresh_days, bool) or not isinstance(refresh_days, int) or refresh_days < 1:
+        raise ConfigError(
+            f"canvas_refresh_days in {path} must be a whole number of days, 1 or more."
+        )
 
     return Config(
         data_dir=data_dir(configured),
         slack_channels=tuple(channel_name(c) for c in channels),
         slack_workspace_url=workspace.rstrip("/"),
         slack_canvases=tuple(canvas_ids),
+        canvas_refresh_days=refresh_days,
         path=path,
     )

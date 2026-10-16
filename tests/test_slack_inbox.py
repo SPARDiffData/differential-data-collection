@@ -107,7 +107,7 @@ def test_save_keeps_the_result_unchanged_and_drops_session_details(config):
     "other",
     [
         payload(channel="C00000002"),  # a channel this run didn't name
-        payload(tool="slack_search_public_and_private"),  # not a tool we save
+        payload(tool="slack_read_file"),  # not a tool we save; a search is checked instead
     ],
 )
 def test_save_ignores_other_channels_and_tools(config, other):
@@ -346,6 +346,63 @@ def test_cli_check_passes_the_hook_payload_to_the_check(monkeypatch):
     monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(b'{"fake": 1}')))
     monkeypatch.setattr(slack_inbox, "check_from_hook", lambda p: 2 if p == b'{"fake": 1}' else 0)
     assert cli.main(["discover", "slack", "check"]) == 2
+
+
+SEARCH_TOOL = "slack_search_public_and_private"
+FILES_SEARCH = {
+    "content_types": "files",
+    "filters": "in:<#C00000001>",
+    "channel_types": "public_channel,private_channel",
+}
+# Searches the run doesn't allow, as changes to FILES_SEARCH (None leaves the field out).
+BAD_SEARCHES = [
+    {"content_types": "messages"},  # #14 adds message searches
+    {"content_types": "files,messages"},
+    {"content_types": None},  # the tool's default isn't documented
+    {"channel_types": None},  # the tool's default searches DMs too
+    {"channel_types": "public_channel,private_channel,im"},
+    {"filters": None},  # every file the person can see
+    {"filters": "in:<#C00000002>"},  # a channel the run doesn't name
+    {"filters": "in:<#C00000001> in:<#C00000002>"},
+    {"filters": "in:<#C00000001> from:<@U00000001>"},  # anything more than the channel
+    {"filters": "in:@alex"},
+]
+
+
+def search_input(change: dict) -> dict:
+    return {k: v for k, v in (FILES_SEARCH | change).items() if v is not None}
+
+
+def test_check_lets_a_files_search_of_a_checked_channel_go_ahead(run_open, slack_hook):
+    assert save(run_open, payload(), now=T0) == 0  # the channel read passes its check
+    search = slack_hook(SEARCH_TOOL, FILES_SEARCH, None)
+    assert slack_inbox.check(run_open, search, now=T0) == 0
+
+
+@pytest.mark.parametrize("change", BAD_SEARCHES)
+def test_check_stops_a_search_the_run_doesnt_allow(run_open, slack_hook, capsys, change):
+    assert save(run_open, payload(), now=T0) == 0
+    search = slack_hook(SEARCH_TOOL, search_input(change), None)
+    assert slack_inbox.check(run_open, search, now=T0) == 2
+    err = capsys.readouterr().err
+    assert "so it was stopped before it ran (CON-1). Stop the export." in err
+
+
+def test_check_stops_a_search_before_its_channel_is_read(run_open, slack_hook, capsys):
+    assert slack_inbox.check(run_open, slack_hook(SEARCH_TOOL, FILES_SEARCH, None), now=T0) == 2
+    assert "a channel that hasn't been read yet" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("change", [*BAD_SEARCHES, "unread channel"])
+def test_save_refuses_a_search_the_run_doesnt_allow(run_open, slack_hook, capsys, change):
+    # The check after the search repeats the check before it, so nothing is saved either way.
+    if change != "unread channel":
+        assert save(run_open, payload(), now=T0) == 0
+    tool_input = FILES_SEARCH if change == "unread channel" else search_input(change)
+    response = [{"type": "text", "text": json.dumps({"results": "## Files (0 results)\n"})}]
+    assert save(run_open, slack_hook(SEARCH_TOOL, tool_input, response), now=T0) == 2
+    assert "nothing from it was saved (CON-1). Stop the export." in capsys.readouterr().err
+    assert not (run_open.data_dir / "slack" / "canvas-sizes").exists()
 
 
 @pytest.mark.parametrize("damage", ["not JSON", '{"run_id": "20261001T140000Z"}', "[]"])

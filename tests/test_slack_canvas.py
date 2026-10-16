@@ -1,5 +1,6 @@
-"""Slack canvases (COL-2): the hook's canvas checks, and building versions and the clean copy
-from saved reads. Synthetic fixtures only."""
+"""Slack canvases (COL-2): the hook's canvas checks, building versions and the clean copy
+from saved reads, and the change check that says which canvases to read (COL-8). Synthetic
+fixtures only."""
 
 import json
 from dataclasses import replace
@@ -8,10 +9,12 @@ from pathlib import Path
 
 import pytest
 
+from diffdata import cli
+from diffdata.collect import slack_canvas
 from diffdata.collect.slack_canvas import show_names, title
 from diffdata.common.config import Config
-from diffdata.discover.slack_export import build
-from diffdata.discover.slack_inbox import begin, open_run, run_path, save
+from diffdata.discover.slack_export import build, canvases_due
+from diffdata.discover.slack_inbox import SlackExportError, begin, open_run, run_path, save
 
 CANVAS = "F00000003"
 CHANNEL = "C00000001"
@@ -89,8 +92,9 @@ def export_run(config, slack_response, slack_hook):
 def test_begin_names_the_opted_in_canvases(config):
     report = begin(config, ["example-channel=C00000001"], now=T0)
     assert open_run(config.data_dir).canvases == [CANVAS]
+    assert open_run(config.data_dir).due is None
     assert "1 channel(s) and 1 canvas(es)" in report
-    assert report.endswith(f"Canvases to read: {CANVAS}")
+    assert CANVAS not in report  # canvases-due says which ones to read
 
 
 def test_a_run_file_from_before_canvases_still_loads(config):
@@ -307,3 +311,310 @@ def test_names_replace_only_mentions():
     assert show_names(text, people, channels) == (
         "@Alex Example #example-channel #named @U00000009 <br> <b>x</b>"
     )
+
+
+# The change check (COL-8): a files search's sizes, then canvases-due
+
+SEARCH_TOOL = "slack_search_public_and_private"
+SEARCH_INPUT = {
+    "content_types": "files",
+    "filters": f"in:<#{CHANNEL}>",
+    "channel_types": "public_channel,private_channel",
+    "natural_language_query": "",
+    "response_format": "detailed",
+    "include_context": False,
+    "limit": 20,
+}
+LISTED = (CANVAS, "F00000004")
+UNLISTED = ("F00000008", "Unlisted Planning Example")  # a canvas in the search, not listed
+
+
+def fixture_results() -> str:
+    return json.loads((FIXTURES / "search_files.json").read_text(encoding="utf-8"))["results"]
+
+
+def search_fixture(results=None) -> list[dict]:
+    """The hand-written files search, in the connector's wrapping, optionally with other
+    results text."""
+    inner = json.loads((FIXTURES / "search_files.json").read_text(encoding="utf-8"))
+    if results is not None:
+        inner["results"] = results
+    return [{"type": "text", "text": json.dumps(inner)}]
+
+
+def files_search(sizes: dict[str, str]) -> list[dict]:
+    """A files search showing these canvases and sizes, in the fixture's shape."""
+    rows = "".join(
+        f"### Result {i} of {len(sizes)}\nTitle: Canvas {i} \nFile type: canvas\n"
+        f"Size: {size}\nAuthor: Alex Example <alex@example.com> (U00000001)\n"
+        f"Created: 2026-09-01 09:00:00 CDT\nFile ID: {canvas}\n"
+        f"Permalink: [link](https://example.slack.com/docs/T00000001/{canvas})\n\n---\n\n"
+        "Content: \n\n\n\n---\n\n"
+        for i, (canvas, size) in enumerate(sizes.items(), start=1)
+    )
+    inner = {
+        "results": f"# Search Results for: \n\n## Files ({len(sizes)} results)\n{rows}",
+        "pagination_info": "End of results - No more pages available.\n",
+    }
+    return [{"type": "text", "text": json.dumps(inner)}]
+
+
+def read_the_channel(config, slack_hook, slack_response, when=T0) -> None:
+    """A channel read, which the files search needs first."""
+    channel = slack_hook(
+        "slack_read_channel",
+        {"channel_id": CHANNEL},
+        slack_response("read_channel.txt"),
+        f"toolu_ch{when:%d%H%M}",
+    )
+    assert save(config, channel, now=when) == 0
+
+
+def size_files(config) -> list[Path]:
+    return sorted((config.data_dir / "slack" / "canvas-sizes").rglob("*.json"))
+
+
+def test_a_files_search_keeps_only_the_listed_canvases_sizes(
+    config, slack_hook, slack_response, capsys
+):
+    config = replace(config, slack_canvases=LISTED)
+    begin(config, ["example-channel=C00000001"], now=T0)
+    read_the_channel(config, slack_hook, slack_response)
+    capsys.readouterr()
+    search = slack_hook(SEARCH_TOOL, SEARCH_INPUT, search_fixture(), "toolu_search01")
+    assert save(config, search, now=T0 + timedelta(minutes=1)) == 0
+    run_id = open_run(config.data_dir).run_id
+    [path] = size_files(config)
+    assert path.relative_to(config.data_dir).as_posix() == (
+        f"slack/canvas-sizes/{run_id}/search_files-toolu_search01.json"
+    )
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "saved_at": "2026-10-04T12:01:00Z",
+        "run_id": run_id,
+        "channel_id": CHANNEL,
+        "sizes": {CANVAS: "12.3 KB", "F00000004": "4.5 KB"},
+    }
+    assert hook_note(capsys) == (
+        "diffdata saved this result: 4 file(s), 2 of them listed canvases. "
+        "Next page: call again with cursor `RkFLRUZJTEVTMDE=`."
+    )
+    # CON-1: a file that isn't listed never reaches disk, in any file.
+    for saved in config.data_dir.rglob("*"):
+        if saved.is_file():
+            text = saved.read_text(encoding="utf-8")
+            assert not any(private in text for private in UNLISTED)
+
+
+def test_a_files_search_reads_only_what_comes_before_each_files_content(
+    config, slack_hook, slack_response
+):
+    # A file's content could hold anything, such as lines that look like another file's size.
+    results = fixture_results().replace(
+        "Content: \ndiagram.png", "Content: \nSize: 99.9 KB\nFile ID: F00000003"
+    )
+    begin(config, ["example-channel=C00000001"], now=T0)
+    read_the_channel(config, slack_hook, slack_response)
+    search = slack_hook(SEARCH_TOOL, SEARCH_INPUT, search_fixture(results))
+    assert save(config, search, now=T0) == 0
+    [path] = size_files(config)
+    assert json.loads(path.read_text(encoding="utf-8"))["sizes"] == {CANVAS: "12.3 KB"}
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        fixture_results().replace("Size: 4.5 KB\n", ""),  # a file with no size
+        fixture_results().replace("File ID: F00000009\n", ""),  # a file with no ID
+        fixture_results().replace("(4 results)", "(5 results)"),  # a file diffdata didn't find
+    ],
+)
+def test_a_files_search_diffdata_cant_read_is_refused(
+    config, slack_hook, slack_response, capsys, broken
+):
+    begin(config, ["example-channel=C00000001"], now=T0)
+    read_the_channel(config, slack_hook, slack_response)
+    search = slack_hook(SEARCH_TOOL, SEARCH_INPUT, search_fixture(broken))
+    assert save(config, search, now=T0) == 2
+    assert "Stop the export" in capsys.readouterr().err
+    assert size_files(config) == []
+
+
+@pytest.mark.parametrize("response", ["not JSON", [{"type": "text", "text": '{"other": 1}'}]])
+def test_a_files_search_without_results_is_refused(
+    config, slack_hook, slack_response, capsys, response
+):
+    begin(config, ["example-channel=C00000001"], now=T0)
+    read_the_channel(config, slack_hook, slack_response)
+    assert save(config, slack_hook(SEARCH_TOOL, SEARCH_INPUT, response), now=T0) == 2
+    assert "Stop the export" in capsys.readouterr().err
+    assert size_files(config) == []
+
+
+def test_the_build_doesnt_read_canvas_sizes_as_messages(config, slack_hook, slack_response):
+    begin(config, ["example-channel=C00000001"], now=T0)
+    read_the_channel(config, slack_hook, slack_response)
+    assert save(config, slack_hook(SEARCH_TOOL, SEARCH_INPUT, search_fixture()), now=T0) == 0
+    assert "1 channel(s): 1 result file(s)" in build(config)
+
+
+LAST = T0 + timedelta(minutes=3)
+
+
+@pytest.mark.parametrize(
+    "last, size_then, size_now, notice, expected",
+    [
+        (None, None, "1.0 KB", None, [slack_canvas.NEVER_READ]),
+        (LAST, "1.0 KB", "1.0 KB", None, []),
+        (LAST, "1.0 KB", "1.1 KB", None, [slack_canvas.SIZE_CHANGED]),
+        (LAST, None, "1.0 KB", None, [slack_canvas.NO_OLD_SIZE]),
+        (LAST, "1.0 KB", None, None, [slack_canvas.MISSING]),
+        (LAST, "1.0 KB", "1.0 KB", LAST + timedelta(hours=1), [slack_canvas.NOTICE]),
+        (LAST, "1.0 KB", "1.0 KB", LAST - timedelta(hours=1), []),
+    ],
+)
+def test_the_reasons_to_read_a_canvas(last, size_then, size_now, notice, expected):
+    now = T0 + timedelta(days=1)
+    assert slack_canvas.reasons(last, size_then, size_now, notice, 7, now) == expected
+
+
+def test_a_canvas_is_read_again_after_refresh_days():
+    week = LAST + timedelta(days=7)
+    same = (LAST, "1.0 KB", "1.0 KB", None, 7)
+    assert slack_canvas.reasons(*same, week) == [slack_canvas.REFRESH]
+    assert slack_canvas.reasons(*same, week - timedelta(seconds=1)) == []
+
+
+def test_tab_notices_come_from_slackbot_only_and_the_newest_wins():
+    notice = "Alex Example made updates to a canvas tab: F00000003"
+    messages = [
+        {"user_id": "USLACKBOT", "text": notice, "ts": "1790955177.000300"},
+        {"user_id": "USLACKBOT", "text": notice, "ts": "1790900000.000100"},  # older
+        {"user_id": "U00000001", "text": notice.replace("03", "04"), "ts": "1790999999.000100"},
+        {"user_id": "USLACKBOT", "text": "Reminder: stand-up", "ts": "1790999999.000200"},
+    ]
+    assert slack_canvas.tab_notices(messages) == {
+        "F00000003": datetime.fromtimestamp(1790955177, UTC)
+    }
+
+
+@pytest.fixture
+def due_run(config, slack_response, slack_hook):
+    """One /slack-export run with the change check: the channel, a files search showing
+    `sizes` (None: no search), canvases-due, a read of each canvas it lists (or of `read`),
+    then the build. Returns canvases-due's report and the build's."""
+
+    def run(when, sizes, read=None, config=config):
+        begin(config, ["example-channel=C00000001"], now=when)
+        read_the_channel(config, slack_hook, slack_response, when)
+        if sizes is not None:
+            search = slack_hook(SEARCH_TOOL, SEARCH_INPUT, files_search(sizes), "toolu_search")
+            assert save(config, search, now=when + timedelta(minutes=1)) == 0
+        due = canvases_due(config, now=when + timedelta(minutes=2))
+        canvases = open_run(config.data_dir).due if read is None else read
+        for i, canvas in enumerate(canvases):
+            text = canvas_read().replace(CANVAS, canvas)
+            payload = canvas_payload(slack_hook, text, canvas=canvas, call=f"toolu_r{i}")
+            assert save(config, payload, now=when + timedelta(minutes=3)) == 0
+        return due, build(config)
+
+    return run
+
+
+def test_an_unchanged_canvas_is_skipped(due_run):
+    due, built = due_run(T0, {CANVAS: "12.3 KB"})
+    assert due == (
+        "1 of 1 listed canvas(es) to read.\n"
+        "Why (a canvas can have more than one reason): 1 never read.\n"
+        f"Canvases to read: {CANVAS}"
+    )
+    assert "This run saved reads for 1 of 1 due canvas(es), 1 listed." in built
+    due, built = due_run(T0 + timedelta(hours=1), {CANVAS: "12.3 KB"})
+    assert due == "0 of 1 listed canvas(es) to read.\nNo canvases to read."
+    assert "This run saved reads for 0 of 0 due canvas(es), 1 listed." in built
+
+
+def test_canvases_due_keeps_its_list_in_the_run(config, due_run):
+    due_run(T0, {CANVAS: "12.3 KB"})
+    begin(config, ["example-channel=C00000001"], now=T0 + timedelta(hours=1))
+    canvases_due(config, now=T0 + timedelta(hours=1))  # no search this time
+    assert open_run(config.data_dir).due == [CANVAS]
+
+
+def test_a_canvas_whose_size_changed_is_read(due_run):
+    due_run(T0, {CANVAS: "12.3 KB"})
+    due, _ = due_run(T0 + timedelta(hours=1), {CANVAS: "12.4 KB"})
+    assert "1 size changed." in due and f"Canvases to read: {CANVAS}" in due
+
+
+def test_a_canvas_whose_read_failed_is_tried_again(due_run):
+    # The size is compared with the size at the last read, not the last size seen.
+    due_run(T0, {CANVAS: "12.3 KB"})
+    due_run(T0 + timedelta(hours=1), {CANVAS: "12.4 KB"}, read=())  # the read didn't happen
+    due, _ = due_run(T0 + timedelta(hours=2), {CANVAS: "12.4 KB"})
+    assert "1 size changed." in due and f"Canvases to read: {CANVAS}" in due
+
+
+@pytest.mark.parametrize("sizes", [{}, {"F00000004": "1.0 KB"}, None])  # None: no search
+def test_a_canvas_missing_from_the_search_is_read(due_run, sizes):
+    due_run(T0, {CANVAS: "12.3 KB"})
+    due, _ = due_run(T0 + timedelta(hours=1), sizes)
+    assert "1 not in this run's files search." in due and f"Canvases to read: {CANVAS}" in due
+
+
+def test_a_canvas_read_without_a_size_on_record_is_read_once_more(due_run):
+    # Reads saved before the change check have no size, so the first run after it reads them.
+    due_run(T0, None)
+    due, _ = due_run(T0 + timedelta(hours=1), {CANVAS: "12.3 KB"})
+    assert "1 no size from its last read." in due
+    due, _ = due_run(T0 + timedelta(hours=2), {CANVAS: "12.3 KB"})
+    assert "No canvases to read." in due
+
+
+def test_a_canvas_tab_notice_since_the_last_read_means_a_read(config, due_run):
+    # read_channel.txt has Slackbot's notice for F00000002 at 2026-10-02 15:32:57 UTC.
+    config = replace(config, slack_canvases=("F00000002",))
+    before = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+    due_run(before, {"F00000002": "1.0 KB"}, config=config)
+    due, _ = due_run(before + timedelta(days=2), {"F00000002": "1.0 KB"}, config=config)
+    assert "1 canvas-tab notice since its last read." in due
+    due, _ = due_run(before + timedelta(days=2, hours=1), {"F00000002": "1.0 KB"}, config=config)
+    assert "No canvases to read." in due
+
+
+def test_a_canvas_not_read_for_refresh_days_is_read(config, due_run):
+    config = replace(config, canvas_refresh_days=3)
+    due_run(T0, {CANVAS: "12.3 KB"}, config=config)
+    due, _ = due_run(T0 + timedelta(days=2), {CANVAS: "12.3 KB"}, config=config)
+    assert "No canvases to read." in due
+    due, _ = due_run(T0 + timedelta(days=3, hours=1), {CANVAS: "12.3 KB"}, config=config)
+    assert "1 last read too long ago." in due
+
+
+def test_canvases_due_names_only_ids_and_counts(due_run):
+    due, _ = due_run(T0, {CANVAS: "12.3 KB"})
+    for private in ("Example Project Plan", "Canvas 1", "12.3", "Alex"):
+        assert private not in due
+
+
+def test_canvases_due_needs_an_open_run(config):
+    with pytest.raises(SlackExportError, match="No export run is open"):
+        canvases_due(config, now=T0)
+    begin(config, ["example-channel=C00000001"], now=T0)
+    with pytest.raises(SlackExportError, match="No export run is open"):
+        canvases_due(config, now=T0 + timedelta(minutes=61))  # expired
+
+
+def test_cli_canvases_due(tmp_path, monkeypatch, capsys):
+    data = (tmp_path / "data").as_posix()
+    (tmp_path / "config.toml").write_text(
+        f'[sources]\nslack_channels = ["example-channel"]\nslack_canvases = ["{CANVAS}"]\n'
+        'slack_workspace_url = "https://example.slack.com"\n'
+        f'[local]\ndata_dir = "{data}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["discover", "slack", "canvases-due"]) == 1
+    assert "No export run is open" in capsys.readouterr().err
+    assert cli.main(["discover", "slack", "begin", "example-channel=C00000001"]) == 0
+    assert cli.main(["discover", "slack", "canvases-due"]) == 0
+    assert capsys.readouterr().out.endswith(f"Canvases to read: {CANVAS}\n")

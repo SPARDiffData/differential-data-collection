@@ -10,9 +10,12 @@ A result too big for Claude's context reaches the hook only as a notice naming t
 Claude Code saved it in, so `save` reads that file, and only from the session's own
 tool-results folder. After each save, the hook tells Claude what it needs to carry on.
 Canvas reads go to collect/slack_canvas.py (COL-2), and only for the canvases listed in
-config.toml, which every run names. A second hook runs `check()` before each read, so a
-read the run doesn't name is stopped before anything is fetched. Both hooks set onFailure:
-block, so a hook that can't start or times out stops the read too.
+config.toml, which every run names. So does a files search, which says which canvases
+changed: the search must ask for files, leave out DMs, and name one channel the run
+names, after that channel's read has passed its check. A second hook runs `check()`
+before each read or search, so one the run doesn't name is stopped before anything is
+fetched. Both hooks set onFailure: block, so a hook that can't start or times out stops
+the read too.
 
 Layout under the data folder:
   slack/run.json                                   the open run, if any
@@ -41,7 +44,7 @@ from diffdata.discover.slack_parse import (
 # A run that crashed or was forgotten must not leave the hook saving, so runs expire.
 RUN_MINUTES = 60
 # The connector tools whose results go to the inbox. The command's hook matches these two,
-# and canvas reads, which go to the canvas's own folder.
+# and canvas reads and the files search, which go to the canvas code.
 SAVED_TOOLS = ("slack_read_channel", "slack_read_thread")
 # When a result is too big for Claude's context, Claude Code saves it to a file in the
 # session's tool-results folder, and the hook gets only a notice naming that file.
@@ -50,12 +53,19 @@ OVERFLOW = re.compile(r"saved to:?\s+(?P<path>.+?\.(?:txt|json))\b", re.IGNORECA
 # consent first (CON-5), so they're refused.
 CHANNEL_ID = re.compile(r"[CG][A-Z0-9]{6,}")
 # The reads `check()` lets through only when the open run names what they read, and the
-# input field that names it. The command's PreToolUse hook matches the same three.
+# input field that names it. The command's PreToolUse hook matches these and the search.
 CHECKED_READS = {
     "slack_read_channel": "channel_id",
     "slack_read_thread": "channel_id",
     "slack_read_canvas": "canvas_id",
 }
+# The search tool. It searches DMs too unless told not to, and every file or message the
+# person can see unless its filter names a channel.
+SEARCH_TOOL = "slack_search_public_and_private"
+SEARCH_CHANNEL_TYPES = {"public_channel", "private_channel"}
+SEARCH_FILTER = re.compile(r"in:<#(?P<id>[CG][A-Z0-9]{6,})>")
+# What a search may look for. #14 adds messages.
+SEARCH_KINDS = ("files",)
 # A channel read starts with "Channel: #name (ID)". The hook checks it against the run, so a
 # wrong ID chosen by Claude can't bring in a channel that wasn't opted in (CON-1).
 CHANNEL_HEADER = re.compile(r"Channel: #(?P<name>[^\s()]+) \((?P<id>[A-Z0-9]+)\)")
@@ -77,6 +87,8 @@ class Run:
     verified: list[str] = field(default_factory=list)
     # The canvases listed in config.toml when the run opened. Only these reads are saved.
     canvases: list[str] = field(default_factory=list)
+    # The canvases `canvases-due` said to read, or None if it hasn't run.
+    due: list[str] | None = None
 
 
 def utc_iso(when: datetime) -> str:
@@ -174,9 +186,35 @@ def begin(config: Config, pairs: list[str], now: datetime | None = None) -> str:
         f"Export run {run.run_id} is open for {len(channels)} channel(s) and "
         f"{len(run.canvases)} canvas(es). It expires at {run.expires_at[11:16]} UTC."
     )
-    if run.canvases:
-        notes.append("Canvases to read: " + ", ".join(run.canvases))
     return "\n".join(notes)
+
+
+def channel_checked(run: Run, channel_id: str) -> bool:
+    """Whether this channel's read has shown its opted-in name and ID in this run."""
+    return channel_id in run.verified
+
+
+def search_channel(run: Run, tool_input) -> str:
+    """The channel a search is for, if the run allows it: it asks for files, leaves out DMs
+    and group DMs, and its filter is exactly one channel the run names, whose read has
+    passed its check. Otherwise raises SlackExportError, saying what's wrong (CON-1)."""
+    if not isinstance(tool_input, dict) or tool_input.get("content_types") not in SEARCH_KINDS:
+        raise SlackExportError("This Slack search doesn't ask for files only")
+    channel_types = tool_input.get("channel_types")
+    if (
+        not isinstance(channel_types, str)
+        or {kind.strip() for kind in channel_types.split(",")} != SEARCH_CHANNEL_TYPES
+    ):
+        raise SlackExportError("This Slack search doesn't leave out DMs and group DMs")
+    filters = tool_input.get("filters")
+    scope = SEARCH_FILTER.fullmatch(filters.strip()) if isinstance(filters, str) else None
+    if scope is None or scope["id"] not in run.channels:
+        raise SlackExportError(
+            "This Slack search isn't limited to exactly one channel the export run names"
+        )
+    if not channel_checked(run, scope["id"]):
+        raise SlackExportError("This Slack search is for a channel that hasn't been read yet")
+    return scope["id"]
 
 
 def abort(config: Config, now: datetime | None = None) -> str:
@@ -189,7 +227,7 @@ def abort(config: Config, now: datetime | None = None) -> str:
 
 def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
     """Save one hook payload: a channel or thread read to the inbox, a canvas read to its
-    document folder. Returns the hook's exit code.
+    document folder, and a files search's canvas sizes. Returns the hook's exit code.
 
     0 means saved, or nothing to save. 2 means a run is open but this result couldn't be
     saved; Claude Code shows our stderr message to Claude, so the export can stop.
@@ -207,11 +245,18 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
     try:
         hook = json.loads(payload.decode("utf-8"))
         tool = hook["tool_name"].rsplit("__", 1)[-1]
-        # What was read: a canvas for a canvas read, else a channel.
-        read_id = hook["tool_input"]["canvas_id" if tool == slack_canvas.TOOL else "channel_id"]
+        # What was read: a canvas for a canvas read, else a channel. A search names its
+        # channel in its filter, checked below.
+        if tool != SEARCH_TOOL:
+            read_id = hook["tool_input"]["canvas_id" if tool == slack_canvas.TOOL else "channel_id"]
     except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, AttributeError):
         return fail("The hook passed a Slack result diffdata can't read, so it wasn't saved.")
-    if tool == slack_canvas.TOOL:
+    if tool == SEARCH_TOOL:
+        try:
+            read_id = search_channel(run, hook.get("tool_input"))
+        except SlackExportError as e:
+            return fail(f"{e}, so nothing from it was saved (CON-1). Stop the export.")
+    elif tool == slack_canvas.TOOL:
         if read_id not in run.canvases:
             return fail(
                 "This canvas isn't listed in slack_canvases in config.toml, so it wasn't saved "
@@ -237,6 +282,14 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
     # The call's ID keeps file names unique when Claude reads several things at once.
     call = re.sub(r"[^A-Za-z0-9_-]", "", str(hook.get("tool_use_id", "")))
     call = call or now.strftime("%Y%m%dT%H%M%S%fZ")
+    if tool == SEARCH_TOOL:
+        try:
+            note = slack_canvas.save_search(
+                config.data_dir, run.run_id, read_id, run.canvases, response, call, utc_iso(now)
+            )
+        except slack_canvas.CanvasError as e:
+            return fail(str(e))
+        return tell_claude(note)
     record = {
         "saved_at": utc_iso(now),
         "run_id": run.run_id,
@@ -269,10 +322,10 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
                 f"#{run.channels[channel_id]} in config.toml, so it wasn't saved (CON-1). "
                 "Stop the export."
             )
-        if channel_id not in run.verified:
+        if not channel_checked(run, channel_id):
             run.verified.append(channel_id)
             write_json(run_path(config.data_dir), asdict(run))
-    elif channel_id not in run.verified:
+    elif not channel_checked(run, channel_id):
         return fail(
             f"A thread in #{run.channels[channel_id]} was read before the channel itself, so "
             "diffdata couldn't check the channel and didn't save it. Stop the export."
@@ -289,14 +342,17 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
 
 
 def check(config: Config, payload: bytes, now: datetime | None = None) -> int:
-    """Before a Slack read: let it go ahead only if the open run names the channel or canvas
-    it reads (CON-1). Returns the hook's exit code: 0 lets the read go ahead, and 2 stops it
-    before anything is fetched, with our stderr message shown to Claude. Writes nothing."""
+    """Before a Slack read or search: let it go ahead only if the open run names the channel
+    or canvas it reads, or the search is one `search_channel()` allows (CON-1). Returns the
+    hook's exit code: 0 lets the call go ahead, and 2 stops it before anything is fetched,
+    with our stderr message shown to Claude. Writes nothing."""
     now = now or datetime.now(UTC)
     try:
         hook = json.loads(payload.decode("utf-8"))
-        field_name = CHECKED_READS[hook["tool_name"].rsplit("__", 1)[-1]]
-        read_id = hook["tool_input"][field_name]
+        tool = hook["tool_name"].rsplit("__", 1)[-1]
+        if tool != SEARCH_TOOL:
+            field_name = CHECKED_READS[tool]
+            read_id = hook["tool_input"][field_name]
     except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, AttributeError):
         return fail(
             "Couldn't tell what this Slack read is for, so it was stopped. Stop the export."
@@ -308,6 +364,12 @@ def check(config: Config, payload: bytes, now: datetime | None = None) -> int:
             "export, run /slack-export again. To read Slack for anything else, use a new Claude "
             "session, because this check stays on for the rest of a session that ran /slack-export."
         )
+    if tool == SEARCH_TOOL:
+        try:
+            search_channel(run, hook.get("tool_input"))
+        except SlackExportError as e:
+            return fail(f"{e}, so it was stopped before it ran (CON-1). Stop the export.")
+        return 0
     named = run.canvases if field_name == "canvas_id" else run.channels
     if not isinstance(read_id, str) or read_id not in named:
         what = "canvas" if field_name == "canvas_id" else "channel"

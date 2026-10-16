@@ -124,7 +124,7 @@ def slack_export_hooks():
 
 
 @pytest.mark.parametrize("event, step", [("PreToolUse", "check"), ("PostToolUse", "save")])
-def test_the_hooks_check_and_save_channel_thread_and_canvas_reads_only(event, step):
+def test_the_hooks_check_and_save_channel_thread_and_canvas_reads_and_the_search_only(event, step):
     # CON-1: the read is checked before it runs, and the result is checked before it's saved.
     matcher, hook_step, on_failure = slack_export_hooks()[event]
     assert hook_step == step
@@ -132,12 +132,19 @@ def test_the_hooks_check_and_save_channel_thread_and_canvas_reads_only(event, st
     # Code carries on as if the check had passed (needs Claude Code 2.1.295 or later).
     assert on_failure == "block"
     matched = [t for t in SLACK_READ_TOOLS + SLACK_WRITE_TOOLS if re.fullmatch(matcher, SLACK + t)]
-    assert matched == ["slack_read_canvas", "slack_read_channel", "slack_read_thread"]
+    assert matched == [
+        "slack_read_canvas",
+        "slack_read_channel",
+        "slack_read_thread",
+        "slack_search_public_and_private",
+    ]
 
 
 def test_slack_export_reads_canvases_but_cant_write_them():
     # COL-2: the command pre-approves the canvas read, and the deny list blocks every write.
     assert SLACK + "slack_read_canvas" in frontmatter_line("allowed-tools")
+    # COL-8: and the files search that says which canvases changed.
+    assert SLACK + "slack_search_public_and_private" in frontmatter_line("allowed-tools")
     for tool in ("slack_create_canvas", "slack_update_canvas"):
         assert denied(SLACK + tool)
 
