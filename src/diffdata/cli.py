@@ -24,6 +24,7 @@ STUBS = ("collect", "scrub", "push")
 SLACK_STEPS = {
     "channels": "List the opted-in channels from config.toml, and which file it read.",
     "begin": "Open an export run for channels given as name=ID (run by /slack-export).",
+    "check": "Stop a Slack read the open run doesn't name (run by the /slack-export hook).",
     "save": "Save one Slack result from stdin to the inbox (run by the /slack-export hook).",
     "build": "Build the message store and the markdown view from the inbox, then close the run.",
     "abort": "Close the open export run without building.",
@@ -73,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run_slack_step(args: argparse.Namespace) -> int:
+    if args.step == "check":
+        return slack_inbox.check_from_hook(sys.stdin.buffer.read())
     if args.step == "save":
         return slack_inbox.save_from_hook(sys.stdin.buffer.read())
     try:

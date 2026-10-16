@@ -111,10 +111,35 @@ def test_slack_export_removes_the_file_editing_tools():
     assert {"Write", "Edit", "NotebookEdit"} <= set(frontmatter_line("disallowed-tools"))
 
 
-def test_the_hook_saves_channel_and_thread_reads_only():
-    matcher = re.search(r'matcher: "(.+)"', command_frontmatter()).group(1)
-    saved = [t for t in SLACK_READ_TOOLS + SLACK_WRITE_TOOLS if re.fullmatch(matcher, SLACK + t)]
-    assert saved == ["slack_read_channel", "slack_read_thread"]
+def slack_export_hooks():
+    """Each hook event in /slack-export's frontmatter: its matcher, its diffdata step and
+    what Claude Code does if the hook fails."""
+    found = re.findall(
+        r'^  (\w+):\n    - matcher: "([^"\n]+)"\n(?:.*\n)*?.*"slack", "(\w+)"\]\n'
+        r"(?:\s+onFailure: (\w+)\n)?",
+        command_frontmatter(),
+        re.MULTILINE,
+    )
+    return {event: (matcher, step, on_failure) for event, matcher, step, on_failure in found}
+
+
+@pytest.mark.parametrize("event, step", [("PreToolUse", "check"), ("PostToolUse", "save")])
+def test_the_hooks_check_and_save_channel_thread_and_canvas_reads_only(event, step):
+    # CON-1: the read is checked before it runs, and the result is checked before it's saved.
+    matcher, hook_step, on_failure = slack_export_hooks()[event]
+    assert hook_step == step
+    # A hook that can't start, crashes or times out blocks the read too. Without this, Claude
+    # Code carries on as if the check had passed (needs Claude Code 2.1.295 or later).
+    assert on_failure == "block"
+    matched = [t for t in SLACK_READ_TOOLS + SLACK_WRITE_TOOLS if re.fullmatch(matcher, SLACK + t)]
+    assert matched == ["slack_read_canvas", "slack_read_channel", "slack_read_thread"]
+
+
+def test_slack_export_reads_canvases_but_cant_write_them():
+    # COL-2: the command pre-approves the canvas read, and the deny list blocks every write.
+    assert SLACK + "slack_read_canvas" in frontmatter_line("allowed-tools")
+    for tool in ("slack_create_canvas", "slack_update_canvas"):
+        assert denied(SLACK + tool)
 
 
 def test_review_pr_removes_the_file_editing_tools():

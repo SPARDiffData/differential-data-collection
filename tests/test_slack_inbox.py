@@ -1,6 +1,8 @@
 """The Slack inbox: export runs, and the hook that saves raw results (DIS-1). Synthetic data."""
 
+import io
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -274,3 +276,96 @@ def test_cli_begin_and_abort(tmp_path, monkeypatch, capsys):
     assert cli.main(["discover", "slack", "begin", "other=C00000002"]) == 1
     assert "opt-in" in capsys.readouterr().err
     assert cli.main(["discover", "slack", "abort"]) == 0
+
+
+# The check before each read (CON-1): a read the run doesn't name is stopped before it runs.
+
+CANVAS = "F00000003"
+THREAD_TS = "1790864040.000100"
+
+
+@pytest.fixture
+def run_open(config):
+    config = replace(config, slack_canvases=(CANVAS,))
+    begin(config, ["example-channel=C00000001"], now=T0)
+    return config
+
+
+@pytest.mark.parametrize(
+    "tool, tool_input",
+    [
+        ("slack_read_channel", {"channel_id": CHANNEL}),
+        ("slack_read_thread", {"channel_id": CHANNEL, "message_ts": THREAD_TS}),
+        ("slack_read_canvas", {"canvas_id": CANVAS}),
+    ],
+)
+def test_check_lets_a_read_the_run_names_go_ahead(run_open, slack_hook, tool, tool_input):
+    before = sorted(run_open.data_dir.rglob("*"))
+    assert slack_inbox.check(run_open, slack_hook(tool, tool_input, None), now=T0) == 0
+    assert sorted(run_open.data_dir.rglob("*")) == before  # it writes nothing
+
+
+@pytest.mark.parametrize(
+    "tool, tool_input",
+    [
+        ("slack_read_channel", {"channel_id": "C00000002"}),
+        ("slack_read_thread", {"channel_id": "C00000002", "message_ts": THREAD_TS}),
+        ("slack_read_canvas", {"canvas_id": "F00000004"}),
+        ("slack_read_canvas", {"canvas_id": CHANNEL}),  # a channel the run names isn't a canvas
+        ("slack_read_canvas", {"canvas_id": [CANVAS]}),  # not an ID
+        ("slack_read_canvas", {"channel_id": CHANNEL}),  # names no canvas
+        ("slack_read_file", {"file_id": CANVAS}),  # not a read the check knows
+    ],
+)
+def test_check_stops_a_read_the_run_doesnt_name(run_open, slack_hook, capsys, tool, tool_input):
+    assert slack_inbox.check(run_open, slack_hook(tool, tool_input, None), now=T0) == 2
+    err = capsys.readouterr().err
+    assert "stopped" in err and "Stop the export" in err
+    assert "diffdata: diffdata" not in err
+
+
+def test_check_stops_every_read_when_no_run_is_open(config, slack_hook, capsys):
+    read = slack_hook("slack_read_channel", {"channel_id": CHANNEL}, None)
+    assert slack_inbox.check(config, read, now=T0) == 2
+    begin(config, ["example-channel=C00000001"], now=T0)
+    assert slack_inbox.check(config, read, now=T0 + timedelta(minutes=61)) == 2  # expired
+    err = capsys.readouterr().err
+    assert err.count("No export run is open") == 2
+    assert "new Claude session" in err  # the check stays on after /slack-export
+
+
+def test_check_stops_the_read_without_a_config(slack_hook, tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    read = slack_hook("slack_read_channel", {"channel_id": CHANNEL}, None)
+    assert slack_inbox.check_from_hook(read) == 2
+    err = capsys.readouterr().err
+    assert "Stop the export" in err and "diffdata: diffdata" not in err
+
+
+def test_cli_check_passes_the_hook_payload_to_the_check(monkeypatch):
+    monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(b'{"fake": 1}')))
+    monkeypatch.setattr(slack_inbox, "check_from_hook", lambda p: 2 if p == b'{"fake": 1}' else 0)
+    assert cli.main(["discover", "slack", "check"]) == 2
+
+
+@pytest.mark.parametrize("damage", ["not JSON", '{"run_id": "20261001T140000Z"}', "[]"])
+def test_check_stops_the_read_when_the_run_file_is_damaged(
+    tmp_path, monkeypatch, capsys, slack_hook, damage
+):
+    # Claude Code lets a call run after any hook failure but exit code 2, so a crash must not
+    # let the read through.
+    data = tmp_path / "data"
+    (tmp_path / "config.toml").write_text(
+        '[sources]\nslack_channels = ["example-channel"]\n'
+        'slack_workspace_url = "https://example.slack.com"\n'
+        f'[local]\ndata_dir = "{data.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    run_file = data / "slack" / "run.json"
+    run_file.parent.mkdir(parents=True)
+    run_file.write_text(damage, encoding="utf-8")
+    read = slack_hook("slack_read_channel", {"channel_id": CHANNEL}, None)
+    assert slack_inbox.check_from_hook(read) == 2
+    err = capsys.readouterr().err
+    assert "so it was stopped" in err and "Stop the export" in err

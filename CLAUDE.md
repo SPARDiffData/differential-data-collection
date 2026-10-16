@@ -49,6 +49,7 @@ src/diffdata/
   cli.py            the `diffdata` command; `discover slack` is built, the rest are stubs
   consent/ discover/ collect/ organize/ scrub/ store/    one package per stage
   discover/slack_*.py   Slack export (DIS-1): inbox, parser, store and markdown view
+  collect/slack_canvas.py   Slack canvases (COL-2), read in /slack-export: saved reads become versions and clean copies
   common/           shared pieces; paths.py holds the data folder guards, config.py reads config.toml
   common/documents.py   the shared document format (ORG-2): raw, versions, event log, clean copies
 tests/              pytest; fixtures/ holds synthetic data only
@@ -58,7 +59,7 @@ config.example.toml copy to ~/.diffdata/config.toml, outside the repo, and fill 
 .claude/commands/debrief.md        /debrief, an optional one-page summary of a PR or session
 .claude/commands/plan-issue.md     /plan-issue, an optional planning step before coding
 .claude/commands/review-pr.md      /review-pr, the independent PR review
-.claude/commands/slack-export.md   /slack-export, reads Slack through the connector (DIS-1)
+.claude/commands/slack-export.md   /slack-export, reads Slack channels and canvases through the connector (DIS-1, COL-2)
 .claude/settings.json              denies every Slack and Google write tool in this repo
 .github/            PR template, Issue template, CI workflow
 AGENTS.md           points other AI agents, such as Codex, to these rules

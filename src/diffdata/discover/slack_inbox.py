@@ -9,6 +9,10 @@ thread is saved only after its channel's read has passed that check.
 A result too big for Claude's context reaches the hook only as a notice naming the file
 Claude Code saved it in, so `save` reads that file, and only from the session's own
 tool-results folder. After each save, the hook tells Claude what it needs to carry on.
+Canvas reads go to collect/slack_canvas.py (COL-2), and only for the canvases listed in
+config.toml, which every run names. A second hook runs `check()` before each read, so a
+read the run doesn't name is stopped before anything is fetched. Both hooks set onFailure:
+block, so a hook that can't start or times out stops the read too.
 
 Layout under the data folder:
   slack/run.json                                   the open run, if any
@@ -23,6 +27,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from diffdata.collect import slack_canvas
 from diffdata.common.config import Config, ConfigError, channel_name, load_config
 from diffdata.common.paths import UnsafeDataDirError
 from diffdata.discover.slack_parse import (
@@ -35,7 +40,8 @@ from diffdata.discover.slack_parse import (
 
 # A run that crashed or was forgotten must not leave the hook saving, so runs expire.
 RUN_MINUTES = 60
-# The connector tools whose results we save. The command's hook matches the same two.
+# The connector tools whose results go to the inbox. The command's hook matches these two,
+# and canvas reads, which go to the canvas's own folder.
 SAVED_TOOLS = ("slack_read_channel", "slack_read_thread")
 # When a result is too big for Claude's context, Claude Code saves it to a file in the
 # session's tool-results folder, and the hook gets only a notice naming that file.
@@ -43,6 +49,13 @@ OVERFLOW = re.compile(r"saved to:?\s+(?P<path>.+?\.(?:txt|json))\b", re.IGNORECA
 # Public channels start with C, older private ones with G. DMs (D) need both people's
 # consent first (CON-5), so they're refused.
 CHANNEL_ID = re.compile(r"[CG][A-Z0-9]{6,}")
+# The reads `check()` lets through only when the open run names what they read, and the
+# input field that names it. The command's PreToolUse hook matches the same three.
+CHECKED_READS = {
+    "slack_read_channel": "channel_id",
+    "slack_read_thread": "channel_id",
+    "slack_read_canvas": "canvas_id",
+}
 # A channel read starts with "Channel: #name (ID)". The hook checks it against the run, so a
 # wrong ID chosen by Claude can't bring in a channel that wasn't opted in (CON-1).
 CHANNEL_HEADER = re.compile(r"Channel: #(?P<name>[^\s()]+) \((?P<id>[A-Z0-9]+)\)")
@@ -62,6 +75,8 @@ class Run:
     closed_why: str | None = None
     # Channels whose read showed the opted-in name and ID. Threads are saved only for these.
     verified: list[str] = field(default_factory=list)
+    # The canvases listed in config.toml when the run opened. Only these reads are saved.
+    canvases: list[str] = field(default_factory=list)
 
 
 def utc_iso(when: datetime) -> str:
@@ -152,12 +167,15 @@ def begin(config: Config, pairs: list[str], now: datetime | None = None) -> str:
         started_at=utc_iso(now),
         expires_at=utc_iso(now + timedelta(minutes=RUN_MINUTES)),
         channels=channels,
+        canvases=list(config.slack_canvases),
     )
     write_json(run_path(config.data_dir), asdict(run))
     notes.append(
-        f"Export run {run.run_id} is open for {len(channels)} channel(s). "
-        f"It expires at {run.expires_at[11:16]} UTC."
+        f"Export run {run.run_id} is open for {len(channels)} channel(s) and "
+        f"{len(run.canvases)} canvas(es). It expires at {run.expires_at[11:16]} UTC."
     )
+    if run.canvases:
+        notes.append("Canvases to read: " + ", ".join(run.canvases))
     return "\n".join(notes)
 
 
@@ -170,7 +188,8 @@ def abort(config: Config, now: datetime | None = None) -> str:
 
 
 def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
-    """Save one hook payload to the inbox. Returns the hook's exit code.
+    """Save one hook payload: a channel or thread read to the inbox, a canvas read to its
+    document folder. Returns the hook's exit code.
 
     0 means saved, or nothing to save. 2 means a run is open but this result couldn't be
     saved; Claude Code shows our stderr message to Claude, so the export can stop.
@@ -188,10 +207,17 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
     try:
         hook = json.loads(payload.decode("utf-8"))
         tool = hook["tool_name"].rsplit("__", 1)[-1]
-        channel_id = hook["tool_input"]["channel_id"]
+        # What was read: a canvas for a canvas read, else a channel.
+        read_id = hook["tool_input"]["canvas_id" if tool == slack_canvas.TOOL else "channel_id"]
     except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, AttributeError):
         return fail("The hook passed a Slack result diffdata can't read, so it wasn't saved.")
-    if tool not in SAVED_TOOLS or not isinstance(channel_id, str) or channel_id not in run.channels:
+    if tool == slack_canvas.TOOL:
+        if read_id not in run.canvases:
+            return fail(
+                "This canvas isn't listed in slack_canvases in config.toml, so it wasn't saved "
+                "(CON-1). Stop the export."
+            )
+    elif tool not in SAVED_TOOLS or not isinstance(read_id, str) or read_id not in run.channels:
         return 0
 
     response = hook.get("tool_response")
@@ -208,6 +234,29 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
         except (OSError, UnicodeDecodeError) as e:
             return fail(f"Couldn't read the file Claude Code saved a big Slack result in: {e}")
 
+    # The call's ID keeps file names unique when Claude reads several things at once.
+    call = re.sub(r"[^A-Za-z0-9_-]", "", str(hook.get("tool_use_id", "")))
+    call = call or now.strftime("%Y%m%dT%H%M%S%fZ")
+    record = {
+        "saved_at": utc_iso(now),
+        "run_id": run.run_id,
+        "tool_name": hook["tool_name"],
+        "tool_input": hook["tool_input"],
+        "tool_response": response,
+    }
+    if overflow is not None:
+        record["overflow_file"] = overflow.name
+    if tool == slack_canvas.TOOL:
+        # To the microsecond, so two reads in the same second keep their order (COL-9).
+        record["saved_at"] = now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        try:
+            return tell_claude(
+                slack_canvas.save_read(config.data_dir, run.run_id, read_id, record, call)
+            )
+        except slack_canvas.CanvasError as e:
+            return fail(str(e))
+
+    channel_id = read_id
     if tool == "slack_read_channel":
         header = CHANNEL_HEADER.match(result_text(response).lstrip())
         if (
@@ -229,25 +278,48 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
             "diffdata couldn't check the channel and didn't save it. Stop the export."
         )
 
-    # The call's ID keeps file names unique when Claude reads several things at once.
-    call = re.sub(r"[^A-Za-z0-9_-]", "", str(hook.get("tool_use_id", "")))
-    call = call or now.strftime("%Y%m%dT%H%M%S%fZ")
     path = inbox_dir(config.data_dir) / channel_id / run.run_id / f"{tool}-{call}.json"
-    record = {
-        "saved_at": utc_iso(now),
-        "run_id": run.run_id,
-        "tool_name": hook["tool_name"],
-        "tool_input": hook["tool_input"],
-        "tool_response": response,
-    }
-    if overflow is not None:
-        record["overflow_file"] = overflow.name
     try:
         write_json(path, record)
     except OSError as e:
         return fail(f"Couldn't save a Slack result to the inbox: {e}")
+    return tell_claude(
+        saved_note(tool, hook["tool_name"], hook["tool_input"], response, overflow is not None)
+    )
 
-    note = saved_note(tool, hook["tool_name"], hook["tool_input"], response, overflow is not None)
+
+def check(config: Config, payload: bytes, now: datetime | None = None) -> int:
+    """Before a Slack read: let it go ahead only if the open run names the channel or canvas
+    it reads (CON-1). Returns the hook's exit code: 0 lets the read go ahead, and 2 stops it
+    before anything is fetched, with our stderr message shown to Claude. Writes nothing."""
+    now = now or datetime.now(UTC)
+    try:
+        hook = json.loads(payload.decode("utf-8"))
+        field_name = CHECKED_READS[hook["tool_name"].rsplit("__", 1)[-1]]
+        read_id = hook["tool_input"][field_name]
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, AttributeError):
+        return fail(
+            "Couldn't tell what this Slack read is for, so it was stopped. Stop the export."
+        )
+    run = open_run(config.data_dir)
+    if run is None or is_expired(run, now):
+        return fail(
+            "No export run is open, so this Slack read was stopped. Stop, and tell the user: to "
+            "export, run /slack-export again. To read Slack for anything else, use a new Claude "
+            "session, because this check stays on for the rest of a session that ran /slack-export."
+        )
+    named = run.canvases if field_name == "canvas_id" else run.channels
+    if not isinstance(read_id, str) or read_id not in named:
+        what = "canvas" if field_name == "canvas_id" else "channel"
+        return fail(
+            f"This {what} isn't one the export run took from config.toml, so the read was "
+            "stopped before it ran (CON-1). Stop the export."
+        )
+    return 0
+
+
+def tell_claude(note: str) -> int:
+    """Pass the hook's note to Claude, after a save."""
     hook_output = {"hookEventName": "PostToolUse", "additionalContext": note}
     print(json.dumps({"hookSpecificOutput": hook_output}))
     return 0
@@ -287,6 +359,23 @@ def saved_note(tool: str, tool_name: str, tool_input: dict, response, overflowed
 def fail(message: str) -> int:
     print(f"diffdata: {message}", file=sys.stderr)
     return 2
+
+
+def check_from_hook(payload: bytes) -> int:
+    """Entry point for the before-read hook. Claude Code stops a call when the hook exits
+    with code 2. The command's onFailure: block also stops it when the hook can't start or
+    times out, but an exit code we choose gives Claude a clearer reason. So anything that
+    goes wrong here, such as an unreadable config.toml or a damaged run.json, stops the
+    read with a message."""
+    try:
+        return check(load_config(), payload)
+    except (ConfigError, UnsafeDataDirError):
+        return fail("Couldn't read config.toml, so this Slack read was stopped. Stop the export.")
+    except Exception as e:
+        return fail(
+            f"Couldn't check this Slack read ({type(e).__name__}), so it was stopped. "
+            "Stop the export."
+        )
 
 
 def save_from_hook(payload: bytes) -> int:
