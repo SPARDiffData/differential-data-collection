@@ -22,7 +22,7 @@ To configure it, copy `config.example.toml` to `config.toml` in a `.diffdata` fo
 
 ## Export a Slack channel (DIS-1)
 
-For the pilot there's no Slack app: Claude Code reads Slack for you through its Slack connector, as you. Nothing writes to Slack. This repo's `.claude/settings.json` removes every Slack write tool from Claude while it works in this folder. During `/slack-export`, a hook also stops any read of a channel or canvas that `config.toml` doesn't list, before it runs. If that check can't run, the read is stopped too. This needs Claude Code 2.1.295 or later (`claude --version`).
+For the pilot there's no Slack app: Claude Code reads Slack for you through its Slack connector, as you. Nothing writes to Slack. This repo's `.claude/settings.json` removes every Slack write tool from Claude while it works in this folder. During `/slack-export`, a hook also stops any read of a channel or canvas that the export run doesn't name, before it runs. The run takes its channels and canvases from `config.toml`. If that check can't run, the read is stopped too. The check stays on for the rest of that Claude session, so start a new session for each export, and for any other Slack work afterwards. This needs Claude Code 2.1.295 or later (`claude --version`).
 
 1. **Set up `config.toml`** in `~/.diffdata/`. List the channels to export under `slack_channels`; listing a channel is your opt-in. Set `slack_workspace_url` to your workspace's address. Keep `data_dir` outside the repo and outside OneDrive, Dropbox, Google Drive and iCloud: `diffdata` refuses those.
 2. **Try it.** Open Claude Code in the repo folder and type `/slack-export test`. It reads only the 5 newest messages of the first channel.

@@ -298,11 +298,15 @@ def check(config: Config, payload: bytes, now: datetime | None = None) -> int:
         field_name = CHECKED_READS[hook["tool_name"].rsplit("__", 1)[-1]]
         read_id = hook["tool_input"][field_name]
     except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, AttributeError):
-        return fail("diffdata couldn't tell what this Slack read is for, so it was stopped.")
+        return fail(
+            "Couldn't tell what this Slack read is for, so it was stopped. Stop the export."
+        )
     run = open_run(config.data_dir)
     if run is None or is_expired(run, now):
         return fail(
-            "No export run is open, so this Slack read was stopped. Start again with /slack-export."
+            "No export run is open, so this Slack read was stopped. Stop, and tell the user: to "
+            "export, run /slack-export again. To read Slack for anything else, use a new Claude "
+            "session, because this check stays on for the rest of a session that ran /slack-export."
         )
     named = run.canvases if field_name == "canvas_id" else run.channels
     if not isinstance(read_id, str) or read_id not in named:
@@ -366,10 +370,11 @@ def check_from_hook(payload: bytes) -> int:
     try:
         return check(load_config(), payload)
     except (ConfigError, UnsafeDataDirError):
-        return fail("diffdata couldn't read config.toml, so this Slack read was stopped.")
+        return fail("Couldn't read config.toml, so this Slack read was stopped. Stop the export.")
     except Exception as e:
         return fail(
-            f"diffdata couldn't check this Slack read ({type(e).__name__}), so it was stopped."
+            f"Couldn't check this Slack read ({type(e).__name__}), so it was stopped. "
+            "Stop the export."
         )
 
 

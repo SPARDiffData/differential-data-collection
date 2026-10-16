@@ -319,7 +319,9 @@ def test_check_lets_a_read_the_run_names_go_ahead(run_open, slack_hook, tool, to
 )
 def test_check_stops_a_read_the_run_doesnt_name(run_open, slack_hook, capsys, tool, tool_input):
     assert slack_inbox.check(run_open, slack_hook(tool, tool_input, None), now=T0) == 2
-    assert "stopped" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "stopped" in err and "Stop the export" in err
+    assert "diffdata: diffdata" not in err
 
 
 def test_check_stops_every_read_when_no_run_is_open(config, slack_hook, capsys):
@@ -327,13 +329,17 @@ def test_check_stops_every_read_when_no_run_is_open(config, slack_hook, capsys):
     assert slack_inbox.check(config, read, now=T0) == 2
     begin(config, ["example-channel=C00000001"], now=T0)
     assert slack_inbox.check(config, read, now=T0 + timedelta(minutes=61)) == 2  # expired
-    assert capsys.readouterr().err.count("No export run is open") == 2
+    err = capsys.readouterr().err
+    assert err.count("No export run is open") == 2
+    assert "new Claude session" in err  # the check stays on after /slack-export
 
 
-def test_check_stops_the_read_without_a_config(slack_hook, tmp_path, monkeypatch):
+def test_check_stops_the_read_without_a_config(slack_hook, tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     read = slack_hook("slack_read_channel", {"channel_id": CHANNEL}, None)
     assert slack_inbox.check_from_hook(read) == 2
+    err = capsys.readouterr().err
+    assert "Stop the export" in err and "diffdata: diffdata" not in err
 
 
 def test_cli_check_passes_the_hook_payload_to_the_check(monkeypatch):
@@ -361,4 +367,5 @@ def test_check_stops_the_read_when_the_run_file_is_damaged(
     run_file.write_text(damage, encoding="utf-8")
     read = slack_hook("slack_read_channel", {"channel_id": CHANNEL}, None)
     assert slack_inbox.check_from_hook(read) == 2
-    assert "so it was stopped" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "so it was stopped" in err and "Stop the export" in err
