@@ -8,13 +8,15 @@ Every build reads the whole inbox, so the store can be rebuilt after a parser fi
 version the store already has is skipped, so building twice adds nothing. If a message's text
 or files changed, both versions are kept, and the view shows the newest one.
 
-The build also writes the canvases (COL-2), using the store's names for their mentions. See
-collect/slack_canvas.py.
+The build also writes the canvases (COL-2), using the store's names for their mentions.
+Before the canvas reads, `canvases_due()` says which canvases to read, using the canvas-tab
+notices in the channel reads saved so far. See collect/slack_canvas.py.
 """
 
 import json
 import re
 from collections import Counter, defaultdict
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -23,12 +25,16 @@ from diffdata.collect import slack_canvas
 from diffdata.common.config import Config
 from diffdata.common.documents import documents_dir
 from diffdata.discover.slack_inbox import (
+    SlackExportError,
     close_run,
     inbox_dir,
+    is_expired,
     open_run,
     require_workspace,
     run_channel_names,
+    run_path,
     slack_dir,
+    write_json,
 )
 from diffdata.discover.slack_parse import parse_result, permalink, to_markdown
 
@@ -99,15 +105,58 @@ def build(config: Config) -> str:
         if run.canvases:
             # A count, not a warning: a test run reads only the first canvas.
             canvas_reads = documents_dir(data) / slack_canvas.SOURCE
-            saved = sum(
-                any((canvas_reads / canvas / "raw" / run.run_id).glob("*.json"))
-                for canvas in run.canvases
-            )
-            report.append(
-                f"This run saved reads for {saved} of {len(run.canvases)} listed canvas(es)."
-            )
+
+            def saved(canvases: list[str]) -> int:
+                return sum(
+                    any((canvas_reads / canvas / "raw" / run.run_id).glob("*.json"))
+                    for canvas in canvases
+                )
+
+            if run.due is None:
+                report.append(
+                    f"This run saved reads for {saved(run.canvases)} of {len(run.canvases)} "
+                    "listed canvas(es)."
+                )
+            else:
+                report.append(
+                    f"This run saved reads for {saved(run.due)} of {len(run.due)} due "
+                    f"canvas(es), {len(run.canvases)} listed."
+                )
         close_run(data, run, "built")
         report.append(f"Closed export run {run.run_id}.")
+    return "\n".join(report)
+
+
+def canvases_due(config: Config, now: datetime | None = None) -> str:
+    """Say which listed canvases this run should read (COL-8), and keep the list in run.json
+    for the build's report. Returns the report: the IDs to read, and the reasons as counts."""
+    now = now or datetime.now(UTC)
+    require_workspace(config)
+    data = config.data_dir
+    run = open_run(data)
+    if run is None or is_expired(run, now):
+        raise SlackExportError("No export run is open. Start again with /slack-export.")
+    # A canvas-tab notice can be in any channel read saved so far, this run's included.
+    messages = []
+    for channel_dir in sorted(p for p in inbox_dir(data).glob("*") if p.is_dir()):
+        messages += read_inbox(channel_dir, channel_dir.name, config.slack_workspace_url)[0]
+    found = slack_canvas.due(
+        data,
+        run.run_id,
+        run.canvases,
+        slack_canvas.tab_notices(messages),
+        config.canvas_refresh_days,
+        now,
+    )
+    run.due = [canvas for canvas, why in found.items() if why]
+    write_json(run_path(data), asdict(run))
+
+    report = [f"{len(run.due)} of {len(run.canvases)} listed canvas(es) to read."]
+    counts = Counter(reason for why in found.values() for reason in why)
+    if counts:
+        listed = ", ".join(f"{counts[r]} {r}" for r in slack_canvas.REASONS if counts[r])
+        report.append(f"Why (a canvas can have more than one reason): {listed}.")
+    report.append("Canvases to read: " + ", ".join(run.due) if run.due else "No canvases to read.")
     return "\n".join(report)
 
 

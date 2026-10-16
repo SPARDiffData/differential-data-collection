@@ -26,6 +26,7 @@ SLACK_STEPS = {
     "begin": "Open an export run for channels given as name=ID (run by /slack-export).",
     "check": "Stop a Slack read the open run doesn't name (run by the /slack-export hook).",
     "save": "Save one Slack result from stdin to the inbox (run by the /slack-export hook).",
+    "canvases-due": "List the canvases this run should read, and why (run by /slack-export).",
     "build": "Build the message store and the markdown view from the inbox, then close the run.",
     "abort": "Close the open export run without building.",
 }
@@ -88,6 +89,8 @@ def run_slack_step(args: argparse.Namespace) -> int:
             report = slack_inbox.begin(config, args.channels)
         elif args.step == "abort":
             report = slack_inbox.abort(config)
+        elif args.step == "canvases-due":
+            report = slack_export.canvases_due(config)
         else:
             report = slack_export.build(config)
     except (ConfigError, UnsafeDataDirError, slack_inbox.SlackExportError) as e:

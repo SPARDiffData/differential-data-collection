@@ -49,7 +49,7 @@ src/diffdata/
   cli.py            the `diffdata` command; `discover slack` is built, the rest are stubs
   consent/ discover/ collect/ organize/ scrub/ store/    one package per stage
   discover/slack_*.py   Slack export (DIS-1): inbox, parser, store and markdown view
-  collect/slack_canvas.py   Slack canvases (COL-2), read in /slack-export: saved reads become versions and clean copies
+  collect/slack_canvas.py   Slack canvases (COL-2), read in /slack-export when a files search or a tab notice says they may have changed: saved reads become versions and clean copies
   common/           shared pieces; paths.py holds the data folder guards, config.py reads config.toml
   common/documents.py   the shared document format (ORG-2): raw, versions, event log, clean copies
 tests/              pytest; fixtures/ holds synthetic data only

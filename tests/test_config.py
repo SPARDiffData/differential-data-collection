@@ -123,6 +123,28 @@ def test_anything_else_in_canvases_is_refused(tmp_path, canvases):
     assert "F00000003" not in str(refused.value)  # the place in the list, not the ID
 
 
+def refresh_config(tmp_path, days: str):
+    data = (tmp_path / "data").as_posix()
+    return write_config(
+        tmp_path, f'[sources]\ncanvas_refresh_days = {days}\n[local]\ndata_dir = "{data}"\n'
+    )
+
+
+def test_canvases_are_read_again_every_7_days_by_default(tmp_path):
+    write_config(tmp_path, f'[local]\ndata_dir = "{(tmp_path / "data").as_posix()}"\n')
+    assert load_config(tmp_path / "config.toml").canvas_refresh_days == 7
+
+
+def test_canvas_refresh_days_can_be_set(tmp_path):
+    assert load_config(refresh_config(tmp_path, "3")).canvas_refresh_days == 3
+
+
+@pytest.mark.parametrize("days", ["0", "-1", "1.5", '"7"', "true"])
+def test_canvas_refresh_days_must_be_a_whole_number_of_days(tmp_path, days):
+    with pytest.raises(ConfigError, match="canvas_refresh_days"):
+        load_config(refresh_config(tmp_path, days))
+
+
 def test_data_dir_goes_through_the_repo_guard(tmp_path):
     (tmp_path / "repo" / ".git").mkdir(parents=True)
     data = (tmp_path / "repo" / "data").as_posix()
