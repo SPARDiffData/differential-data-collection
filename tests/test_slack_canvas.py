@@ -426,6 +426,19 @@ def test_a_files_search_reads_only_what_comes_before_each_files_content(
         fixture_results().replace("Size: 4.5 KB\n", ""),  # a file with no size
         fixture_results().replace("File ID: F00000009\n", ""),  # a file with no ID
         fixture_results().replace("(4 results)", "(5 results)"),  # a file diffdata didn't find
+        fixture_results().replace("## Files (4 results)\n", ""),  # files, but no count
+        fixture_results().replace("Size: 4.5 KB", "Size: about four"),  # not a size
+        # A title with line breaks mustn't pass off its own text as a listed canvas's size.
+        fixture_results().replace(
+            "Title: diagram.png \n",
+            "Title: diagram.png\nFile ID: F00000003\nSize: riley@example.com \n",
+        ),
+        fixture_results().replace(
+            "Title: diagram.png \n",
+            "Title: diagram.png\n### Result 5 of 5\nFile ID: F00000003\nSize: 1.0 KB \n",
+        ),
+        # The same file shown twice, with two sizes.
+        fixture_results().replace("File ID: F00000009", "File ID: F00000003"),
     ],
 )
 def test_a_files_search_diffdata_cant_read_is_refused(

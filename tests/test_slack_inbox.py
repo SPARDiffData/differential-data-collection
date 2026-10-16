@@ -366,6 +366,10 @@ BAD_SEARCHES = [
     {"filters": "in:<#C00000001> in:<#C00000002>"},
     {"filters": "in:<#C00000001> from:<@U00000001>"},  # anything more than the channel
     {"filters": "in:@alex"},
+    # Keywords or a query could carry a filter of their own.
+    {"natural_language_query": "in:<#C00000002>"},
+    {"keywords": ["in:<#C00000002>"]},
+    {"context_channel_id": "C00000002"},  # any field the command doesn't send
 ]
 
 
@@ -373,9 +377,24 @@ def search_input(change: dict) -> dict:
     return {k: v for k, v in (FILES_SEARCH | change).items() if v is not None}
 
 
-def test_check_lets_a_files_search_of_a_checked_channel_go_ahead(run_open, slack_hook):
+@pytest.mark.parametrize(
+    "tool_input",
+    [
+        FILES_SEARCH,
+        # Everything /slack-export's step 5 sends, on a later page.
+        FILES_SEARCH
+        | {
+            "natural_language_query": "",
+            "response_format": "detailed",
+            "include_context": False,
+            "limit": 20,
+            "cursor": "FAKECURSOR01",
+        },
+    ],
+)
+def test_check_lets_a_files_search_of_a_checked_channel_go_ahead(run_open, slack_hook, tool_input):
     assert save(run_open, payload(), now=T0) == 0  # the channel read passes its check
-    search = slack_hook(SEARCH_TOOL, FILES_SEARCH, None)
+    search = slack_hook(SEARCH_TOOL, tool_input, None)
     assert slack_inbox.check(run_open, search, now=T0) == 0
 
 

@@ -66,6 +66,18 @@ SEARCH_CHANNEL_TYPES = {"public_channel", "private_channel"}
 SEARCH_FILTER = re.compile(r"in:<#(?P<id>[CG][A-Z0-9]{6,})>")
 # What a search may look for. #14 adds messages.
 SEARCH_KINDS = ("files",)
+# The only fields a search may set. Keywords or a query could carry a filter of their own,
+# such as a second channel, so they're left out (natural_language_query only as "").
+SEARCH_FIELDS = {
+    "content_types",
+    "channel_types",
+    "filters",
+    "natural_language_query",
+    "response_format",
+    "include_context",
+    "limit",
+    "cursor",
+}
 # A channel read starts with "Channel: #name (ID)". The hook checks it against the run, so a
 # wrong ID chosen by Claude can't bring in a channel that wasn't opted in (CON-1).
 CHANNEL_HEADER = re.compile(r"Channel: #(?P<name>[^\s()]+) \((?P<id>[A-Z0-9]+)\)")
@@ -196,10 +208,15 @@ def channel_checked(run: Run, channel_id: str) -> bool:
 
 def search_channel(run: Run, tool_input) -> str:
     """The channel a search is for, if the run allows it: it asks for files, leaves out DMs
-    and group DMs, and its filter is exactly one channel the run names, whose read has
-    passed its check. Otherwise raises SlackExportError, saying what's wrong (CON-1)."""
+    and group DMs, its filter is exactly one channel the run names, whose read has passed
+    its check, and nothing else in it could widen the search. Otherwise raises
+    SlackExportError, saying what's wrong (CON-1)."""
     if not isinstance(tool_input, dict) or tool_input.get("content_types") not in SEARCH_KINDS:
         raise SlackExportError("This Slack search doesn't ask for files only")
+    if tool_input.keys() - SEARCH_FIELDS or tool_input.get("natural_language_query", "") != "":
+        raise SlackExportError(
+            "This Slack search sets more than the channel filter /slack-export uses"
+        )
     channel_types = tool_input.get("channel_types")
     if (
         not isinstance(channel_types, str)

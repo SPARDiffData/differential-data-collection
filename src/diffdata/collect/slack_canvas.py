@@ -59,14 +59,18 @@ HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t#]*$", re.MULTILINE)
 # these are changed: canvas text can hold other <...>, such as <br>, which stays as it is.
 MENTION = re.compile(r"<([@#])([A-Z][A-Z0-9]+)(?:\|([^<>\n]*))?>")
 # A files search's `results` text: "## Files (20 results)", then one block per file, from
-# "### Result 1 of 20" to its "Content:" line, with lines like "Size: 26.5 KB" and
-# "File ID: F...". Only the part before "Content:" is read, since a file's content could
-# hold anything.
+# "### Result 1 of 20" to its "Content:" line, with one "Size: 26.5 KB" line and one
+# "File ID: F..." line. Only the part before "Content:" is read, since a file's content
+# could hold anything. A title could too, if it held line breaks, so a search is refused
+# when a block has a second ID or size line, a value in another shape, or isn't one the
+# count announced: one file's text mustn't pass as another file's ID or size (CON-1).
 FILE_COUNT = re.compile(r"^## Files \((\d+) results?\)", re.MULTILINE)
 FILE_BLOCK = re.compile(r"^### Result \d+ of \d+[ \t]*$", re.MULTILINE)
 FILE_CONTENT = re.compile(r"^Content:", re.MULTILINE)
-FILE_ID = re.compile(r"^File ID: (F[A-Z0-9]+)[ \t]*$", re.MULTILINE)
-FILE_SIZE = re.compile(r"^Size: (\S[^\n]*?)[ \t]*$", re.MULTILINE)
+FILE_ID = re.compile(r"^File ID:(.*)$", re.MULTILINE)
+FILE_SIZE = re.compile(r"^Size:(.*)$", re.MULTILINE)
+ID_VALUE = re.compile(r"F[A-Z0-9]+")
+SIZE_VALUE = re.compile(r"\d+(?:\.\d+)? ?[A-Za-z]{1,5}")  # like 26.5 KB or 244.4 MB
 # Slackbot posts this in the channel when someone edits a canvas pinned as a channel tab.
 TAB_NOTICE = re.compile(r"made updates to a canvas tab: (F[A-Z0-9]+)")
 SLACKBOT = "USLACKBOT"
@@ -118,24 +122,28 @@ def sizes_dir(data: Path) -> Path:
 
 
 def search_rows(response) -> list[tuple[str, str]] | None:
-    """(file ID, size) for each file a files search shows. None if a file shows no ID or
-    size, or the results aren't where diffdata expects them."""
+    """(file ID, size) for each file a files search shows. None if any file doesn't show
+    exactly one ID and one size, or the results aren't where diffdata expects them."""
     found = result_json(response)
     text = found.get("results") if found else None
     if not isinstance(text, str):
         return None
     blocks = FILE_BLOCK.split(text)[1:]
     count = FILE_COUNT.search(text)
-    if count and int(count[1]) != len(blocks):
+    if (int(count[1]) if count else 0) != len(blocks):
         return None
-    rows = []
+    rows: dict[str, str] = {}
     for block in blocks:
         head = FILE_CONTENT.split(block, maxsplit=1)[0]
-        file_id, size = FILE_ID.search(head), FILE_SIZE.search(head)
-        if file_id is None or size is None:
+        ids, sizes = FILE_ID.findall(head), FILE_SIZE.findall(head)
+        if len(ids) != 1 or len(sizes) != 1:
             return None
-        rows.append((file_id[1], size[1]))
-    return rows
+        file_id, size = ids[0].strip(), sizes[0].strip()
+        if not ID_VALUE.fullmatch(file_id) or not SIZE_VALUE.fullmatch(size):
+            return None
+        if rows.setdefault(file_id, size) != size:  # one file shown twice, with two sizes
+            return None
+    return list(rows.items())
 
 
 def save_search(
