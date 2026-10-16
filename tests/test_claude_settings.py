@@ -237,7 +237,7 @@ def test_every_agent_file_is_covered_by_these_tests():
     )
 
 
-def test_the_review_agent_cant_edit_files():
+def test_the_review_agent_has_no_file_editing_tools():
     # Neither given nor inherited: disallowedTools also removes them from anything inherited.
     assert FILE_EDITING_TOOLS <= agent_tools("disallowedTools")
     assert not FILE_EDITING_TOOLS & agent_tools("tools")

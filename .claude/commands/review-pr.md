@@ -68,7 +68,7 @@ Write the review in exactly this shape, short and in plain words:
 
 ## 5. A Codex focus line, for Paul's review
 
-Codex is OpenAI's coding agent. It gives Paul a second AI review, from a different company, on risky changes: it runs only on Paul's machine and costs API credits ("Review policy" in `CONTRIBUTING.md`). **If the user isn't Paul or doesn't have Codex, skip this step:** it's part of Paul's review, not yours. Whether Codex runs was agreed when the work started. This line only gives it the brief, if it does.
+Codex is OpenAI's coding agent. It gives Paul a second AI review, from a different company, on risky changes: it runs only on Paul's machine and costs API credits ("Review policy" in `CONTRIBUTING.md`). **With `--no-post`,** always add the line when the diff qualifies: the calling session drops it if Codex isn't run. **Otherwise, if the user isn't Paul or doesn't have Codex, skip this step:** it's part of Paul's review, not yours. Whether Codex runs was agreed when the work started. This line only gives it the brief, if it does.
 
 If the diff changes any file under `src/` or `.claude/`, end with one line that carries the Issue's context, since Codex can't reach GitHub:
 

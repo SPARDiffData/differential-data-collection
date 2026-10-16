@@ -42,7 +42,7 @@ You can also open Claude Code in an empty folder and say: "Walk me through the o
 3. **Work with Claude.** Start with: *"Read Issue #12 and propose a plan."* Claude reads `CLAUDE.md` for our rules. Check the plan before saying go. If you'd like a more structured plan, run `/plan-issue 12` instead. Claude asks its open questions first, then writes the plan in plan mode, and once you approve, posts it on the Issue so it isn't lost when the session ends. It's optional: plan whichever way suits you.
 4. **Run the tests:** *"Run the tests and the linter."* (That's `uv run pytest` and `uv run ruff check`.)
 5. **Push and open a PR:** *"Commit, push and open a PR with the template."* Check it says `Closes #12` and lists the requirement IDs.
-6. **Get a review.** Tell Claude: *"Review PR #34 with the pr-reviewer agent, and post the review."* The agent runs `/review-pr` in its own context: it doesn't see your conversation, and it can't edit files. Or open a new, separate Claude session in the repo and run `/review-pr 34` there; it posts when you say yes. Either way you get a short review split into must-fix and nice-to-have. Fix the must-fix items, push, and run it again. Then ask Paul to review it: on the PR page, click **Reviewers** on the right and choose Paul. See [Review policy](#review-policy). To check a PR quickly, a reviewer can also run `/debrief 34`. It makes a one-page summary, as a private claude.ai page, of what was asked, what was delivered and which decisions need a look. It's optional and doesn't replace `/review-pr`.
+6. **Get a review.** Tell Claude: *"Review PR #34 with the pr-reviewer agent, and post the review."* The agent runs `/review-pr` in its own context: it doesn't see your conversation, and it has no file-editing tools. Or open a new, separate Claude session in the repo and run `/review-pr 34` there; it posts when you say yes. Either way you get a short review split into must-fix and nice-to-have. Fix the must-fix items, push, and run it again. Then ask Paul to review it: on the PR page, click **Reviewers** on the right and choose Paul. See [Review policy](#review-policy). To check a PR quickly, a reviewer can also run `/debrief 34`. It makes a one-page summary, as a private claude.ai page, of what was asked, what was delivered and which decisions need a look. It's optional and doesn't replace `/review-pr`.
 7. **Merge.** When CI is green and the review is done, click **Squash and merge** on the PR page. GitHub deletes the branch for you.
 8. **Tidy up:** *"Switch back to main and pull."*
 
@@ -71,14 +71,19 @@ Find your lane from the requirement IDs in your Issue.
 
 Every PR gets reviewed before merge:
 
-- **`/review-pr` first, on every PR.** It's a quick, independent check that catches must-fix items before anyone else spends time on them. It runs in its own context: either as the `pr-reviewer` agent (`.claude/agents/pr-reviewer.md`), which takes only the PR number and can't edit files, or in a separate Claude session.
+- **`/review-pr` first, on every PR.** It's a quick, independent check that catches must-fix items before anyone else spends time on them. It runs in its own context: either as the `pr-reviewer` agent (`.claude/agents/pr-reviewer.md`), which takes only the PR number and has no file-editing tools, or in a separate Claude session.
 - **Paul reviews teammates' PRs.** His Claude session runs the same AI reviews and posts them on the PR. It never pushes to a teammate's branch: the author makes the fixes, and decisions go to Paul.
 - **A human reviews anything touching consent, scrub or store.** For a teammate's PR, that's Paul. For Paul's own, see [While Paul works solo](#while-paul-works-solo).
 - **If Paul becomes a bottleneck,** we'll change this. Any human can review, whichever AI they use.
 
 ### Codex, for risky changes
 
-Codex, OpenAI's coding agent, gives a second AI review, from a different company. Two models catch more than one. It runs on Paul's machine with a paid API key, so it's used only where it's worth the cost: changes under `src/` that touch consent, scrub or store, a stored format, or a hook or permission in `.claude/`, and large changes. Whether it runs is agreed when the work starts.
+Codex, OpenAI's coding agent, gives a second AI review, from a different company. Two models catch more than one. It runs on Paul's machine with a paid API key, so it's used only where it's worth the cost:
+- code under `src/` that touches consent, scrub or store, or a stored format
+- a hook or permission in `.claude/`
+- large changes
+
+Whether it runs is agreed when the work starts: Claude says whether it's worth it, and Paul confirms along with the plan.
 
 Codex runs on a separate worktree of the PR branch, so nobody's folder has to switch branches, and at most twice per PR. It never gets the data folder, `config.toml` or `.env`, because it sends what it reads to OpenAI. `.env` moves out of the repo folder, to `~/.diffdata/`, before it holds a real token (Issue #45). Teammates without Codex skip it.
 

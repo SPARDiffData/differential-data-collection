@@ -59,7 +59,7 @@ config.example.toml copy to ~/.diffdata/config.toml, outside the repo, and fill 
 .claude/commands/debrief.md        /debrief, an optional one-page summary of a PR or session
 .claude/commands/plan-issue.md     /plan-issue, an optional planning step before coding
 .claude/commands/review-pr.md      /review-pr, the independent PR review
-.claude/agents/pr-reviewer.md      the review agent: runs /review-pr in its own context, can't edit files
+.claude/agents/pr-reviewer.md      the review agent: runs /review-pr in its own context, with no file-editing tools
 .claude/commands/slack-export.md   /slack-export, reads Slack channels and canvases through the connector (DIS-1, COL-2)
 .claude/settings.json              denies every Slack and Google write tool in this repo
 .github/            PR template, Issue template, CI workflow
@@ -80,6 +80,6 @@ CI runs lint and tests on Windows, macOS and Linux for every PR.
 
 ## Reviews and versions
 
-Every PR gets reviewed before merge, starting with `/review-pr <number>` in its own context: the `pr-reviewer` agent, or a separate Claude session. On Paul's PRs, the session that wrote the code runs the reviews and posts them, adding Codex only for risky changes. Paul reviews teammates' PRs, and Claude never pushes to a teammate's branch. A human must also review anything touching consent, scrub or store: Paul for a teammate's PR, and for Paul's own, his line-by-line read plus both AI reviews. The solo phase ended on 2026-10-16. The full workflow is in "Review policy" in [CONTRIBUTING.md](CONTRIBUTING.md).
+Every PR gets reviewed before merge, starting with `/review-pr <number>` in its own context: the `pr-reviewer` agent, or a separate Claude session. On Paul's PRs, the session that wrote the code runs the reviews and posts them, adding Codex only for risky changes. When a task starts, if the user has Codex, say whether a Codex review is worth it under that rule, and let them confirm it along with the plan. Paul reviews teammates' PRs, and Claude never pushes to a teammate's branch. A human must also review anything touching consent, scrub or store: Paul for a teammate's PR, and for Paul's own, his line-by-line read plus both AI reviews. The solo phase ended on 2026-10-16. The full workflow is in "Review policy" in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The version lives in `pyproject.toml` only (0.MINOR.PATCH, matching the phases in the requirements). Paul tags releases and keeps [CHANGELOG.md](CHANGELOG.md).
