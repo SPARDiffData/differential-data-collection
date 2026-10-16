@@ -405,21 +405,6 @@ def test_a_files_search_keeps_only_the_listed_canvases_sizes(
             assert not any(private in text for private in UNLISTED)
 
 
-def test_a_files_search_reads_only_what_comes_before_each_files_content(
-    config, slack_hook, slack_response
-):
-    # A file's content could hold anything, such as lines that look like another file's size.
-    results = fixture_results().replace(
-        "Content: \ndiagram.png", "Content: \nSize: 99.9 KB\nFile ID: F00000003"
-    )
-    begin(config, ["example-channel=C00000001"], now=T0)
-    read_the_channel(config, slack_hook, slack_response)
-    search = slack_hook(SEARCH_TOOL, SEARCH_INPUT, search_fixture(results))
-    assert save(config, search, now=T0) == 0
-    [path] = size_files(config)
-    assert json.loads(path.read_text(encoding="utf-8"))["sizes"] == {CANVAS: "12.3 KB"}
-
-
 @pytest.mark.parametrize(
     "broken",
     [
@@ -428,14 +413,23 @@ def test_a_files_search_reads_only_what_comes_before_each_files_content(
         fixture_results().replace("(4 results)", "(5 results)"),  # a file diffdata didn't find
         fixture_results().replace("## Files (4 results)\n", ""),  # files, but no count
         fixture_results().replace("Size: 4.5 KB", "Size: about four"),  # not a size
-        # A title with line breaks mustn't pass off its own text as a listed canvas's size.
+        fixture_results().replace("Size: 4.5 KB", "Size: 7 Alice"),  # not a byte unit
+        # A title or content with line breaks mustn't pass off its own text as a listed
+        # canvas's ID or size, even with a Content: line of its own.
         fixture_results().replace(
             "Title: diagram.png \n",
             "Title: diagram.png\nFile ID: F00000003\nSize: riley@example.com \n",
         ),
         fixture_results().replace(
             "Title: diagram.png \n",
+            "Title: diagram.png\nFile ID: F00000003\nSize: 7 KB\nContent: \n",
+        ),
+        fixture_results().replace(
+            "Title: diagram.png \n",
             "Title: diagram.png\n### Result 5 of 5\nFile ID: F00000003\nSize: 1.0 KB \n",
+        ),
+        fixture_results().replace(
+            "Content: \ndiagram.png", "Content: \nSize: 99.9 KB\nFile ID: F00000003"
         ),
         # The same file shown twice, with two sizes.
         fixture_results().replace("File ID: F00000009", "File ID: F00000003"),
@@ -565,6 +559,50 @@ def test_a_canvas_whose_read_failed_is_tried_again(due_run):
     due_run(T0 + timedelta(hours=1), {CANVAS: "12.4 KB"}, read=())  # the read didn't happen
     due, _ = due_run(T0 + timedelta(hours=2), {CANVAS: "12.4 KB"})
     assert "1 size changed." in due and f"Canvases to read: {CANVAS}" in due
+
+
+def test_a_canvas_shown_with_two_sizes_in_one_run_is_read(
+    config, due_run, slack_hook, slack_response
+):
+    # Two pages, or two channels' searches, can disagree while a canvas is being edited.
+    # Whichever saved file sorts last, the canvas is read.
+    due_run(T0, {CANVAS: "12.3 KB"})
+    when = T0 + timedelta(hours=1)
+    begin(config, ["example-channel=C00000001"], now=when)
+    read_the_channel(config, slack_hook, slack_response, when)
+    for call, size in (("toolu_a", "12.4 KB"), ("toolu_b", "12.3 KB")):  # the old size last
+        search = slack_hook(SEARCH_TOOL, SEARCH_INPUT, files_search({CANVAS: size}), call)
+        assert save(config, search, now=when) == 0
+    assert "1 size changed." in canvases_due(config, now=when)
+
+
+def test_a_files_search_too_big_for_claude_is_filtered_from_claude_codes_copy(
+    config, slack_hook, slack_response, capsys, tmp_path
+):
+    # Claude Code's layout: the transcript, and beside it the session's tool-results folder.
+    transcript = tmp_path / "claude" / "projects" / "repo" / "session-0001.jsonl"
+    folder = transcript.with_suffix("") / "tool-results"
+    folder.mkdir(parents=True)
+    copy = folder / "mcp-claude_ai_Slack-slack_search_public_and_private-0001.txt"
+    copy.write_text(search_fixture()[0]["text"], encoding="utf-8")
+    notice = (
+        "Error: result (90,000 characters across 1 line) exceeds maximum allowed tokens. "
+        f"Output has been saved to {copy}.\nFormat: Plain text"
+    )
+    hook = json.loads(slack_hook(SEARCH_TOOL, SEARCH_INPUT, [{"type": "text", "text": notice}]))
+    hook["transcript_path"] = str(transcript)
+
+    config = replace(config, slack_canvases=LISTED)
+    begin(config, ["example-channel=C00000001"], now=T0)
+    read_the_channel(config, slack_hook, slack_response)
+    capsys.readouterr()
+    assert save(config, json.dumps(hook).encode("utf-8"), now=T0) == 0
+    [path] = size_files(config)
+    assert json.loads(path.read_text(encoding="utf-8"))["sizes"] == {
+        CANVAS: "12.3 KB",
+        "F00000004": "4.5 KB",
+    }
+    assert "4 file(s), 2 of them listed canvases" in hook_note(capsys)
 
 
 @pytest.mark.parametrize("sizes", [{}, {"F00000004": "1.0 KB"}, None])  # None: no search

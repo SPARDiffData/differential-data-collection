@@ -34,7 +34,7 @@ and the rest of the shared format, including the clean copy in documents/current
 
 import json
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -58,19 +58,18 @@ HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t#]*$", re.MULTILINE)
 # Canvases mention people as <@U...> and channels as <#C...>, with no name attached. Only
 # these are changed: canvas text can hold other <...>, such as <br>, which stays as it is.
 MENTION = re.compile(r"<([@#])([A-Z][A-Z0-9]+)(?:\|([^<>\n]*))?>")
-# A files search's `results` text: "## Files (20 results)", then one block per file, from
-# "### Result 1 of 20" to its "Content:" line, with one "Size: 26.5 KB" line and one
-# "File ID: F..." line. Only the part before "Content:" is read, since a file's content
-# could hold anything. A title could too, if it held line breaks, so a search is refused
-# when a block has a second ID or size line, a value in another shape, or isn't one the
-# count announced: one file's text mustn't pass as another file's ID or size (CON-1).
+# A files search's `results` text: "## Files (20 results)", then one block per file,
+# starting "### Result 1 of 20", with one "Size: 26.5 KB" line and one "File ID: F..."
+# line. A file's title or content could hold line breaks and lines that look like these,
+# so a search is refused when any block, anywhere in it, has a second ID or size line, a
+# value in another shape, or isn't one the count announced. One file's text mustn't pass
+# as another file's ID or size, and a size is only a number and a byte unit (CON-1).
 FILE_COUNT = re.compile(r"^## Files \((\d+) results?\)", re.MULTILINE)
 FILE_BLOCK = re.compile(r"^### Result \d+ of \d+[ \t]*$", re.MULTILINE)
-FILE_CONTENT = re.compile(r"^Content:", re.MULTILINE)
 FILE_ID = re.compile(r"^File ID:(.*)$", re.MULTILINE)
 FILE_SIZE = re.compile(r"^Size:(.*)$", re.MULTILINE)
 ID_VALUE = re.compile(r"F[A-Z0-9]+")
-SIZE_VALUE = re.compile(r"\d+(?:\.\d+)? ?[A-Za-z]{1,5}")  # like 26.5 KB or 244.4 MB
+SIZE_VALUE = re.compile(r"\d+(?:\.\d+)? ?(?:B|KB|MB|GB|TB|bytes)")  # like 26.5 KB or 244.4 MB
 # Slackbot posts this in the channel when someone edits a canvas pinned as a channel tab.
 TAB_NOTICE = re.compile(r"made updates to a canvas tab: (F[A-Z0-9]+)")
 SLACKBOT = "USLACKBOT"
@@ -134,8 +133,7 @@ def search_rows(response) -> list[tuple[str, str]] | None:
         return None
     rows: dict[str, str] = {}
     for block in blocks:
-        head = FILE_CONTENT.split(block, maxsplit=1)[0]
-        ids, sizes = FILE_ID.findall(head), FILE_SIZE.findall(head)
+        ids, sizes = FILE_ID.findall(block), FILE_SIZE.findall(block)
         if len(ids) != 1 or len(sizes) != 1:
             return None
         file_id, size = ids[0].strip(), sizes[0].strip()
@@ -181,16 +179,19 @@ def save_search(
 
 
 def search_sizes(data: Path, run_id: str) -> dict[str, str]:
-    """Each listed canvas's size, from the files searches saved in one run."""
-    sizes: dict[str, str] = {}
+    """Each listed canvas's size, from the files searches saved in one run. A canvas shown
+    with different sizes in one run, on two pages or in two channels' searches, gets all
+    of them, such as "12.3 KB or 12.4 KB", so it matches no single size and is read."""
+    seen: dict[str, set[str]] = defaultdict(set)
     for path in sorted((sizes_dir(data) / run_id).glob("*.json")):
         try:
             found = json.loads(path.read_text(encoding="utf-8"))["sizes"]
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError):
             continue  # a canvas without a size is read, so skipping is the safe way to fail
         if isinstance(found, dict):
-            sizes.update(found)
-    return sizes
+            for canvas, size in found.items():
+                seen[canvas].add(str(size))
+    return {canvas: " or ".join(sorted(sizes)) for canvas, sizes in seen.items()}
 
 
 def last_read(data: Path, canvas_id: str) -> tuple[datetime, str] | None:
