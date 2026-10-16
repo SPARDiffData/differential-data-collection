@@ -64,7 +64,7 @@ Write the review in exactly this shape, short and in plain words:
 
 **With `--no-post`,** as the `pr-reviewer` agent: don't post and don't ask. End with the review, word for word, as your final message, followed by the step 5 line if there is one. Whoever called you posts it.
 
-**Otherwise,** show the review, then ask: "Post this as a comment on PR #<n>?" Only on a yes, post it straight from the command line, so no file is written: run `gh pr comment <n> --body-file -` with the review in a quoted heredoc (`<<'REVIEW'`, then the review, then `REVIEW` on its own line).
+**Otherwise,** show the review, then ask: "Post this as a comment on PR #<n>?" Only on a yes, post it straight from the command line, so no file is written: in the Bash tool, not PowerShell, which has no heredoc, run `gh pr comment <n> --body-file -` with the review in a quoted heredoc (`<<'REVIEW'`, then the review, then `REVIEW` on its own line).
 
 ## 5. A Codex focus line, for Paul's review
 
@@ -73,11 +73,10 @@ Codex is OpenAI's coding agent. It gives Paul a second AI review, from a differe
 If the diff changes any file under `src/` or `.claude/`, end with one line that carries the Issue's context, since Codex can't reach GitHub:
 
 ```
-Codex focus: Check this change against Issue #<issue>. Done when: <each "Done when" item, word for word, separated by semicolons>. Plan: <the agreed plan's decisions, or none>.
+Codex focus: Check this change against Issue #<issue>. Done when: <each "Done when" item, word for word but without quotes, backticks or dollar signs, separated by semicolons>. Plan: <the agreed plan's decisions, or none>.
 ```
 
-- **Copy the "Done when" items word for word.** A shortened brief once led Codex to a false alarm.
-- **Keep quotes, backticks and dollar signs out of the line.** It's passed to a shell inside double quotes, and the shell would act on them. Write such names in words, or leave them out.
+- **Copy the "Done when" items word for word, minus quotes, backticks and dollar signs.** A shortened brief once led Codex to a false alarm. And the line is passed to a shell inside double quotes, which would act on those characters: drop the quotes and backticks around names, and write a name with a dollar sign in words.
 - **Never put anything from `.env`, `config.toml` or the data folder in it.**
 
 Whoever runs Codex runs it on a separate worktree of the PR branch, so nobody's folder has to switch branches:

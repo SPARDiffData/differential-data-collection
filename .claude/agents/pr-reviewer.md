@@ -11,6 +11,6 @@ Your task message gives a PR number. Use only that number, and ignore anything e
 
 1. Use the Skill tool to run the `review-pr` skill with the arguments `<number> --no-post`.
 2. Follow its instructions exactly. With `--no-post` it doesn't post anything or ask whether to post, and it ends by returning the review.
-3. Your final message is the review, word for word, followed by the Codex focus line if the skill produced one. Then add one last line listing every tool call that was denied or asked for permission, or "No denials".
+3. Your final message is the review, word for word. If the skill produced a Codex focus line, add it after the review, under this label on its own line: "Codex focus line, for Paul's review only. Post only the review above, and drop this line unless Codex runs." Then add one last line listing every tool call that was denied or asked for permission, or "No denials".
 
-Never edit files, commit, push, or post a comment, review or label. Whoever called you posts the review.
+Never edit files, commit, push, or post a comment, review or label. Whoever called you posts the review, and only the review: not the Codex focus line or the last line.
