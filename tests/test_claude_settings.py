@@ -211,3 +211,55 @@ def test_debrief_pre_approves_reads_only():
 def test_debrief_cant_edit_code():
     # It writes one page outside the repo, so Write stays; Edit isn't needed.
     assert {"Edit", "NotebookEdit"} <= set(frontmatter_line("disallowed-tools", "debrief"))
+
+
+def test_review_pr_posts_without_writing_a_file():
+    # It can't use Write, so it posts from the command line rather than saving to a file first.
+    body = (ROOT / ".claude" / "commands" / "review-pr.md").read_text(encoding="utf-8")
+    assert "--body-file -" in body
+    assert "temporary file outside the repo" not in body
+
+
+# ENG-5: the review agent (.claude/agents/). Agent files list tools comma-separated.
+AGENTS = ROOT / ".claude" / "agents"
+FILE_EDITING_TOOLS = {"Write", "Edit", "NotebookEdit"}
+
+
+def agent_tools(name, agent="pr-reviewer"):
+    frontmatter = (AGENTS / f"{agent}.md").read_text(encoding="utf-8").split("---")[1]
+    line = re.search(rf"^{name}: (.+)$", frontmatter, re.MULTILINE)
+    return {tool.strip() for tool in line.group(1).split(",")}
+
+
+def test_every_agent_file_is_covered_by_these_tests():
+    assert sorted(p.stem for p in AGENTS.glob("*.md")) == ["pr-reviewer"], (
+        "A new agent file needs its own tests here."
+    )
+
+
+def test_the_review_agent_cant_edit_files():
+    # Neither given nor inherited: disallowedTools also removes them from anything inherited.
+    assert FILE_EDITING_TOOLS <= agent_tools("disallowedTools")
+    assert not FILE_EDITING_TOOLS & agent_tools("tools")
+
+
+def test_the_review_agent_has_only_the_tools_review_pr_needs():
+    # Skill runs /review-pr; Bash runs its read-only gh and git commands.
+    assert agent_tools("tools") == {"Skill", "Bash", "Read", "Grep", "Glob"}
+
+
+def test_the_review_agent_runs_review_pr_without_posting():
+    agent = (AGENTS / "pr-reviewer.md").read_text(encoding="utf-8").split("---", 2)[2]
+    review_pr = (ROOT / ".claude" / "commands" / "review-pr.md").read_text(encoding="utf-8")
+    assert "`review-pr`" in agent and "--no-post" in agent
+    assert "**With `--no-post`,**" in review_pr
+
+
+def test_review_pr_asks_for_a_box_the_pr_template_has():
+    # /review-pr checks Paul's consent, scrub and store PRs for this box by its opening words.
+    template = (ROOT / ".github" / "pull_request_template.md").read_text(encoding="utf-8")
+    review_pr = (ROOT / ".claude" / "commands" / "review-pr.md").read_text(encoding="utf-8")
+    box = "Paul's own consent, scrub or store PR"
+    assert f"- [ ] {box}:" in template
+    assert f'box that starts "{box}"' in review_pr
+    assert "Solo phase:" not in template
