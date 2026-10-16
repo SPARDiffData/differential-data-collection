@@ -22,14 +22,14 @@ Closes #
 
 ## Reviewer
 
-<!-- Every PR gets one review before merge. Run /review-pr <number> in a separate Claude session.
+<!-- Every PR gets /review-pr before merge: ask Claude to run the pr-reviewer agent and post
+     the review, or run /review-pr <number> in a separate Claude session.
      A human must also review anything touching consent, scrub or store.
-     While Paul works solo, Paul's own read is that human review: tick the "Solo phase" box instead.
      See "Review policy" in CONTRIBUTING.md. -->
 
-- [ ] AI review from a separate Claude session, posted as a comment below
+- [ ] `/review-pr`'s review is posted as a comment below
 - [ ] Touches consent, scrub or store, so a human reviews it too: @
-- [ ] Solo phase: touches consent, scrub or store, and Paul's own read is the human review
+- [ ] Paul's own consent, scrub or store PR: Paul reads every changed line, and Codex's review is posted too
 
 ## Checklist
 
