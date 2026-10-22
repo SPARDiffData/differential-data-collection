@@ -9,7 +9,7 @@ import pytest
 from diffdata.discover.slack_inbox import begin, save
 
 SLACK_FIXTURES = Path(__file__).parent / "fixtures" / "slack"
-LAST_PAGE = "There are no more messages."
+LAST_PAGE = "There are no more messages available.\n"
 
 
 @pytest.fixture(autouse=True)

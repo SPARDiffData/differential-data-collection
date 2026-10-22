@@ -234,7 +234,9 @@ def overflowed(tmp_path):
 def test_a_result_too_big_for_claude_is_read_from_claude_codes_saved_copy(
     config, capsys, overflowed, as_blocks
 ):
-    response = connector_result("read_channel.txt", pagination="")
+    response = connector_result(
+        "read_channel.txt", pagination="There are no more messages available.\n"
+    )
     saved_text = json.dumps(response) if as_blocks else response[0]["text"]
     begin(config, ["example-channel=C00000001"], now=T0)
     assert save(config, overflowed(saved_text), now=T0) == 0
@@ -450,7 +452,16 @@ BAD_MESSAGE_SEARCHES = [
     {"sort_dir": "asc"},
     {"after": 1790860440},  # the tool takes a string
     {"after": "2026-10-01"},
+    {"include_bots": False},  # a bot's late reply counts too
+    {"include_bots": "true"},
 ]
+
+
+def test_check_stops_a_message_search_that_leaves_bots_out_by_default(run_open, slack_hook, capsys):
+    assert save(run_open, payload(), now=T0) == 0
+    without = {k: v for k, v in MESSAGE_SEARCH.items() if k != "include_bots"}
+    assert slack_inbox.check(run_open, slack_hook(SEARCH_TOOL, without, None), now=T0) == 2
+    assert "leaves out bots' replies" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -596,6 +607,16 @@ def test_a_run_file_with_the_old_check_mark_still_loads(run_open):
     loaded = open_run(run_open.data_dir)
     assert loaded.canvases == [CANVAS] and not loaded.full
     assert not slack_inbox.channel_checked(run_open.data_dir, loaded, CHANNEL)  # not read yet
+
+
+def test_page_information_diffdata_doesnt_know_tells_claude_to_stop(config, capsys):
+    begin(config, ["example-channel=C00000001"], now=T0)
+    hook = json.loads(payload())
+    hook["tool_response"] = connector_result("read_channel.txt", pagination="Something new.")
+    assert save(config, json.dumps(hook).encode("utf-8"), now=T0) == 0  # the raw is kept
+    note = hook_note(capsys)
+    assert "can't tell whether there are more pages: stop and tell the user." in note
+    assert "No more pages" not in note
 
 
 def test_an_empty_incremental_channel_read_is_normal(config, capsys):

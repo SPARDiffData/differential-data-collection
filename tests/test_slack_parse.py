@@ -7,6 +7,7 @@ import pytest
 
 from diffdata.discover.slack_parse import (
     next_cursor,
+    pages_known,
     parse_files,
     parse_result,
     permalink,
@@ -267,7 +268,30 @@ def test_a_message_search_without_results_gives_none(response):
     assert search_messages(response) is None
 
 
-def test_a_message_search_without_page_information_gives_none(slack_search):
+@pytest.mark.parametrize(
+    "pagination", [None, "", "For the next page of results use the cursor below.", "Something new."]
+)
+def test_a_message_search_without_page_information_it_knows_gives_none(slack_search, pagination):
     inner = json.loads(slack_search()[0]["text"])
-    del inner["pagination_info"]
+    if pagination is None:
+        del inner["pagination_info"]
+    else:
+        inner["pagination_info"] = pagination
     assert search_messages([{"type": "text", "text": json.dumps(inner)}]) is None
+
+
+@pytest.mark.parametrize(
+    "pagination, known",
+    [
+        ("There are no more messages available.\n", True),  # a channel's last page
+        ("There are no more messages in this thread.\n", True),  # a thread's
+        ("End of results - No more pages available.\\n", True),  # a search's, as sent
+        ("There are more messages available. To view the next page, use cursor: `FAKE01`", True),
+        ("For the next page of results use cursor `FAKE02`\n", True),
+        ("There are more messages available.", False),  # a next page with no cursor
+        ("", False),
+    ],
+)
+def test_page_information_is_known_only_in_the_connectors_wording(pagination, known):
+    response = [{"type": "text", "text": json.dumps({"pagination_info": pagination})}]
+    assert pages_known(response) is known

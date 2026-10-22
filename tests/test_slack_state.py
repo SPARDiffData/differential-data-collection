@@ -47,8 +47,9 @@ def thread(response, ts=PARENT):
     return "slack_read_thread", tool_input | {"limit": 1000}, response
 
 
-def search(response, after=START):
-    tool_input = {
+def search(response, after=START, cursor=None):
+    tool_input = {"cursor": cursor} if cursor else {}
+    tool_input |= {
         "content_types": "messages",
         "filters": f"in:<#{CHANNEL}>",
         "channel_types": "public_channel,private_channel",
@@ -151,6 +152,7 @@ def test_an_incomplete_run_leaves_the_start_point_where_it_was(
 
 
 THREAD = (FIXTURES / "read_thread_late.txt").read_text(encoding="utf-8")
+THREAD_END = "There are no more messages in this thread.\n"  # the connector's last-page line
 
 
 def text_block(value) -> list[dict]:
@@ -162,13 +164,13 @@ def text_block(value) -> list[dict]:
     [
         text_block("Error: thread_not_found"),  # not the connector's JSON
         text_block({"error": "thread_not_found"}),
-        text_block({"messages": "", "pagination_info": "There are no more messages."}),
+        text_block({"messages": "", "pagination_info": THREAD_END}),
         text_block({"messages": THREAD}),  # no page information, so no way to tell the last page
         # Another thread's read, saved under this thread's ts.
         text_block(
             {
                 "messages": THREAD.replace("1790864040.000100", "1790870700.000200"),
-                "pagination_info": "There are no more messages.",
+                "pagination_info": THREAD_END,
             }
         ),
     ],
@@ -210,6 +212,94 @@ def test_a_read_cut_short_or_a_start_that_isnt_a_time_doesnt_count(
     else:
         late_input = late_input | {"oldest": START}
     slack_run(config, T1, [(tool, new_input, new), found, ("slack_read_thread", late_input, late)])
+    assert f"the next run reads the same stretch again: 1 {why}." in build(config)
+    assert read_state(config.data_dir) == {CHANNEL: "2026-10-04T12:00:00Z"}
+
+
+def broken(fixture: str, ts: str) -> str:
+    """A copy of a fixture's text with one message's ts that diffdata can't read."""
+    return (FIXTURES / fixture).read_text(encoding="utf-8").replace(ts, ts.split(".")[0] + ".oops")
+
+
+@pytest.mark.parametrize(
+    "reads, why",
+    [
+        # The post with replies can't be read, so its thread would never be asked for.
+        (
+            lambda: [
+                channel(
+                    text_block(
+                        {
+                            "messages": broken("read_channel.txt", PARENT),
+                            "pagination_info": "There are no more messages available.\n",
+                        }
+                    )
+                )
+            ],
+            slack_state.PAGES,
+        ),
+        # A reply in the thread can't be read, so it isn't in the store.
+        (
+            lambda: [
+                channel(
+                    text_block(
+                        {
+                            "messages": (FIXTURES / "read_channel.txt").read_text(encoding="utf-8"),
+                            "pagination_info": "There are no more messages available.\n",
+                        }
+                    )
+                ),
+                thread(
+                    text_block(
+                        {
+                            "messages": broken("read_thread.txt", "1790865060.000120"),
+                            "pagination_info": THREAD_END,
+                        }
+                    )
+                ),
+            ],
+            slack_state.THREADS,
+        ),
+    ],
+)
+def test_a_message_diffdata_couldnt_read_means_the_run_isnt_complete(config, slack_run, reads, why):
+    slack_run(config, T0, reads())
+    report = build(config)
+    assert "Couldn't read 1 message(s)" in report and f"1 {why}." in report
+    assert read_state(config.data_dir) == {}
+
+
+@pytest.mark.parametrize(
+    "pagination",
+    ["", "There are more messages. Use the next cursor.", "Something new."],
+)
+def test_page_information_diffdata_doesnt_know_isnt_a_last_page(config, slack_run, pagination):
+    text = (FIXTURES / "read_channel_new.txt").read_text(encoding="utf-8")
+    slack_run(config, T0, [channel(text_block({"messages": text, "pagination_info": pagination}))])
+    assert f"1 {slack_state.PAGES}." in build(config)
+    assert read_state(config.data_dir) == {}
+
+
+@pytest.mark.parametrize("which", ["channel read", "search"])
+def test_a_later_page_that_starts_later_than_planned_doesnt_count(
+    config, first_export, slack_run, slack_response, slack_search, incremental, which
+):
+    if which == "channel read":
+        reads = [
+            channel(slack_response("read_channel_new.txt", "FAKECURSOR01"), oldest=START),
+            channel(slack_response("read_channel_new.txt"), oldest=LATER, cursor="FAKECURSOR01"),
+            *incremental[1:],
+        ]
+        why = slack_state.LATE
+    else:
+        reads = [
+            incremental[0],
+            search(slack_search(cursor="FAKECURSOR02")),
+            search(slack_search(NO_RESULTS), after=LATER, cursor="FAKECURSOR02"),
+            incremental[2],
+        ]
+        why = slack_state.NO_SEARCH
+    slack_run(config, T1, reads)
     assert f"the next run reads the same stretch again: 1 {why}." in build(config)
     assert read_state(config.data_dir) == {CHANNEL: "2026-10-04T12:00:00Z"}
 

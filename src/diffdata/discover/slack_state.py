@@ -10,8 +10,9 @@ when all three hold:
      also reached its last page.
   3. Every thread the reads listed was read to its last page: the posts with replies from
      the channel read, and the threads the search found new replies in.
-A page counts only if it's a result in the connector's shape, with its page information,
-and a thread only if its read shows the thread's parent post. A read that came back as an
+A page counts only if it's a result in the connector's shape, every message of which
+diffdata could read, with page information that says "last page" or gives the next cursor.
+A thread counts only if its read shows the thread's parent post. A read that came back as an
 error is saved like any other, but can't make a run complete.
 The channel's start point is then that run's start time, and the next run starts OVERLAP
 before it. The overlap covers clock differences and the search index's delay. Otherwise the
@@ -29,7 +30,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from diffdata.discover.slack_parse import next_cursor, parse_result, result_json
+from diffdata.discover.slack_parse import next_cursor, pages_known, parse_result, result_json
 
 OVERLAP = timedelta(hours=1)
 CHANNEL_READ = "slack_read_channel"
@@ -41,10 +42,10 @@ UNIX_TIME = re.compile(r"[0-9]{1,10}(?:\.[0-9]+)?")
 # before the newest, and a thread is always read in full.
 CUT_SHORT = {CHANNEL_READ: {"latest"}, THREAD_READ: {"latest", "oldest"}}
 # Why a run didn't move a channel's start point, in the order the build's report lists them.
-PAGES = "a channel page wasn't read"
+PAGES = "a channel page wasn't read in full"
 LATE = "the channel read started later than planned"
 NO_SEARCH = "the search for late replies wasn't finished"
-THREADS = "a thread wasn't read"
+THREADS = "a thread wasn't read in full"
 NOT_READ = "the channel wasn't read"
 REASONS = (PAGES, LATE, NO_SEARCH, THREADS, NOT_READ)
 
@@ -158,23 +159,39 @@ def seconds(value) -> float | None:
     return float(value) if isinstance(value, str) and UNIX_TIME.fullmatch(value) else None
 
 
+def on_time(start, planned: int | None) -> bool:
+    """Whether a page that starts at `start` (None: from the beginning) starts no later than
+    planned. With nothing planned, only from the beginning will do."""
+    if start is None:
+        return True
+    when = seconds(start)
+    return planned is not None and when is not None and when <= planned
+
+
 def a_read(record: dict) -> bool:
     """Whether a saved channel or thread read is a whole result in the connector's shape:
-    JSON with its messages text and its page information, from a read that wasn't cut
-    short. An error, or a result in a shape we don't know, can't count as a page read."""
+    JSON with its messages text, every message of which diffdata could read, and page
+    information that says either "last page" or where the next one is, from a read that
+    wasn't cut short. An error, a message we couldn't read (whose replies we'd never know
+    about), or page information we don't know can't count as a page read."""
     found = result_json(record.get("tool_response"))
     return (
         found is not None
         and isinstance(found.get("messages"), str)
-        and isinstance(found.get("pagination_info"), str)
+        and pages_known(record.get("tool_response"))
+        and parse(record)[1] == 0
         and not CUT_SHORT.get(tool(record), set()) & inputs(record).keys()
     )
 
 
-def messages(record: dict) -> list:
+def parse(record: dict) -> tuple[list, int]:
     return parse_result(
         str(record.get("tool_name", "")), inputs(record), record.get("tool_response")
-    )[0]
+    )
+
+
+def messages(record: dict) -> list:
+    return parse(record)[0]
 
 
 def why_incomplete(records: list[dict], planned: int | None) -> str | None:
@@ -185,17 +202,13 @@ def why_incomplete(records: list[dict], planned: int | None) -> str | None:
     if pages is None:
         return PAGES if reads else NOT_READ
     listed = {m.ts for page in pages for m in messages(page) if m.replies}
-    first = inputs(pages[0])
-    if "oldest" in first:
-        start = seconds(first["oldest"])
-        if planned is None or start is None or start > planned:
-            return LATE
+    # Every page's start, not just the first: a later page could start later and skip some.
+    if not all(on_time(inputs(page).get("oldest"), planned) for page in pages):
+        return LATE
+    if "oldest" in inputs(pages[0]):
         searches = [r for r in records if tool(r) == SEARCH]
         found = all_pages(searches, search_cursors)
-        if found is None:
-            return NO_SEARCH
-        after = found[0].get("after")
-        if after is not None and ((searched := seconds(after)) is None or searched > planned):
+        if found is None or not all(on_time(page.get("after"), planned) for page in found):
             return NO_SEARCH
         listed |= {ts for page in found for ts in page.get("threads", []) if isinstance(ts, str)}
     threads = [r for r in records if tool(r) == THREAD_READ and a_read(r)]

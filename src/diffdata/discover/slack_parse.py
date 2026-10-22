@@ -74,6 +74,11 @@ FILE = re.compile(
 REACTION = re.compile(r"(?P<name>[^\s,()]+) \((?P<count>\d+)\)")
 SLACK_MARKUP = re.compile(r"<([^<>\n]+)>")
 CURSOR = re.compile(r"cursor:?\s*`([^`]+)`")  # "...use cursor: `bmV4dF90czox...`"
+# What the connector says on the last page of a channel, a thread and a search. Anything that
+# is neither this nor a cursor is page information we don't know, so it isn't a last page.
+LAST_PAGE = re.compile(
+    r"There are no more messages (?:available|in this thread)\.|End of results - No more pages"
+)
 REPLIES = re.compile(r"^(\d+) repl")  # "Thread: 3 replies (latest: ...)"
 # A message's text could hold lines that look like a search's own, so a search is refused when
 # the count doesn't match the results, or a result shows a line before its text twice or in
@@ -144,6 +149,14 @@ def next_cursor(tool_response) -> str | None:
     return match[1] if match else None
 
 
+def pages_known(tool_response) -> bool:
+    """Whether a result's page information says it's the last page, or gives the next cursor."""
+    pagination = (result_json(tool_response) or {}).get("pagination_info")
+    if not isinstance(pagination, str):
+        return False
+    return LAST_PAGE.match(pagination) is not None or CURSOR.search(pagination) is not None
+
+
 def parse_result(tool_name: str, tool_input: dict, tool_response) -> tuple[list[Message], int]:
     """The messages in one saved tool result, and how many blocks couldn't be read."""
     in_thread = tool_name.endswith("slack_read_thread")
@@ -172,7 +185,7 @@ def search_messages(tool_response) -> list[tuple[str, str, str | None]] | None:
     and Permalink line before its text."""
     found = result_json(tool_response)
     text = found.get("results") if found else None
-    if not isinstance(text, str) or not isinstance(found.get("pagination_info"), str):
+    if not isinstance(text, str) or not pages_known(tool_response):
         return None
     blocks = SEARCH_BLOCK.split(text)
     count = SEARCH_COUNT.search(blocks[0])  # before the first result, out of any message's reach

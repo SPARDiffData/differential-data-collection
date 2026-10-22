@@ -44,6 +44,7 @@ from diffdata.common.paths import UnsafeDataDirError
 from diffdata.discover import slack_state
 from diffdata.discover.slack_parse import (
     next_cursor,
+    pages_known,
     parse_result,
     raw_text,
     result_json,
@@ -255,6 +256,9 @@ def search_channel(data: Path, run: Run, tool_input) -> str:
     after = tool_input.get("after", "0")
     if not isinstance(after, str) or not UNIX_TIME.fullmatch(after):
         raise SlackExportError("This Slack search's start isn't a time as /slack-export gives it")
+    # The tool leaves bots out unless told otherwise, and a bot's late reply counts too.
+    if kind == "messages" and tool_input.get("include_bots") is not True:
+        raise SlackExportError("This message search leaves out bots' replies")
     channel_types = tool_input.get("channel_types")
     if (
         not isinstance(channel_types, str)
@@ -470,7 +474,12 @@ def saved_note(tool: str, tool_name: str, tool_input: dict, response, overflowed
     elif not messages:
         note += " That's unexpected: if you expected messages, stop and tell the user."
     cursor = next_cursor(response)
-    note += f" Next page: call again with cursor `{cursor}`." if cursor else " No more pages."
+    if cursor:
+        note += f" Next page: call again with cursor `{cursor}`."
+    elif pages_known(response):
+        note += " No more pages."
+    else:
+        note += " diffdata can't tell whether there are more pages: stop and tell the user."
     if tool == "slack_read_channel":
         threads = [m.ts for m in messages if m.replies]
         note += (
