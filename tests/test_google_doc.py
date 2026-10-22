@@ -605,3 +605,51 @@ def test_an_unknown_op_on_suggested_text_is_a_warning_but_style_ops_are_not(tmp_
         tmp_path, DOC, "f1", "2026-10-06T09:00:00Z", "browser-file", {"changelog.json": body}
     )
     assert build(tmp_path)["replay warnings"] == 1
+
+
+def test_a_mention_in_a_comment_is_not_kept_as_an_email(tmp_path):
+    # Drive writes an @-mention as the person's email, though they typed a name.
+    thread = [
+        {
+            "id": "c1",
+            "createdTime": "2026-10-05T11:00:00.000Z",
+            "author": {"displayName": "Alex Example", "permissionId": "p1"},
+            "content": "Can you check this +sam@example.com?",
+            "replies": [
+                {
+                    "id": "c1-r1",
+                    "createdTime": "2026-10-05T11:30:00.000Z",
+                    "author": {"displayName": "Sam Sample", "permissionId": "p2"},
+                    "content": "Yes, and @alex.example@example.org too.",
+                }
+            ],
+        }
+    ]
+    files = {"comments.json": json.dumps(thread), "export.txt": "Text\n"}
+    save_fetch(tmp_path, DOC, "f1", "2026-10-06T09:00:00Z", "google-login", files)
+    build(tmp_path)
+    (comment,) = of_type(tmp_path, "comment")
+    (reply,) = of_type(tmp_path, "reply")
+    assert comment["text"] == "Can you check this @[mention]?"
+    assert reply["text"] == "Yes, and @[mention] too."
+    built = [p for p in documents_dir(tmp_path).rglob("*") if p.is_file() and "raw" not in p.parts]
+    assert [p.name for p in built if EMAIL.search(p.read_text("utf-8"))] == []
+    # Raw keeps what Google sent, until scrubbing (SCR-2).
+    raw = document_dir(tmp_path, "google-doc", DOC) / "raw" / "f1" / "comments.json"
+    assert "+sam@example.com" in raw.read_text("utf-8")
+
+
+def test_deleting_all_but_raw_and_building_again_gives_the_same_files(tmp_path):
+    full_fetch(tmp_path)
+    full_fetch(tmp_path, "20261007T090000Z", "2026-10-07T09:00:00Z")
+    build(tmp_path)
+
+    def derived() -> dict:
+        files = [p for p in documents_dir(tmp_path).rglob("*") if p.is_file()]
+        return {p: p.read_bytes() for p in files if "raw" not in p.parts}
+
+    before = derived()
+    for path in before:
+        path.unlink()
+    build(tmp_path)
+    assert derived() == before

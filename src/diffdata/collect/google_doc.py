@@ -28,7 +28,8 @@ What the reader makes of them:
   newest changelog is dropped, since the changelog already covers it, and so is one whose
   text matches the version before it apart from line endings.
 - Comments, replies, resolves and reopens, from comments.json. Every fetch shows them
-  again; the shared format keeps each one once.
+  again; the shared format keeps each one once. Drive writes an @-mention as the person's
+  email ("+sam@example.com"), though they typed a name, so it becomes MENTION_SHOWN.
 - Suggestions, from the changelog: one per suggestion ID, with the text it inserts or
   marks for deletion, after any typing fixed or marks taken back within it.
 The changelog's single edits (every insert and delete) stay in raw for now: the shared
@@ -45,6 +46,7 @@ from pathlib import Path
 
 from diffdata.collect.gdocs_changelog import DocState, edit_events, iso
 from diffdata.common.documents import (
+    EMAIL,
     Actor,
     Anchor,
     Document,
@@ -67,6 +69,9 @@ XSSI_PREFIX = ")]}'"
 REPLY_TYPES = {"resolve": "resolve", "reopen": "reopen"}
 # One page of a Drive list: comments.json, comments-2.json, revisions.json and so on.
 PAGE = re.compile(r"(comments|revisions)(?:-(\d+))?\.json")
+# An @-mention in a Drive comment's text, which Drive writes as the person's email.
+MENTION = re.compile(rf"[+@]{EMAIL.pattern}")
+MENTION_SHOWN = "@[mention]"
 
 
 class GoogleDocError(Exception):
@@ -179,6 +184,11 @@ def drive_actor(user: dict | None) -> Actor | None:
         return Actor(perm) if perm else None
 
 
+def without_mentions(text: str | None) -> str | None:
+    """A comment's text with each @-mention's email swapped for MENTION_SHOWN."""
+    return MENTION.sub(MENTION_SHOWN, text) if text else text
+
+
 def comment_events(fetch: Fetch) -> list[Event]:
     events = []
     for raw, comment in fetch.pages("comments"):
@@ -191,7 +201,7 @@ def comment_events(fetch: Fetch) -> list[Event]:
                 at=comment.get("createdTime"),
                 actor=drive_actor(comment.get("author")),
                 native_id=comment["id"],
-                text=comment.get("content"),
+                text=without_mentions(comment.get("content")),
                 anchor=Anchor(html.unescape(quote)) if quote else None,
             )
         )
@@ -204,7 +214,7 @@ def comment_events(fetch: Fetch) -> list[Event]:
                     at=reply.get("createdTime"),
                     actor=drive_actor(reply.get("author")),
                     native_id=reply["id"],
-                    text=reply.get("content") or None,
+                    text=without_mentions(reply.get("content")) or None,
                     parent=comment["id"],
                 )
             )
@@ -238,7 +248,8 @@ def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event],
         at = iso(edit["ts_ms"])
         if edit["source"] == "snapshot" and stretch is None:
             # The doc as it stood when the changelog starts: a version of its own, by nobody
-            # we know, even if no edits follow.
+            # we know, even if no edits follow. Google doesn't say when the snapshot was
+            # taken, so its time is the first edit's, a bound rather than an edit time.
             stretch = {"session": None, "at": at, "editor": None, "rev": edit["rev"]}
         elif edit["source"] == "changelog":
             # Google leaves the session out of some entries, so a missing one isn't a new
