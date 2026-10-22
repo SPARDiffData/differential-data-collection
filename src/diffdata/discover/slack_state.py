@@ -205,7 +205,8 @@ def why_incomplete(records: list[dict], planned: int | None) -> str | None:
     # Every page's start, not just the first: a later page could start later and skip some.
     if not all(on_time(inputs(page).get("oldest"), planned) for page in pages):
         return LATE
-    if "oldest" in inputs(pages[0]):
+    # Any page with a start leaves older threads out, so their late replies need the search.
+    if any("oldest" in inputs(page) for page in pages):
         searches = [r for r in records if tool(r) == SEARCH]
         found = all_pages(searches, search_cursors)
         if found is None or not all(on_time(page.get("after"), planned) for page in found):

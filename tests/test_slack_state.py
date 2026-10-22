@@ -280,7 +280,7 @@ def test_page_information_diffdata_doesnt_know_isnt_a_last_page(config, slack_ru
     assert read_state(config.data_dir) == {}
 
 
-@pytest.mark.parametrize("which", ["channel read", "search"])
+@pytest.mark.parametrize("which", ["channel read", "search", "start only on a later page"])
 def test_a_later_page_that_starts_later_than_planned_doesnt_count(
     config, first_export, slack_run, slack_response, slack_search, incremental, which
 ):
@@ -291,6 +291,14 @@ def test_a_later_page_that_starts_later_than_planned_doesnt_count(
             *incremental[1:],
         ]
         why = slack_state.LATE
+    elif which == "start only on a later page":
+        # The first page reads from the beginning, a later one from the start point, and
+        # there's no search, so late replies in threads older than the start would be missed.
+        reads = [
+            channel(slack_response("read_channel_new.txt", "FAKECURSOR01")),
+            channel(slack_response("read_channel_new.txt"), oldest=START, cursor="FAKECURSOR01"),
+        ]
+        why = slack_state.NO_SEARCH
     else:
         reads = [
             incremental[0],

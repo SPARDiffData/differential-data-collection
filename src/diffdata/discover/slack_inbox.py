@@ -262,7 +262,8 @@ def search_channel(data: Path, run: Run, tool_input) -> str:
     channel_types = tool_input.get("channel_types")
     if (
         not isinstance(channel_types, str)
-        or {kind.strip() for kind in channel_types.split(",")} != SEARCH_CHANNEL_TYPES
+        or {channel_type.strip() for channel_type in channel_types.split(",")}
+        != SEARCH_CHANNEL_TYPES
     ):
         raise SlackExportError("This Slack search doesn't leave out DMs and group DMs")
     filters = tool_input.get("filters")
