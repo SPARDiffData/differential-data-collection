@@ -474,3 +474,134 @@ def test_replay_warnings_are_counted(tmp_path):
         tmp_path, DOC, "f1", "2026-10-06T09:00:00Z", "browser-file", {"changelog.json": body}
     )
     assert build(tmp_path)["replay warnings"] == 1
+
+
+def changelog_of(*entries, snapshot=()) -> str:
+    return json.dumps({"chunkedSnapshot": list(snapshot), "changelog": list(entries)})
+
+
+def clean_copy(data) -> str:
+    (path,) = (documents_dir(data) / "current").glob(f"google-doc_*_{DOC}.md")
+    return path.read_text(encoding="utf-8").split("---\n\n", 1)[1]
+
+
+def test_indices_count_utf16_units_like_google_does(tmp_path):
+    # An emoji takes two UTF-16 units, so "A" after it is at index 3, not 2. So is a
+    # mathematical letter outside the BMP.
+    body = changelog_of(
+        entry({"ty": "is", "ibi": 1, "s": "\U0001f600ABC\n"}, "2026-10-05T10:00:00Z", "1", 1, "A"),
+        entry({"ty": "ds", "si": 3, "ei": 3}, "2026-10-05T10:00:01Z", "1", 2, "A"),
+        entry({"ty": "is", "ibi": 5, "s": "\U0001d465=1"}, "2026-10-05T10:00:02Z", "1", 3, "A"),
+        entry(
+            {"ty": "iss", "ibi": 3, "s": "\U0001f44d", "sugid": "sug-1"},
+            "2026-10-05T10:00:03Z",
+            "1",
+            4,
+            "A",
+        ),
+        # Marks "B" (after the emoji and the suggested thumbs-up) for deletion.
+        entry(
+            {"ty": "msfd", "si": 5, "ei": 5, "sugid": "sug-2"}, "2026-10-05T10:00:04Z", "1", 5, "A"
+        ),
+    )
+    save_fetch(
+        tmp_path, DOC, "f1", "2026-10-06T09:00:00Z", "browser-file", {"changelog.json": body}
+    )
+    counts = build(tmp_path)
+    assert counts["replay warnings"] == 0
+    assert clean_copy(tmp_path) == "\U0001f600BC\U0001d465=1\n"
+    texts = {s["native_id"]: s["text"] for s in of_type(tmp_path, "suggestion")}
+    assert texts == {"sug-1": "\U0001f44d", "sug-2": "B"}
+
+
+def test_a_drive_revision_newer_than_the_changelog_is_kept(tmp_path):
+    # Collected first with the changelog, later only through Drive's revisions, with no
+    # export.txt. The newer revision is the doc as it is now.
+    old = changelog_of(
+        entry({"ty": "is", "ibi": 1, "s": "Old text\n"}, "2026-10-05T10:00:00Z", "1", 1, "A")
+    )
+    save_fetch(tmp_path, DOC, "f1", "2026-10-06T09:00:00Z", "browser-file", {"changelog.json": old})
+    revisions = [
+        {"id": "1", "modifiedTime": "2026-10-05T10:00:00Z"},
+        {"id": "2", "modifiedTime": "2026-10-07T10:00:00Z"},
+    ]
+    files = {
+        "revisions.json": json.dumps(revisions),
+        "revision-1.txt": "Old text\n",
+        "revision-2.txt": "New text\n",
+    }
+    save_fetch(tmp_path, DOC, "f2", "2026-10-08T09:00:00Z", "connector", files)
+    assert build(tmp_path)["history: changelog"] == 1
+    versions = of_type(tmp_path, "version")
+    # Revision 1 is covered by the changelog, so only revision 2 is added.
+    assert [v["native_id"] for v in versions] == ["rev-1", "2"]
+    assert clean_copy(tmp_path) == "New text\n"
+
+
+def test_a_changelog_with_only_a_snapshot_still_gives_the_doc(tmp_path):
+    # Google can send the doc's text as a snapshot with no edits after it.
+    body = changelog_of(snapshot=[{"ty": "is", "ibi": 1, "s": "Hello\n"}])
+    files = {"changelog.json": body, "export.txt": "Hello\r\n"}
+    save_fetch(tmp_path, DOC, "f1", "2026-10-06T09:00:00Z", "browser-file", files)
+    assert build(tmp_path)["docs"] == 1
+    assert clean_copy(tmp_path) == "Hello\n"
+    (version,) = of_type(tmp_path, "version")
+    assert version["native_id"] == "rev-0"
+
+
+def test_a_snapshot_is_its_own_version_before_the_edits_after_it(tmp_path):
+    body = changelog_of(
+        entry({"ty": "is", "ibi": 7, "s": "World\n"}, "2026-10-05T10:00:00Z", "1", 1, "A"),
+        snapshot=[{"ty": "is", "ibi": 1, "s": "Hello\n"}],
+    )
+    save_fetch(
+        tmp_path, DOC, "f1", "2026-10-06T09:00:00Z", "browser-file", {"changelog.json": body}
+    )
+    build(tmp_path)
+    assert [v["native_id"] for v in of_type(tmp_path, "version")] == ["rev-0", "rev-1"]
+    assert clean_copy(tmp_path) == "Hello\nWorld\n"
+
+
+def test_a_changelog_with_no_text_falls_back_to_the_export(tmp_path):
+    # Styling only: the replay gives no text, so the export is all we have.
+    body = changelog_of(
+        entry({"ty": "as", "si": 1, "ei": 1}, "2026-10-05T10:00:00Z", "1", 1, "A"),
+    )
+    files = {"changelog.json": body, "export.txt": "Typed elsewhere\n"}
+    save_fetch(tmp_path, DOC, "f1", "2026-10-06T09:00:00Z", "browser-file", files)
+    counts = build(tmp_path)
+    assert counts["docs"] == 1 and counts["history: snapshots"] == 1
+    assert clean_copy(tmp_path) == "Typed elsewhere\n"
+
+
+def test_an_unknown_op_on_suggested_text_is_a_warning_but_style_ops_are_not(tmp_path):
+    # Google's op for accepting a suggestion isn't known yet. If it's one the replay doesn't
+    # handle, the accepted text would silently drop out, so it has to show up as a warning.
+    # Suggesting and rejecting a style ("sas", "ras") changes no text, so it doesn't warn.
+    body = changelog_of(
+        entry({"ty": "is", "ibi": 1, "s": "One\n"}, "2026-10-05T10:00:00Z", "1", 1, "A"),
+        entry(
+            {"ty": "iss", "ibi": 4, "s": " two", "sugid": "sug-1"},
+            "2026-10-05T10:00:01Z",
+            "1",
+            2,
+            "A",
+        ),
+        entry(
+            {"ty": "sas", "si": 1, "ei": 3, "sugid": "sug-2", "st": "text"},
+            "2026-10-05T10:00:02Z",
+            "1",
+            3,
+            "A",
+        ),
+        entry(
+            {"ty": "ras", "si": 1, "ei": 3, "sugid": "sug-2"}, "2026-10-05T10:00:03Z", "2", 4, "B"
+        ),
+        entry(
+            {"ty": "xyz", "si": 4, "ei": 7, "sugid": "sug-1"}, "2026-10-05T10:00:04Z", "2", 5, "B"
+        ),
+    )
+    save_fetch(
+        tmp_path, DOC, "f1", "2026-10-06T09:00:00Z", "browser-file", {"changelog.json": body}
+    )
+    assert build(tmp_path)["replay warnings"] == 1

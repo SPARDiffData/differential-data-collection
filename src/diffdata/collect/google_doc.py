@@ -23,7 +23,8 @@ What the reader makes of them:
 - Versions, best first. The newest changelog gives the full history: it's replayed, and
   each stretch of editing becomes a version (a new one when the editor or the editing
   session changes, or after IDLE without edits). Else each revision-<id>.txt is a
-  version. An export.txt is our own snapshot (COL-9). One fetched no later than the
+  version. With a changelog, a revision made after the newest changelog was fetched is
+  kept too. An export.txt is our own snapshot (COL-9). One fetched no later than the
   newest changelog is dropped, since the changelog already covers it, and so is one whose
   text matches the version before it apart from line endings.
 - Comments, replies, resolves and reopens, from comments.json. Every fetch shows them
@@ -235,7 +236,11 @@ def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event],
 
     for edit in edit_events(newest.json("changelog.json")):
         at = iso(edit["ts_ms"])
-        if edit["source"] == "changelog":
+        if edit["source"] == "snapshot" and stretch is None:
+            # The doc as it stood when the changelog starts: a version of its own, by nobody
+            # we know, even if no edits follow.
+            stretch = {"session": None, "at": at, "editor": None, "rev": edit["rev"]}
+        elif edit["source"] == "changelog":
             # Google leaves the session out of some entries, so a missing one isn't a new
             # session. A new editor, a new session or a pause starts a new stretch.
             session = edit["session"] or (stretch or {}).get("session")
@@ -341,17 +346,22 @@ def read(folder: Path, fetches: list[Fetch]) -> Reading | None:
 
     # The changelog always holds the whole history, so the newest one has everything.
     with_changelog = [f for f in fetches if "changelog.json" in f.files]
-    covered_to, warnings = None, 0
+    from_revisions = [v for fetch in fetches for v in revision_versions(fetch, revisions)]
+    native, covered_to, warnings = [], None, 0
     if with_changelog:
         native, suggestions, warnings = changelog_history(with_changelog)
-        # The changelog covers the doc up to when it was fetched, so an export from then or
-        # before adds nothing. (Drive's text export also lays out lists and paragraphs
-        # differently from the replay, so the two texts never match exactly.)
-        covered_to = with_changelog[-1].fetched_at
         events += suggestions
+    if native:
+        # The changelog covers the doc up to when it was fetched, so an export or a Drive
+        # revision from then or before adds nothing. (Drive's text export also lays out lists
+        # and paragraphs differently from the replay, so the two texts never match exactly.)
+        # One made later is newer history, as when a doc changes fetch route.
+        covered_to = with_changelog[-1].fetched_at
+        native += [v for v in from_revisions if exact(v.made_at or v.seen_at) > exact(covered_to)]
         history = "changelog"
     else:
-        native = [v for fetch in fetches for v in revision_versions(fetch, revisions)]
+        # No changelog, or one whose replay gave no text: fall back to what else was saved.
+        native = from_revisions
         history = "revisions" if native else "snapshots"
     snapshots = [
         Version(f.text("export.txt"), f.fetched_at, f.raw("export.txt"))

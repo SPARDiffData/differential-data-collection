@@ -12,10 +12,21 @@ Ops handled. Indices are 1-based and inclusive:
   msfd  mark text for deletion     {si, ei}   a suggested deletion
   usfd  unmark text for deletion   {si, ei}
   mlti  several ops at once        {mts: [...]}   flattened
-Anything else (styles, entities and so on) is kept as it came, as kind "format" or "other".
+Style ops change no text, so the replay skips them:
+  as    apply style
+  sas   suggest a style        {si, ei, sugid}
+  ras   reject a suggested style   {si, ei, sugid}   seen once, on a `sas` suggestion's ID
+  astss style suggested text   {si, ei, st}   its author formatting it while suggesting
+Anything else (entities and so on) is kept as it came, as kind "format" or "other".
+
+Google's op for *accepting* a suggestion isn't known yet. Accepted text would stay flagged
+as suggested, so an unknown op whose range covers suggested text is counted as a warning.
 
 The text buffer starts with one end-of-body marker. The body is everything before it;
 anything after it (footnotes and so on) is left out of `text()`.
+
+Indices count UTF-16 code units, as Docs does, so an emoji or other character outside the
+Basic Multilingual Plane takes two. The buffer holds one code unit per slot to match.
 """
 
 from datetime import UTC, datetime
@@ -28,10 +39,22 @@ TEXT_KINDS = {
     "msfd": "suggest_delete_mark",
     "usfd": "suggest_delete_unmark",
 }
-FORMAT_OPS = {"as"}  # apply style
+FORMAT_OPS = {"as", "sas", "ras", "astss"}
 END_OF_BODY = "\x00"
 # What each character is: plain text, a suggested insertion, or marked for suggested deletion.
 PLAIN, SUGGESTED, MARKED = 0, 1, -1
+
+
+def units(text: str) -> list[str]:
+    """Text as UTF-16 code units, one per item (a character outside the BMP gives two)."""
+    raw = text.encode("utf-16-le", "surrogatepass")
+    return [raw[i : i + 2].decode("utf-16-le", "surrogatepass") for i in range(0, len(raw), 2)]
+
+
+def joined(code_units: list[str]) -> str:
+    """UTF-16 code units back into text. A pair split by an edit becomes U+FFFD."""
+    raw = "".join(code_units).encode("utf-16-le", "surrogatepass")
+    return raw.decode("utf-16-le", "replace")
 
 
 def iso(ms: int | float | None) -> str | None:
@@ -114,9 +137,10 @@ class DocState:
 
     def insert(self, index, text: str, flag: int = PLAIN, sid: str | None = None) -> None:
         at = self.clamp(index, 1, len(self.chars) + 1, "insert") - 1
-        self.chars[at:at] = list(text)
-        self.flags[at:at] = [flag] * len(text)
-        self.ids[at:at] = [sid] * len(text)
+        added = units(text)
+        self.chars[at:at] = added
+        self.flags[at:at] = [flag] * len(added)
+        self.ids[at:at] = [sid] * len(added)
 
     def span(self, start, end, what: str) -> tuple[int, int]:
         start = self.clamp(start, 1, len(self.chars), f"{what} start")
@@ -125,7 +149,7 @@ class DocState:
 
     def delete(self, start, end) -> str:
         a, b = self.span(start, end, "delete")
-        removed = "".join(self.chars[a:b])
+        removed = joined(self.chars[a:b])
         del self.chars[a:b], self.flags[a:b], self.ids[a:b]
         if END_OF_BODY in removed:
             self.warnings.append("deleted the end-of-body marker (the index model may be off)")
@@ -135,7 +159,7 @@ class DocState:
         a, b = self.span(start, end, "mark")
         self.flags[a:b] = [flag] * (b - a)
         self.ids[a:b] = [sid] * (b - a)
-        return "".join(self.chars[a:b])
+        return joined(self.chars[a:b])
 
     def apply(self, event: dict) -> None:
         """Apply one edit event, filling in the text it deleted or marked."""
@@ -150,21 +174,32 @@ class DocState:
             event["marked_text"] = self.mark(event["start"], event["end"], MARKED, sid)
         elif kind == "suggest_delete_unmark":
             event["marked_text"] = self.mark(event["start"], event["end"], PLAIN)
+        elif kind == "other" and self.touches_suggestion(event.get("raw") or {}):
+            # Maybe Google's op for accepting a suggestion, which the replay doesn't know.
+            self.warnings.append(f"unhandled op {event.get('op_type')!r} on suggested text")
+
+    def touches_suggestion(self, op: dict) -> bool:
+        start, end = op.get("si"), op.get("ei")
+        if not (isinstance(start, int) and isinstance(end, int) and 1 <= start <= end):
+            return False
+        return SUGGESTED in self.flags[start - 1 : end]
 
     def suggestion_text(self, sid: str) -> str:
         """The text that belongs to one suggestion now: what it inserts or marks."""
         end = self.body_end()
-        return "".join(c for c, i in zip(self.chars[:end], self.ids[:end], strict=True) if i == sid)
+        return joined(
+            [c for c, i in zip(self.chars[:end], self.ids[:end], strict=True) if i == sid]
+        )
 
     def body_end(self) -> int:
         return self.chars.index(END_OF_BODY) if END_OF_BODY in self.chars else len(self.chars)
 
     def text(self) -> str:
         """The body, with pending suggested insertions shown."""
-        return "".join(self.chars[: self.body_end()])
+        return joined(self.chars[: self.body_end()])
 
     def base_text(self) -> str:
         """The body with every pending suggestion rejected."""
         end = self.body_end()
         pairs = zip(self.chars[:end], self.flags[:end], strict=True)
-        return "".join(char for char, flag in pairs if flag != SUGGESTED)
+        return joined([char for char, flag in pairs if flag != SUGGESTED])
