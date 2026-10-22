@@ -22,11 +22,11 @@ To configure it, copy `config.example.toml` to `config.toml` in a `.diffdata` fo
 
 ## Export a Slack channel (DIS-1)
 
-For the pilot there's no Slack app: Claude Code reads Slack for you through its Slack connector, as you. Nothing writes to Slack. This repo's `.claude/settings.json` removes every Slack write tool from Claude while it works in this folder. During `/slack-export`, a hook also stops any read of a channel or canvas that the export run doesn't name, and any search other than a files search of one of the run's channels, before it runs. The run takes its channels and canvases from `config.toml`. If that check can't run, the read is stopped too. The check stays on for the rest of that Claude session, so start a new session for each export, and for any other Slack work afterwards. This needs Claude Code 2.1.295 or later (`claude --version`).
+For the pilot there's no Slack app: Claude Code reads Slack for you through its Slack connector, as you. Nothing writes to Slack. This repo's `.claude/settings.json` removes every Slack write tool from Claude while it works in this folder. During `/slack-export`, a hook also stops any read of a channel or canvas that the export run doesn't name, and any search other than a files or message search of one of the run's channels, before it runs. The run takes its channels and canvases from `config.toml`. If that check can't run, the read is stopped too. The check stays on for the rest of that Claude session, so start a new session for each export, and for any other Slack work afterwards. This needs Claude Code 2.1.295 or later (`claude --version`).
 
 1. **Set up `config.toml`** in `~/.diffdata/`. List the channels to export under `slack_channels`; listing a channel is your opt-in. Set `slack_workspace_url` to your workspace's address. Keep `data_dir` outside the repo and outside OneDrive, Dropbox, Google Drive and iCloud: `diffdata` refuses those.
-2. **Try it.** Open Claude Code in the repo folder and type `/slack-export test`. It reads only the 5 newest messages of the first channel.
-3. **Run it.** Type `/slack-export`. Claude reads each channel and its threads. A hook saves each result unchanged to your data folder, so Claude never retypes it, and then `diffdata` builds:
+2. **Try it.** Open Claude Code in the repo folder and type `/slack-export test`. It reads only the 5 newest messages of the first channel, and skips threads.
+3. **Run it.** Type `/slack-export`. Claude reads each channel, searches it for late replies, and reads the threads. A hook saves each result unchanged to your data folder, so Claude never retypes it, and then `diffdata` builds:
    - `slack/export/<channel>/<date>.md`: one readable file per day (UTC), with thread replies under their post
    - `slack/store/<channel-id>/messages.jsonl`: every version of every message, for the later steps
 
@@ -34,7 +34,9 @@ Claude reports counts only. The raw results, including authors' emails, stay in 
 
 By hand: `uv run diffdata discover slack build` rebuilds the export from what's saved, and `uv run diffdata discover slack abort` stops a run. A run also closes on its own after an hour. If Claude says `uv` isn't found, restart VS Code.
 
-Not yet: each run reads every channel from the start. Reading only what's new, including late replies in older threads, comes next.
+**Only what's new.** The first complete export reads each channel from the start. After that, each run reads a channel only from an hour before the last complete run began. The hour covers clock differences and delays in Slack's search. A message search of the same channel finds new replies in older threads, and Claude then reads each of those threads again in full. The search's results aren't saved, only the threads it found replies in. A channel's start point moves forward only when a run read every page, finished the search, and read every thread listed. Otherwise the build says so, in counts, and the next run reads the same stretch again, so a skipped page can't leave a gap. A test run skips most of that, so it leaves the start point where it was. Each channel's start point is in `slack/state.json` in your data folder: delete that file and the next run reads everything again.
+
+**Edits to older posts** aren't seen by an incremental run. Type `/slack-export full` now and then: it reads every channel from the start, and every listed canvas.
 
 ## Collect Slack canvases (COL-2)
 

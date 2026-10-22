@@ -641,6 +641,21 @@ def test_a_canvas_not_read_for_refresh_days_is_read(config, due_run):
     assert "1 last read too long ago." in due
 
 
+def test_a_full_run_reads_every_listed_canvas(config, due_run, slack_hook, slack_response):
+    due_run(T0, {CANVAS: "12.3 KB"})
+    when = T0 + timedelta(hours=1)
+    begin(config, ["example-channel=C00000001"], now=when, full=True)
+    read_the_channel(config, slack_hook, slack_response, when)
+    search = slack_hook(SEARCH_TOOL, SEARCH_INPUT, files_search({CANVAS: "12.3 KB"}), "toolu_s2")
+    assert save(config, search, now=when + timedelta(minutes=1)) == 0
+    due = canvases_due(config, now=when + timedelta(minutes=2))
+    assert due == (
+        "1 of 1 listed canvas(es) to read.\n"
+        "Why (a canvas can have more than one reason): 1 full run.\n"
+        f"Canvases to read: {CANVAS}"
+    )
+
+
 def test_canvases_due_names_only_ids_and_counts(due_run):
     due, _ = due_run(T0, {CANVAS: "12.3 KB"})
     for private in ("Example Project Plan", "Canvas 1", "12.3", "Alex"):

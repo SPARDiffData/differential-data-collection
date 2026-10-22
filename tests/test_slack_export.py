@@ -147,6 +147,89 @@ def test_a_reply_also_sent_to_the_channel_stays_in_its_thread(
     assert "edited" not in day
 
 
+SEARCH_TOOL = "slack_search_public_and_private"
+MESSAGE_SEARCH = {
+    "content_types": "messages",
+    "filters": "in:<#C00000001>",
+    "after": "1791111600",
+    "channel_types": "public_channel,private_channel",
+    "natural_language_query": "",
+    "include_bots": True,
+    "include_context": False,
+    "sort": "timestamp",
+    "limit": 20,
+}
+
+
+@pytest.fixture
+def incremental_run(config, slack_run, slack_response, slack_search):
+    """An incremental run two days after export_run's: the channel from its start point,
+    with one new post, the search that finds a late reply in the older thread, and that
+    thread read again in full."""
+
+    def run():
+        reads = [
+            (
+                "slack_read_channel",
+                {"channel_id": CHANNEL, "oldest": "1791111600"},
+                slack_response("read_channel_new.txt"),
+            ),
+            (SEARCH_TOOL, MESSAGE_SEARCH, slack_search()),
+            (
+                "slack_read_thread",
+                {"channel_id": CHANNEL, "message_ts": PARENT},
+                slack_response("read_thread_late.txt"),
+            ),
+        ]
+        assert 'C00000001: from "1791111600"' in slack_run(config, T0 + timedelta(days=2), reads)
+        return build(config)
+
+    return run
+
+
+def test_an_incremental_run_adds_only_whats_new(config, export_run, incremental_run):
+    export_run()
+    before = store_lines(config)
+    report = incremental_run()
+    # 4 result files: the message search's record isn't one, and holds no messages.
+    assert report.splitlines()[0] == (
+        "1 channel(s): 4 result file(s), 15 message(s) read, 2 new or changed, "
+        "2 day file(s) written."
+    )
+    added = [json.loads(line) for line in store_lines(config)[len(before) :]]
+    assert store_lines(config)[: len(before)] == before
+    assert [r["ts"] for r in added] == ["1791212400.000600", "1791216000.000140"]
+    assert "1 of 1 channel(s) moved their start point forward." in report
+    for private in ("Sam", "example-channel", CHANNEL, "agenda", "example.com"):
+        assert private not in report
+
+
+def test_a_late_reply_found_by_search_lands_under_its_parent(config, export_run, incremental_run):
+    export_run()
+    incremental_run()
+    days = view(config)
+    assert "> **Sam Sample** · 2026-10-05 16:00 UTC" in days["2026-10-01.md"]
+    assert "> One late reply: the summary is in the doc now." in days["2026-10-01.md"]
+    assert "late reply" not in days["2026-10-05.md"]
+    assert "Draft agenda for Friday" in days["2026-10-05.md"]
+
+
+def test_building_after_an_incremental_run_again_adds_nothing(config, export_run, incremental_run):
+    export_run()
+    incremental_run()
+    before = (store_lines(config), view(config))
+    assert "0 new or changed, 0 day file(s) written" in build(config)
+    assert (store_lines(config), view(config)) == before
+
+
+def test_an_inbox_file_that_isnt_a_channel_or_thread_read_is_left_alone(config, export_run):
+    export_run()
+    stray = config.data_dir / "slack" / "inbox" / CHANNEL / "20261004T120000Z" / "other-1.json"
+    stray.write_text(json.dumps({"tool_name": "something_else", "saved_at": "x"}), "utf-8")
+    report = build(config)
+    assert "2 result file(s)" in report and "Couldn't read" not in report
+
+
 def test_the_store_keeps_ids_and_names_but_not_author_emails(config, export_run):
     export_run()
     records = [json.loads(line) for line in store_lines(config)]

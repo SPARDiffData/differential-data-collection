@@ -55,6 +55,8 @@ def add_discover_sources(discover: argparse.ArgumentParser) -> None:
         step = steps.add_parser(name, help=help_text, description=help_text)
         if name == "begin":
             step.add_argument("channels", nargs="+", metavar="NAME=ID")
+            full_help = "Read every channel from the start, and every listed canvas."
+            step.add_argument("--full", action="store_true", help=full_help)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -86,7 +88,7 @@ def run_slack_step(args: argparse.Namespace) -> int:
                 raise ConfigError(f"No channels are listed under slack_channels in {config.path}.")
             report = "\n".join([f"Opted-in channels, from {config.path}:", *config.slack_channels])
         elif args.step == "begin":
-            report = slack_inbox.begin(config, args.channels)
+            report = slack_inbox.begin(config, args.channels, full=args.full)
         elif args.step == "abort":
             report = slack_inbox.abort(config)
         elif args.step == "canvases-due":

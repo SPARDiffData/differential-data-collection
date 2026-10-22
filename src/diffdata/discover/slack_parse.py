@@ -24,6 +24,22 @@ of text blocks holding JSON, whose `messages` field is that text. In detailed mo
 Bots have no email, as in "Slackbot (USLACKBOT)". Attached files come as
 "Files: name (ID: F..., type, size)". Author emails are read past and never kept: the raw
 inbox still has them until scrubbing (SCR-2).
+
+A message search (slack_search_public_and_private with content_types "messages") is JSON
+whose `results` field is text, newest first, or "No results found.":
+
+    ## Messages (2 results)
+    ### Result 1 of 2
+    Channel: #name (ID: C...)
+    From: Name <email> (ID: U...)
+    Time: ...
+    Message_ts: 1790864400.000110
+    Permalink: [link](https://.../archives/C.../p...?thread_ts=<parent ts>&cid=C...)
+    Text:
+    the message text, any number of lines
+
+Only a thread reply's permalink has a thread_ts. `search_messages()` reads the channel, ts
+and thread ts of each message, never its text, author or email.
 """
 
 import hashlib
@@ -59,6 +75,18 @@ REACTION = re.compile(r"(?P<name>[^\s,()]+) \((?P<count>\d+)\)")
 SLACK_MARKUP = re.compile(r"<([^<>\n]+)>")
 CURSOR = re.compile(r"cursor:?\s*`([^`]+)`")  # "...use cursor: `bmV4dF90czox...`"
 REPLIES = re.compile(r"^(\d+) repl")  # "Thread: 3 replies (latest: ...)"
+# A message's text could hold lines that look like a search's own, so a search is refused when
+# the count doesn't match the results, or a result shows a line before its text twice or in
+# another shape. One message's text mustn't pass as another message's channel or thread.
+SEARCH_COUNT = re.compile(r"^## Messages \((\d+) results?\)[ \t]*$", re.MULTILINE)
+SEARCH_EMPTY = re.compile(r"^No results found\.[ \t]*$", re.MULTILINE)
+SEARCH_BLOCK = re.compile(r"^### Result \d+ of \d+[ \t]*$", re.MULTILINE)
+SEARCH_LINES = {
+    "Channel": re.compile(r"#[^\s()]+ \(ID: (?P<value>[A-Z0-9]+)\)"),
+    "Message_ts": re.compile(r"(?P<value>[0-9]{1,10}\.[0-9]+)"),
+    "Permalink": re.compile(r"\[link\]\((?P<value>[^()\s]+)\)"),
+}
+THREAD_TS = re.compile(r"[?&]thread_ts=([0-9]{1,10}\.[0-9]+)(?:&|$)")
 
 
 @dataclass
@@ -135,6 +163,41 @@ def parse_result(tool_name: str, tool_input: dict, tool_response) -> tuple[list[
             message.thread_ts = parent_ts
         messages.append(message)
     return messages, skipped
+
+
+def search_messages(tool_response) -> list[tuple[str, str, str | None]] | None:
+    """(channel ID, ts, thread ts or None) for each message a message search shows. None if
+    the results aren't where diffdata expects them, or any message doesn't show exactly one
+    Channel, Message_ts and Permalink line before its text."""
+    found = result_json(tool_response)
+    text = found.get("results") if found else None
+    if not isinstance(text, str):
+        return None
+    blocks = SEARCH_BLOCK.split(text)
+    count = SEARCH_COUNT.search(blocks[0])  # before the first result, out of any message's reach
+    if count is None:
+        return [] if len(blocks) == 1 and SEARCH_EMPTY.search(text) else None
+    if int(count[1]) != len(blocks) - 1:
+        return None
+    rows = []
+    for block in blocks[1:]:
+        header, has_text, _ = block.partition("\nText:")
+        if not has_text:
+            return None
+        values: dict[str, str] = {}
+        for line in header.split("\n"):
+            key, _, value = line.partition(": ")
+            if key not in SEARCH_LINES:  # From and Time, which aren't kept
+                continue
+            match = SEARCH_LINES[key].fullmatch(value.strip())
+            if match is None or key in values:
+                return None
+            values[key] = match["value"]
+        if values.keys() != SEARCH_LINES.keys():
+            return None
+        thread = THREAD_TS.search(values["Permalink"])
+        rows.append((values["Channel"], values["Message_ts"], thread[1] if thread else None))
+    return rows
 
 
 def parse_block(block: str, who: str | None) -> Message | None:

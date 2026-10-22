@@ -1,0 +1,5 @@
+Channel: #example-channel (C00000001)
+
+=== Message from Sam Sample <sam@example.com> (U00000002) at 2026-10-05 10:00:00 CDT ===
+Message TS: 1791212400.000600
+Draft agenda for Friday is in the channel canvas.

@@ -11,6 +11,7 @@ from diffdata.discover.slack_parse import (
     parse_result,
     permalink,
     result_text,
+    search_messages,
     to_markdown,
 )
 
@@ -247,3 +248,20 @@ def test_a_files_line_with_a_comma_in_the_name_is_still_a_detail():
 )
 def test_a_malformed_message_ts_is_counted_and_not_kept(ts):
     assert parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(ts=ts)) == ([], 1)
+
+
+def test_a_message_search_gives_each_messages_channel_ts_and_thread_only(slack_search):
+    # A reply names its thread in its permalink; a top-level post doesn't.
+    assert search_messages(slack_search()) == [
+        (CHANNEL, "1791216000.000140", PARENT),
+        (CHANNEL, "1791212400.000600", None),
+    ]
+
+
+def test_an_empty_message_search_gives_no_messages(slack_search):
+    assert search_messages(slack_search("# Search Results for: \n\nNo results found.\n")) == []
+
+
+@pytest.mark.parametrize("response", [None, [], [{"type": "text", "text": '{"messages": "x"}'}]])
+def test_a_message_search_without_results_gives_none(response):
+    assert search_messages(response) is None
