@@ -508,6 +508,14 @@ def test_a_message_search_is_saved_as_thread_ids_only(run_open, slack_hook, slac
         assert private not in path.read_text(encoding="utf-8") and private not in note
 
 
+def test_a_files_search_is_never_saved_as_a_thread_list(run_open, slack_hook):
+    assert save(run_open, payload(), now=T0) == 0
+    files = [{"type": "text", "text": (FIXTURES / "search_files.json").read_text(encoding="utf-8")}]
+    assert save(run_open, slack_hook(SEARCH_TOOL, FILES_SEARCH, files), now=T0) == 0
+    assert search_files(run_open) == []
+    assert any((run_open.data_dir / "slack" / "canvas-sizes").rglob("search_files-*.json"))
+
+
 def test_an_empty_message_search_is_saved(run_open, slack_hook, slack_search, capsys):
     assert save(run_open, payload(), now=T0) == 0
     capsys.readouterr()

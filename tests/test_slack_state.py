@@ -191,6 +191,29 @@ def test_a_channel_page_without_page_information_doesnt_count(config, slack_run)
     assert read_state(config.data_dir) == {}
 
 
+@pytest.mark.parametrize(
+    "change, why",
+    [
+        ("channel read stops early", slack_state.PAGES),  # `latest` leaves no cursor behind
+        ("channel read starts at nan", slack_state.LATE),  # never "later than planned"
+        ("thread read from a start", slack_state.THREADS),  # threads are read in full
+    ],
+)
+def test_a_read_cut_short_or_a_start_that_isnt_a_time_doesnt_count(
+    config, first_export, slack_run, incremental, change, why
+):
+    (tool, new_input, new), found, (_, late_input, late) = incremental
+    if change == "channel read stops early":
+        new_input = new_input | {"latest": "1791200000"}
+    elif change == "channel read starts at nan":
+        new_input = new_input | {"oldest": "nan"}
+    else:
+        late_input = late_input | {"oldest": START}
+    slack_run(config, T1, [(tool, new_input, new), found, ("slack_read_thread", late_input, late)])
+    assert f"the next run reads the same stretch again: 1 {why}." in build(config)
+    assert read_state(config.data_dir) == {CHANNEL: "2026-10-04T12:00:00Z"}
+
+
 def test_a_first_export_must_read_from_the_beginning(config, slack_run, slack_response):
     reads = [channel(slack_response("read_channel.txt"), oldest=START)]
     slack_run(config, T0, reads + [thread(slack_response("read_thread.txt"))])

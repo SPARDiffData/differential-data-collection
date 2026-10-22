@@ -24,6 +24,7 @@ writes it again. A run's start time is its run ID, so nothing else is needed.
 """
 
 import json
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -35,6 +36,10 @@ CHANNEL_READ = "slack_read_channel"
 THREAD_READ = "slack_read_thread"
 SEARCH = "slack_search_public_and_private"
 RUN_ID = "%Y%m%dT%H%M%SZ"
+UNIX_TIME = re.compile(r"[0-9]{1,10}(?:\.[0-9]+)?")
+# A read that sets these leaves messages out with no next cursor to say so: `latest` stops
+# before the newest, and a thread is always read in full.
+CUT_SHORT = {CHANNEL_READ: {"latest"}, THREAD_READ: {"latest", "oldest"}}
 # Why a run didn't move a channel's start point, in the order the build's report lists them.
 PAGES = "a channel page wasn't read"
 LATE = "the channel read started later than planned"
@@ -149,22 +154,20 @@ def all_pages(records: list[dict], cursors: Callable) -> list[dict] | None:
 
 
 def seconds(value) -> float | None:
-    """A Unix time as Slack takes it, like "1790860440"; None if it isn't one."""
-    try:
-        return float(value) if isinstance(value, str) else None
-    except ValueError:
-        return None
+    """A Unix time as Slack takes it, like "1790860440"; None if it isn't one, such as "nan"."""
+    return float(value) if isinstance(value, str) and UNIX_TIME.fullmatch(value) else None
 
 
 def a_read(record: dict) -> bool:
-    """Whether a saved channel or thread read is a result in the connector's shape: JSON
-    with its messages text and its page information. An error, or a result in a shape we
-    don't know, isn't one, so it can't count as a page read."""
+    """Whether a saved channel or thread read is a whole result in the connector's shape:
+    JSON with its messages text and its page information, from a read that wasn't cut
+    short. An error, or a result in a shape we don't know, can't count as a page read."""
     found = result_json(record.get("tool_response"))
     return (
         found is not None
         and isinstance(found.get("messages"), str)
         and isinstance(found.get("pagination_info"), str)
+        and not CUT_SHORT.get(tool(record), set()) & inputs(record).keys()
     )
 
 
