@@ -167,11 +167,12 @@ def parse_result(tool_name: str, tool_input: dict, tool_response) -> tuple[list[
 
 def search_messages(tool_response) -> list[tuple[str, str, str | None]] | None:
     """(channel ID, ts, thread ts or None) for each message a message search shows. None if
-    the results aren't where diffdata expects them, or any message doesn't show exactly one
-    Channel, Message_ts and Permalink line before its text."""
+    the results or the page information aren't where diffdata expects them, so a last page
+    can't be mistaken for one, or any message doesn't show exactly one Channel, Message_ts
+    and Permalink line before its text."""
     found = result_json(tool_response)
     text = found.get("results") if found else None
-    if not isinstance(text, str):
+    if not isinstance(text, str) or not isinstance(found.get("pagination_info"), str):
         return None
     blocks = SEARCH_BLOCK.split(text)
     count = SEARCH_COUNT.search(blocks[0])  # before the first result, out of any message's reach

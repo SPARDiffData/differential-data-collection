@@ -4,13 +4,14 @@ after a complete run. Synthetic fixtures only."""
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
 from diffdata.common.config import Config
 from diffdata.discover import slack_state
 from diffdata.discover.slack_export import build
-from diffdata.discover.slack_inbox import begin, open_run, run_path, save
+from diffdata.discover.slack_inbox import abort, begin, open_run, run_path, save
 from diffdata.discover.slack_state import read_state, state_path
 
 CHANNEL = "C00000001"
@@ -22,6 +23,7 @@ START = "1791111600"  # T0 less the hour of overlap, in Unix seconds
 LATER = "1791115200"  # T0 itself, which would skip the overlap
 SEARCH_TOOL = "slack_search_public_and_private"
 NO_RESULTS = "# Search Results for: \n\nNo results found.\n"
+FIXTURES = Path(__file__).parent / "fixtures" / "slack"
 
 
 @pytest.fixture
@@ -146,6 +148,47 @@ def test_an_incomplete_run_leaves_the_start_point_where_it_was(
     assert read_state(config.data_dir) == {CHANNEL: "2026-10-04T12:00:00Z"}
     # So the next run covers the same stretch again.
     assert f'from "{START}"' in begin(config, [PAIR], now=T1 + timedelta(hours=1))
+
+
+THREAD = (FIXTURES / "read_thread_late.txt").read_text(encoding="utf-8")
+
+
+def text_block(value) -> list[dict]:
+    return [{"type": "text", "text": value if isinstance(value, str) else json.dumps(value)}]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        text_block("Error: thread_not_found"),  # not the connector's JSON
+        text_block({"error": "thread_not_found"}),
+        text_block({"messages": "", "pagination_info": "There are no more messages."}),
+        text_block({"messages": THREAD}),  # no page information, so no way to tell the last page
+        # Another thread's read, saved under this thread's ts.
+        text_block(
+            {
+                "messages": THREAD.replace("1790864040.000100", "1790870700.000200"),
+                "pagination_info": "There are no more messages.",
+            }
+        ),
+    ],
+)
+def test_a_thread_read_that_failed_doesnt_count_even_after_an_abort(
+    config, first_export, slack_run, incremental, response
+):
+    # The hook saves whatever a thread read returns, and says when it held no messages. The
+    # run is then aborted, and a later build still mustn't count that thread as read.
+    slack_run(config, T1, [*incremental[:2], thread(response)])
+    abort(config)
+    build(config)
+    assert read_state(config.data_dir) == {CHANNEL: "2026-10-04T12:00:00Z"}
+
+
+def test_a_channel_page_without_page_information_doesnt_count(config, slack_run):
+    page = text_block({"messages": "Channel: #example-channel (C00000001)\n"})
+    slack_run(config, T0, [channel(page)])
+    assert f"1 {slack_state.PAGES}" in build(config)
+    assert read_state(config.data_dir) == {}
 
 
 def test_a_first_export_must_read_from_the_beginning(config, slack_run, slack_response):

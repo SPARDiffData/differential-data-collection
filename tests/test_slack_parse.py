@@ -265,3 +265,9 @@ def test_an_empty_message_search_gives_no_messages(slack_search):
 @pytest.mark.parametrize("response", [None, [], [{"type": "text", "text": '{"messages": "x"}'}]])
 def test_a_message_search_without_results_gives_none(response):
     assert search_messages(response) is None
+
+
+def test_a_message_search_without_page_information_gives_none(slack_search):
+    inner = json.loads(slack_search()[0]["text"])
+    del inner["pagination_info"]
+    assert search_messages([{"type": "text", "text": json.dumps(inner)}]) is None

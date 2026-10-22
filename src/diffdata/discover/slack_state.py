@@ -10,6 +10,9 @@ when all three hold:
      also reached its last page.
   3. Every thread the reads listed was read to its last page: the posts with replies from
      the channel read, and the threads the search found new replies in.
+A page counts only if it's a result in the connector's shape, with its page information,
+and a thread only if its read shows the thread's parent post. A read that came back as an
+error is saved like any other, but can't make a run complete.
 The channel's start point is then that run's start time, and the next run starts OVERLAP
 before it. The overlap covers clock differences and the search index's delay. Otherwise the
 start point stays, and the next run covers the same stretch again; dedupe drops the repeats.
@@ -25,7 +28,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from diffdata.discover.slack_parse import next_cursor, parse_result
+from diffdata.discover.slack_parse import next_cursor, parse_result, result_json
 
 OVERLAP = timedelta(hours=1)
 CHANNEL_READ = "slack_read_channel"
@@ -153,18 +156,32 @@ def seconds(value) -> float | None:
         return None
 
 
+def a_read(record: dict) -> bool:
+    """Whether a saved channel or thread read is a result in the connector's shape: JSON
+    with its messages text and its page information. An error, or a result in a shape we
+    don't know, isn't one, so it can't count as a page read."""
+    found = result_json(record.get("tool_response"))
+    return (
+        found is not None
+        and isinstance(found.get("messages"), str)
+        and isinstance(found.get("pagination_info"), str)
+    )
+
+
+def messages(record: dict) -> list:
+    return parse_result(
+        str(record.get("tool_name", "")), inputs(record), record.get("tool_response")
+    )[0]
+
+
 def why_incomplete(records: list[dict], planned: int | None) -> str | None:
     """Why one run's saved results for a channel don't make a complete run, or None if they
     do. planned: where the run should have started, or None for from the beginning."""
-    pages = all_pages([r for r in records if tool(r) == CHANNEL_READ], read_cursors)
+    reads = [r for r in records if tool(r) == CHANNEL_READ]
+    pages = all_pages([r for r in reads if a_read(r)], read_cursors)
     if pages is None:
-        return PAGES if any(tool(r) == CHANNEL_READ for r in records) else NOT_READ
-    listed = {
-        m.ts
-        for page in pages
-        for m in parse_result(CHANNEL_READ, inputs(page), page.get("tool_response"))[0]
-        if m.replies
-    }
+        return PAGES if reads else NOT_READ
+    listed = {m.ts for page in pages for m in messages(page) if m.replies}
     first = inputs(pages[0])
     if "oldest" in first:
         start = seconds(first["oldest"])
@@ -178,9 +195,10 @@ def why_incomplete(records: list[dict], planned: int | None) -> str | None:
         if after is not None and ((searched := seconds(after)) is None or searched > planned):
             return NO_SEARCH
         listed |= {ts for page in found for ts in page.get("threads", []) if isinstance(ts, str)}
-    threads = [r for r in records if tool(r) == THREAD_READ]
+    threads = [r for r in records if tool(r) == THREAD_READ and a_read(r)]
     for ts in listed:
-        thread = [r for r in threads if inputs(r).get("message_ts") == ts]
-        if all_pages(thread, read_cursors) is None:
+        thread = all_pages([r for r in threads if inputs(r).get("message_ts") == ts], read_cursors)
+        # A thread read always shows its parent post, so one that doesn't failed somehow.
+        if thread is None or not any(m.ts == ts for page in thread for m in messages(page)):
             return THREADS
     return None
