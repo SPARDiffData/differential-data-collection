@@ -29,7 +29,7 @@ Closes #
 
 - [ ] `/review-pr`'s review is posted as a comment below
 - [ ] Touches consent, scrub or store, so a human reviews it too: @
-- [ ] Paul's own consent, scrub or store PR: Paul reads every changed line, and Codex's review is posted too
+- [ ] Paul's own consent, scrub or store PR: Paul approved the plan's must-refuse list and checks it by hand, Lachlan reads the code, and Codex's review is posted too
 
 ## Checklist
 

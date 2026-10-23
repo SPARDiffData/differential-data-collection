@@ -270,3 +270,12 @@ def test_review_pr_asks_for_a_box_the_pr_template_has():
     assert f"- [ ] {box}:" in template
     assert f'box that starts "{box}"' in review_pr
     assert "Solo phase:" not in template
+
+
+def test_review_pr_reads_a_contributing_section_that_exists():
+    contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    review_pr = (ROOT / ".claude" / "commands" / "review-pr.md").read_text(encoding="utf-8")
+    section = "Human review for consent, scrub and store"
+    assert f'including "{section}"' in review_pr
+    assert f"\n### {section}\n" in contributing
+    assert "(#human-review-for-consent-scrub-and-store)" in contributing
