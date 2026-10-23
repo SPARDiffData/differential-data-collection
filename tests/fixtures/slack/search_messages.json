@@ -1,0 +1,4 @@
+{
+  "results": "# Search Results for: \n\n## Messages (2 results)\n### Result 1 of 2\nChannel: #example-channel (ID: C00000001)\nFrom: Sam Sample <sam@example.com> (ID: U00000002) \nTime: 2026-10-05 11:00:00 CDT\nMessage_ts: 1791216000.000140\nPermalink: [link](https://example.slack.com/archives/C00000001/p1791216000000140?thread_ts=1790864040.000100&cid=C00000001)\nText: \nOne late reply: the summary is in the doc now.\n\n---\n\n### Result 2 of 2\nChannel: #example-channel (ID: C00000001)\nFrom: Sam Sample <sam@example.com> (ID: U00000002) \nTime: 2026-10-05 10:00:00 CDT\nMessage_ts: 1791212400.000600\nPermalink: [link](https://example.slack.com/archives/C00000001/p1791212400000600)\nText: \nDraft agenda for Friday is in the channel canvas.\n\n---\n\n",
+  "pagination_info": "End of results - No more pages available.\n"
+}

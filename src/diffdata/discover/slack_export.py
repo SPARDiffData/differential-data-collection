@@ -6,7 +6,9 @@ Under the data folder:
 
 Every build reads the whole inbox, so the store can be rebuilt after a parser fix. A message
 version the store already has is skipped, so building twice adds nothing. If a message's text
-or files changed, both versions are kept, and the view shows the newest one.
+or files changed, both versions are kept, and the view shows the newest one. Only channel and
+thread reads go to the store: a message search's record goes to the start points
+(slack_state.py), which the build works out again and writes for the next run.
 
 The build also writes the canvases (COL-2), using the store's names for their mentions.
 Before the canvas reads, `canvases_due()` says which canvases to read, using the canvas-tab
@@ -24,7 +26,9 @@ from diffdata import __version__
 from diffdata.collect import slack_canvas
 from diffdata.common.config import Config
 from diffdata.common.documents import documents_dir
+from diffdata.discover import slack_state
 from diffdata.discover.slack_inbox import (
+    SAVED_TOOLS,
     SlackExportError,
     close_run,
     inbox_dir,
@@ -65,6 +69,8 @@ def build(config: Config) -> str:
             {r["user_id"]: r["user_name"] for r in read_store(store_file) if r["user_id"]}
         )
     canvases = slack_canvas.build(data, config.slack_workspace_url, people, names)
+    points, outcomes = slack_state.start_points(inbox_dir(data))
+    slack_state.write_state(data, points)
 
     report = [
         f"{len(channel_dirs)} channel(s): {totals['results']} result file(s), "
@@ -122,9 +128,24 @@ def build(config: Config) -> str:
                     f"This run saved reads for {saved(run.due)} of {len(run.due)} due "
                     f"canvas(es), {len(run.canvases)} listed."
                 )
+        report += start_point_report(run.run_id, list(run.channels), outcomes)
         close_run(data, run, "built")
         report.append(f"Closed export run {run.run_id}.")
     return "\n".join(report)
+
+
+def start_point_report(run_id: str, channels: list[str], outcomes: dict) -> list[str]:
+    """Counts only: how many of the run's channels moved their start point, and why the
+    others didn't."""
+    why = Counter(outcomes.get((channel, run_id), slack_state.NOT_READ) for channel in channels)
+    moved = why.pop(None, 0)
+    report = [f"{moved} of {len(channels)} channel(s) moved their start point forward."]
+    if why:
+        listed = ", ".join(f"{why[r]} {r}" for r in slack_state.REASONS if why[r])
+        report.append(
+            f"The others keep theirs, so the next run reads the same stretch again: {listed}."
+        )
+    return report
 
 
 def canvases_due(config: Config, now: datetime | None = None) -> str:
@@ -147,6 +168,7 @@ def canvases_due(config: Config, now: datetime | None = None) -> str:
         slack_canvas.tab_notices(messages),
         config.canvas_refresh_days,
         now,
+        full=run.full,
     )
     run.due = [canvas for canvas, why in found.items() if why]
     write_json(run_path(data), asdict(run))
@@ -161,14 +183,24 @@ def canvases_due(config: Config, now: datetime | None = None) -> str:
 
 
 def read_inbox(channel_dir: Path, channel_id: str, workspace: str) -> tuple[list[dict], Counter]:
-    """Store records for every message in a channel's inbox, oldest result first."""
+    """Store records for every message in a channel's inbox, oldest result first. Only
+    channel and thread reads hold messages: anything else is left alone."""
     counts: Counter = Counter()
     saved = []
     for path in channel_dir.glob("*/*.json"):
         try:
             result = json.loads(path.read_text(encoding="utf-8"))
+            if result["tool_name"].rsplit("__", 1)[-1] not in SAVED_TOOLS:
+                continue
             saved.append((result["saved_at"], path.name, result))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError):
+        except (
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            AttributeError,
+        ):
             counts["unreadable"] += 1
     records = []
     for saved_at, _, result in sorted(saved, key=lambda s: s[:2]):

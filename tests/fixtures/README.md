@@ -19,6 +19,7 @@ When you add a fixture:
 Made-up Slack connector results, for the DIS-1 export tests:
 
 - `read_channel.txt` and `read_thread.txt` copy the exact layout of what `slack_read_channel` and `slack_read_thread` return in detailed mode, with every name, ID, link and message invented. `tests/conftest.py` wraps them the way the connector does: a list of text blocks holding JSON, whose `messages` field is the file's text.
+- `read_channel_new.txt`, `read_thread_late.txt` and `search_messages.json` are a later, incremental run: one new post, the same thread with a late reply, and the message search (`content_types: messages`) that finds that reply. The search copies the layout of the connector's `results` text, with every value invented.
 - `expected/` holds the markdown view the export should build from them, one file per day. If you change the view on purpose, update these files and check the difference by eye.
 
 To learn the layout, run a live read and look at it on your own computer, then write the fixture by hand. Never paste a real result into this folder, even for a moment.

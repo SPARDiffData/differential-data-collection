@@ -477,7 +477,7 @@ def test_a_file_that_isnt_a_listed_canvas_needs_no_size(
     assert "4 file(s), 2 of them listed canvases" in hook_note(capsys)
 
 
-@pytest.mark.parametrize("size", ["0 Bytes", "0 bytes", "512 B", "26.5 KB", "244.4 MB", "1 GB"])
+@pytest.mark.parametrize("size", ["0 Bytes", "0 bytes", "512 B", "31.4 KB", "128.0 MB", "1 GB"])
 def test_a_listed_canvas_size_in_any_byte_unit_is_kept(config, slack_hook, slack_response, size):
     begin(config, ["example-channel=C00000001"], now=T0)
     read_the_channel(config, slack_hook, slack_response)
@@ -680,6 +680,21 @@ def test_a_canvas_not_read_for_refresh_days_is_read(config, due_run):
     assert "No canvases to read." in due
     due, _ = due_run(T0 + timedelta(days=3, hours=1), {CANVAS: "12.3 KB"}, config=config)
     assert "1 last read too long ago." in due
+
+
+def test_a_full_run_reads_every_listed_canvas(config, due_run, slack_hook, slack_response):
+    due_run(T0, {CANVAS: "12.3 KB"})
+    when = T0 + timedelta(hours=1)
+    begin(config, ["example-channel=C00000001"], now=when, full=True)
+    read_the_channel(config, slack_hook, slack_response, when)
+    search = slack_hook(SEARCH_TOOL, SEARCH_INPUT, files_search({CANVAS: "12.3 KB"}), "toolu_s2")
+    assert save(config, search, now=when + timedelta(minutes=1)) == 0
+    due = canvases_due(config, now=when + timedelta(minutes=2))
+    assert due == (
+        "1 of 1 listed canvas(es) to read.\n"
+        "Why (a canvas can have more than one reason): 1 full run.\n"
+        f"Canvases to read: {CANVAS}"
+    )
 
 
 def test_canvases_due_names_only_ids_and_counts(due_run):

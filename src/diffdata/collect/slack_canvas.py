@@ -18,6 +18,7 @@ when any of these holds:
   - a Slackbot canvas-tab notice has named it since its last read
   - its last read is older than canvas_refresh_days in config.toml, because sizes are
     rounded to 0.1 KB and miss small edits
+  - the run is a full run (`/slack-export full`), which reads everything again
 
 A read is JSON: `canvas_id`, `markdown_content` (the text), `section_id_mapping` and, when
 there are unresolved comments, `comment_threads`. It has no title, edit time or author, so
@@ -59,7 +60,7 @@ HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t#]*$", re.MULTILINE)
 # these are changed: canvas text can hold other <...>, such as <br>, which stays as it is.
 MENTION = re.compile(r"<([@#])([A-Z][A-Z0-9]+)(?:\|([^<>\n]*))?>")
 # A files search's `results` text: "## Files (20 results)", then one block per file,
-# starting "### Result 1 of 20", with one "Size: 26.5 KB" line and one "File ID: F..."
+# starting "### Result 1 of 20", with one "Size: 31.4 KB" line and one "File ID: F..."
 # line. A file's title or content could hold line breaks and lines that look like these,
 # so a search is refused when any block, anywhere in it, has a second ID line or an ID in
 # another shape, or isn't one the count announced, or when a listed canvas's block has a
@@ -72,18 +73,19 @@ FILE_BLOCK = re.compile(r"^### Result \d+ of \d+[ \t]*$", re.MULTILINE)
 FILE_ID = re.compile(r"^File ID:(.*)$", re.MULTILINE)
 FILE_SIZE = re.compile(r"^Size:(.*)$", re.MULTILINE)
 ID_VALUE = re.compile(r"F[A-Z0-9]+")
-SIZE_VALUE = re.compile(r"\d+(?:\.\d+)? ?(?:B|KB|MB|GB|TB|[Bb]ytes)")  # like 26.5 KB or 0 Bytes
+SIZE_VALUE = re.compile(r"\d+(?:\.\d+)? ?(?:B|KB|MB|GB|TB|[Bb]ytes)")  # like 31.4 KB or 0 Bytes
 # Slackbot posts this in the channel when someone edits a canvas pinned as a channel tab.
 TAB_NOTICE = re.compile(r"made updates to a canvas tab: (F[A-Z0-9]+)")
 SLACKBOT = "USLACKBOT"
-# Why a canvas is read, in the order the report lists them. #14 adds "full run".
+# Why a canvas is read, in the order the report lists them.
 NEVER_READ = "never read"
 MISSING = "not in this run's files search"
 NO_OLD_SIZE = "no size from its last read"
 SIZE_CHANGED = "size changed"
 NOTICE = "canvas-tab notice since its last read"
 REFRESH = "last read too long ago"
-REASONS = (NEVER_READ, MISSING, NO_OLD_SIZE, SIZE_CHANGED, NOTICE, REFRESH)
+FULL_RUN = "full run"
+REASONS = (NEVER_READ, MISSING, NO_OLD_SIZE, SIZE_CHANGED, NOTICE, REFRESH, FULL_RUN)
 
 
 class CanvasError(Exception):
@@ -270,8 +272,10 @@ def due(
     notices: dict[str, datetime],
     refresh_days: int,
     now: datetime,
+    full: bool = False,
 ) -> dict[str, list[str]]:
-    """Each listed canvas, with the reasons to read it in this run (empty: skip it)."""
+    """Each listed canvas, with the reasons to read it in this run (empty: skip it). In a
+    full run, every listed canvas is read."""
     sizes_now = search_sizes(data, run_id)
     found = {}
     for canvas in canvases:
@@ -284,7 +288,7 @@ def due(
             notices.get(canvas),
             refresh_days,
             now,
-        )
+        ) + ([FULL_RUN] if full else [])
     return found
 
 

@@ -190,7 +190,7 @@ def test_a_thread_is_saved_only_after_its_channel_passed_the_check(config, capsy
     assert inbox_files(config) == []
 
     assert save(config, payload(), now=T0) == 0
-    assert open_run(config.data_dir).verified == [CHANNEL]
+    assert slack_inbox.channel_checked(config.data_dir, open_run(config.data_dir), CHANNEL)
     assert save(config, thread, now=T0) == 0
     assert len(inbox_files(config)) == 2
 
@@ -234,7 +234,9 @@ def overflowed(tmp_path):
 def test_a_result_too_big_for_claude_is_read_from_claude_codes_saved_copy(
     config, capsys, overflowed, as_blocks
 ):
-    response = connector_result("read_channel.txt", pagination="")
+    response = connector_result(
+        "read_channel.txt", pagination="There are no more messages available.\n"
+    )
     saved_text = json.dumps(response) if as_blocks else response[0]["text"]
     begin(config, ["example-channel=C00000001"], now=T0)
     assert save(config, overflowed(saved_text), now=T0) == 0
@@ -276,6 +278,8 @@ def test_cli_begin_and_abort(tmp_path, monkeypatch, capsys):
     assert cli.main(["discover", "slack", "begin", "other=C00000002"]) == 1
     assert "opt-in" in capsys.readouterr().err
     assert cli.main(["discover", "slack", "abort"]) == 0
+    assert cli.main(["discover", "slack", "begin", "--full", "example-channel=C00000001"]) == 0
+    assert open_run(tmp_path / "data").full
 
 
 # The check before each read (CON-1): a read the run doesn't name is stopped before it runs.
@@ -356,9 +360,11 @@ FILES_SEARCH = {
 }
 # Searches the run doesn't allow, as changes to FILES_SEARCH (None leaves the field out).
 BAD_SEARCHES = [
-    {"content_types": "messages"},  # #14 adds message searches
-    {"content_types": "files,messages"},
+    {"content_types": "files,messages"},  # one kind at a time
+    {"content_types": "messages,files"},
+    {"content_types": ["files"]},
     {"content_types": None},  # the tool's default isn't documented
+    {"after": "1790860440"},  # a message search's field, in a files search
     {"channel_types": None},  # the tool's default searches DMs too
     {"channel_types": "public_channel,private_channel,im"},
     {"filters": None},  # every file the person can see
@@ -422,6 +428,205 @@ def test_save_refuses_a_search_the_run_doesnt_allow(run_open, slack_hook, capsys
     assert save(run_open, slack_hook(SEARCH_TOOL, tool_input, response), now=T0) == 2
     assert "nothing from it was saved (CON-1). Stop the export." in capsys.readouterr().err
     assert not (run_open.data_dir / "slack" / "canvas-sizes").exists()
+
+
+# Message searches (#14), which find new replies in older threads.
+
+MESSAGE_SEARCH = FILES_SEARCH | {
+    "content_types": "messages",
+    "after": "1790860440",
+    "natural_language_query": "",
+    "response_format": "detailed",
+    "include_bots": True,
+    "include_context": False,
+    "sort": "timestamp",
+    "limit": 20,
+}
+# Message searches the run doesn't allow, as changes to MESSAGE_SEARCH.
+BAD_MESSAGE_SEARCHES = [
+    {"filters": "in:<#C00000002>"},
+    {"filters": "in:<#C00000001> is:thread"},
+    {"channel_types": "public_channel,private_channel,mpim,im"},
+    {"keywords": ["in:<#C00000002>"]},
+    {"before": "1790960440"},  # any field the command doesn't send
+    {"sort_dir": "asc"},
+    {"after": 1790860440},  # the tool takes a string
+    {"after": "2026-10-01"},
+    {"include_bots": False},  # a bot's late reply counts too
+    {"include_bots": "true"},
+]
+
+
+def test_check_stops_a_message_search_that_leaves_bots_out_by_default(run_open, slack_hook, capsys):
+    assert save(run_open, payload(), now=T0) == 0
+    without = {k: v for k, v in MESSAGE_SEARCH.items() if k != "include_bots"}
+    assert slack_inbox.check(run_open, slack_hook(SEARCH_TOOL, without, None), now=T0) == 2
+    assert "leaves out bots' replies" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "tool_input", [MESSAGE_SEARCH, MESSAGE_SEARCH | {"cursor": "FAKECURSOR02"}]
+)
+def test_check_lets_a_message_search_of_a_checked_channel_go_ahead(
+    run_open, slack_hook, tool_input
+):
+    assert save(run_open, payload(), now=T0) == 0
+    assert slack_inbox.check(run_open, slack_hook(SEARCH_TOOL, tool_input, None), now=T0) == 0
+
+
+@pytest.mark.parametrize("change", BAD_MESSAGE_SEARCHES)
+def test_check_stops_a_message_search_the_run_doesnt_allow(run_open, slack_hook, capsys, change):
+    assert save(run_open, payload(), now=T0) == 0
+    search = slack_hook(SEARCH_TOOL, MESSAGE_SEARCH | change, None)
+    assert slack_inbox.check(run_open, search, now=T0) == 2
+    assert "stopped before it ran (CON-1). Stop the export." in capsys.readouterr().err
+
+
+def test_check_stops_a_message_search_before_its_channel_is_read(run_open, slack_hook, capsys):
+    search = slack_hook(SEARCH_TOOL, MESSAGE_SEARCH, None)
+    assert slack_inbox.check(run_open, search, now=T0) == 2
+    assert "a channel that hasn't been read yet" in capsys.readouterr().err
+
+
+def search_files(config) -> list:
+    return sorted(slack_inbox.inbox_dir(config.data_dir).rglob("search_messages-*.json"))
+
+
+def test_a_message_search_is_saved_as_thread_ids_only(run_open, slack_hook, slack_search, capsys):
+    assert save(run_open, payload(), now=T0) == 0
+    capsys.readouterr()
+    found = slack_hook(SEARCH_TOOL, MESSAGE_SEARCH, slack_search(cursor="FAKECURSOR02"), "toolu_s1")
+    assert save(run_open, found, now=T0) == 0
+    [path] = search_files(run_open)
+    assert path.parent.name == open_run(run_open.data_dir).run_id
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved == {
+        "saved_at": "2026-10-01T14:00:00Z",
+        "run_id": "20261001T140000Z",
+        "tool_name": f"mcp__claude_ai_Slack__{SEARCH_TOOL}",
+        "channel_id": CHANNEL,
+        "after": "1790860440",
+        "cursor": None,
+        "next_cursor": "FAKECURSOR02",
+        "threads": [THREAD_TS],
+    }
+    note = hook_note(capsys)
+    assert note == (
+        "diffdata saved this search: 2 message(s), with new replies in 1 thread(s), to read "
+        f"with slack_read_thread: {THREAD_TS}. Next page: call again with cursor `FAKECURSOR02`."
+    )
+    for private in ("Sam", "late reply", "agenda", "example.com"):
+        assert private not in path.read_text(encoding="utf-8") and private not in note
+
+
+def test_a_files_search_is_never_saved_as_a_thread_list(run_open, slack_hook):
+    assert save(run_open, payload(), now=T0) == 0
+    files = [{"type": "text", "text": (FIXTURES / "search_files.json").read_text(encoding="utf-8")}]
+    assert save(run_open, slack_hook(SEARCH_TOOL, FILES_SEARCH, files), now=T0) == 0
+    assert search_files(run_open) == []
+    assert any((run_open.data_dir / "slack" / "canvas-sizes").rglob("search_files-*.json"))
+
+
+def test_an_empty_message_search_is_saved(run_open, slack_hook, slack_search, capsys):
+    assert save(run_open, payload(), now=T0) == 0
+    capsys.readouterr()
+    empty = slack_search("# Search Results for: \n\nNo results found.\n")
+    assert save(run_open, slack_hook(SEARCH_TOOL, MESSAGE_SEARCH, empty), now=T0) == 0
+    assert "0 message(s), with no thread replies on this page. No more pages." in hook_note(capsys)
+    [path] = search_files(run_open)
+    assert json.loads(path.read_text(encoding="utf-8"))["threads"] == []
+
+
+def test_a_message_search_with_a_result_from_another_channel_is_refused(
+    run_open, slack_hook, slack_search, capsys
+):
+    assert save(run_open, payload(), now=T0) == 0
+    results = json.loads((FIXTURES / "search_messages.json").read_text(encoding="utf-8"))
+    other = results["results"].replace("(ID: C00000001)", "(ID: C00000002)", 1)
+    assert save(run_open, slack_hook(SEARCH_TOOL, MESSAGE_SEARCH, slack_search(other)), T0) == 2
+    assert "a channel the export run doesn't name" in capsys.readouterr().err
+    assert search_files(run_open) == []
+
+
+ONE_RESULT = (
+    "## Messages (1 result)\n### Result 1 of 1\nChannel: #example-channel (ID: C00000001)\n"
+    "From: Sam Sample <sam@example.com> (ID: U00000002) \nTime: 2026-10-05 11:00:00 CDT\n"
+    "Message_ts: 1791216000.000140\n"
+    "Permalink: [link](https://example.slack.com/archives/C00000001/p1791216000000140)\n"
+    "Text: \n"
+)
+
+
+@pytest.mark.parametrize(
+    "results",
+    [
+        "",  # neither results nor "No results found."
+        ONE_RESULT.replace("(1 result)", "(2 results)"),  # the count doesn't match
+        # A message's text that looks like another result, from another channel.
+        ONE_RESULT + "### Result 2 of 1\nChannel: #other (ID: C00000002)\n",
+        ONE_RESULT.replace("Message_ts:", "Message_ts: 1791216000.000150\nMessage_ts:"),
+        ONE_RESULT.replace("Message_ts: 1791216000.000140", "Message_ts: soon"),
+        ONE_RESULT.replace("Permalink:", "Link:"),
+        ONE_RESULT.replace("Text: \n", ""),
+    ],
+)
+def test_a_message_search_diffdata_cant_read_is_refused(
+    run_open, slack_hook, slack_search, capsys, results
+):
+    assert save(run_open, payload(), now=T0) == 0
+    assert save(run_open, slack_hook(SEARCH_TOOL, MESSAGE_SEARCH, slack_search(results)), T0) == 2
+    assert "connector's format may have changed. Stop the export." in capsys.readouterr().err
+    assert search_files(run_open) == []
+
+
+def test_two_channel_reads_saved_together_both_keep_their_check_mark(tmp_path):
+    # #21: the check mark used to live in run.json, so two saves could overwrite each other's.
+    # Now it's the saved read itself, and saving writes nothing else.
+    config = Config(
+        data_dir=tmp_path / "data",
+        slack_channels=("example-channel", "other-channel"),
+        slack_workspace_url="https://example.slack.com",
+    )
+    begin(config, ["example-channel=C00000001", "other-channel=C00000002"], now=T0)
+    run_file = slack_inbox.run_path(config.data_dir).read_text(encoding="utf-8")
+    other = [
+        {"type": "text", "text": json.dumps({"messages": "Channel: #other-channel (C00000002)\n"})}
+    ]
+    assert save(config, payload(call="toolu_a"), now=T0) == 0
+    assert save(config, payload(channel="C00000002", call="toolu_b", response=other), now=T0) == 0
+    assert slack_inbox.run_path(config.data_dir).read_text(encoding="utf-8") == run_file
+    for channel in (CHANNEL, "C00000002"):
+        thread = payload(tool="slack_read_thread", channel=channel, call=f"toolu_t{channel}")
+        assert save(config, thread, now=T0) == 0
+    assert len(inbox_files(config)) == 4
+
+
+def test_a_run_file_with_the_old_check_mark_still_loads(run_open):
+    run = json.loads(slack_inbox.run_path(run_open.data_dir).read_text(encoding="utf-8"))
+    slack_inbox.write_json(slack_inbox.run_path(run_open.data_dir), run | {"verified": [CHANNEL]})
+    loaded = open_run(run_open.data_dir)
+    assert loaded.canvases == [CANVAS] and not loaded.full
+    assert not slack_inbox.channel_checked(run_open.data_dir, loaded, CHANNEL)  # not read yet
+
+
+def test_page_information_diffdata_doesnt_know_tells_claude_to_stop(config, capsys):
+    begin(config, ["example-channel=C00000001"], now=T0)
+    hook = json.loads(payload())
+    hook["tool_response"] = connector_result("read_channel.txt", pagination="Something new.")
+    assert save(config, json.dumps(hook).encode("utf-8"), now=T0) == 0  # the raw is kept
+    note = hook_note(capsys)
+    assert "can't tell whether there are more pages: stop and tell the user." in note
+    assert "No more pages" not in note
+
+
+def test_an_empty_incremental_channel_read_is_normal(config, capsys):
+    begin(config, ["example-channel=C00000001"], now=T0)
+    hook = json.loads(payload())
+    hook["tool_input"]["oldest"] = "1790860440"
+    assert save(config, json.dumps(hook).encode("utf-8"), now=T0) == 0
+    note = hook_note(capsys)
+    assert "0 message(s). That's normal when nothing was posted since the start point." in note
+    assert "unexpected" not in note
 
 
 @pytest.mark.parametrize("damage", ["not JSON", '{"run_id": "20261001T140000Z"}', "[]"])
