@@ -20,7 +20,8 @@ Style ops change no text, so the replay skips them:
 Anything else (entities and so on) is kept as it came, as kind "format" or "other".
 
 Google's op for *accepting* a suggestion isn't known yet. Accepted text would stay flagged
-as suggested, so an unknown op whose range covers suggested text is counted as a warning.
+as suggested, so an unknown op on a suggestion still in the doc is counted as a warning:
+one whose range covers suggested or marked text, or that names such a suggestion's ID.
 
 The text buffer starts with one end-of-body marker. The body is everything before it;
 anything after it (footnotes and so on) is left out of `text()`.
@@ -176,13 +177,16 @@ class DocState:
             event["marked_text"] = self.mark(event["start"], event["end"], PLAIN)
         elif kind == "other" and self.touches_suggestion(event.get("raw") or {}):
             # Maybe Google's op for accepting a suggestion, which the replay doesn't know.
-            self.warnings.append(f"unhandled op {event.get('op_type')!r} on suggested text")
+            self.warnings.append(f"unhandled op {event.get('op_type')!r} on a suggestion")
 
     def touches_suggestion(self, op: dict) -> bool:
+        """Whether an op names a suggestion still in the doc, or its range covers one."""
+        if op.get("sugid") is not None and op["sugid"] in self.ids:
+            return True
         start, end = op.get("si"), op.get("ei")
         if not (isinstance(start, int) and isinstance(end, int) and 1 <= start <= end):
             return False
-        return SUGGESTED in self.flags[start - 1 : end]
+        return any(flag != PLAIN for flag in self.flags[start - 1 : end])
 
     def suggestion_text(self, sid: str) -> str:
         """The text that belongs to one suggestion now: what it inserts or marks."""

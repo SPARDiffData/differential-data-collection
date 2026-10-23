@@ -653,3 +653,30 @@ def test_deleting_all_but_raw_and_building_again_gives_the_same_files(tmp_path):
         path.unlink()
     build(tmp_path)
     assert derived() == before
+
+
+def test_an_unknown_op_on_a_marked_deletion_or_by_id_alone_is_a_warning(tmp_path):
+    # Accepting could also come as an op on text marked for deletion, or one that names
+    # the suggestion only by its ID. Neither may drop text without a warning. An unknown op
+    # on plain text, or on a suggestion no longer in the doc, isn't one.
+    body = changelog_of(
+        entry({"ty": "is", "ibi": 1, "s": "One two\n"}, "2026-10-05T10:00:00Z", "1", 1, "A"),
+        entry(
+            {"ty": "msfd", "si": 5, "ei": 7, "sugid": "sug-1"}, "2026-10-05T10:00:01Z", "1", 2, "A"
+        ),
+        entry(
+            {"ty": "iss", "ibi": 9, "s": "three", "sugid": "sug-2"},
+            "2026-10-05T10:00:02Z",
+            "1",
+            3,
+            "A",
+        ),
+        entry({"ty": "xyz", "si": 5, "ei": 7}, "2026-10-05T10:00:03Z", "2", 4, "B"),
+        entry({"ty": "xyz", "sugid": "sug-2"}, "2026-10-05T10:00:04Z", "2", 5, "B"),
+        entry({"ty": "xyz", "si": 1, "ei": 3}, "2026-10-05T10:00:05Z", "2", 6, "B"),
+        entry({"ty": "xyz", "sugid": "sug-gone"}, "2026-10-05T10:00:06Z", "2", 7, "B"),
+    )
+    save_fetch(
+        tmp_path, DOC, "f1", "2026-10-06T09:00:00Z", "browser-file", {"changelog.json": body}
+    )
+    assert build(tmp_path)["replay warnings"] == 2

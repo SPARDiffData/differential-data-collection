@@ -13,7 +13,10 @@ saved by hand from the browser), the fetcher saves what it got with `save_fetch(
     comments.json         Drive's comments.list: comments with their replies
     revisions.json        Drive's revisions.list: when each revision was made, and by whom
     revision-<id>.txt     the text of one Drive revision, exported
-    changelog.json        the Docs changelog, as Google sends it (the )]}' prefix is fine)
+    changelog.json        the Docs changelog, as Google sends it (the )]}' prefix is fine).
+                          Always the whole changelog, from the first revision on: the
+                          reader replays only the newest one, starting from an empty doc,
+                          so a changelog of only the new revisions would lose the rest.
 
 Every file but fetch.json can be left out, and a fetch can save other files too (they
 stay in raw, unread). comments.json and revisions.json can be Drive's page exactly as
