@@ -40,7 +40,7 @@ Ask with `AskUserQuestion` where the choices are clear, with your recommendation
 
 Scale this to the Issue. If it's small and leaves nothing open, say so and go straight to the plan.
 
-For consent, scrub and store Issues, say in the plan that the lane needs a careful human read, and offer a second opinion from Codex before the user approves (step 4).
+For consent, scrub and store Issues, also draft the plan's **must-refuse list** and settle it with the user: in plain words, each thing the code must refuse or stop on, and what happens instead. This list is what the user approves and later checks by hand, so make each item something they can see happen. Say in the plan that the lane needs a human review ("Human review for consent, scrub and store" in `CONTRIBUTING.md`), and offer a second opinion from Codex before the user approves (step 4).
 
 ## 4. Write the plan
 
@@ -54,6 +54,9 @@ Write the plan to the plan file in exactly this shape, in plain words a teammate
 
 ### Decisions
 - <the question>: <the user's answer>, and why.
+
+### Must refuse (consent, scrub and store Issues only)
+- <what the code refuses or stops on>: <what happens instead>, and the test that shows it.
 
 ### Files to change
 - `path`: what changes.
@@ -74,7 +77,7 @@ Write the plan to the plan file in exactly this shape, in plain words a teammate
 - PR <n> of <m>: <one sentence>, about <N> changed lines.
 ```
 
-When the plan covers all the PRs, keep Goal, Done when, Decisions, Hard rules check and Postponed as above. Replace Files to change, Tests and Size with one section per PR, and end with the stop conditions:
+When the plan covers all the PRs, keep Goal, Done when, Decisions, Must refuse, Hard rules check and Postponed as above. Replace Files to change, Tests and Size with one section per PR, and end with the stop conditions:
 
 ```
 ### PR <n> of <m>: <one sentence>

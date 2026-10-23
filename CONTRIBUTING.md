@@ -73,7 +73,7 @@ Every PR gets reviewed before merge:
 
 - **`/review-pr` first, on every PR.** It's a quick, independent check that catches must-fix items before anyone else spends time on them. It runs in its own context: either as the `pr-reviewer` agent (`.claude/agents/pr-reviewer.md`), which takes only the PR number and has no file-editing tools, or in a separate Claude session.
 - **Paul reviews teammates' PRs.** His Claude session runs the same AI reviews and posts them on the PR. It never pushes to a teammate's branch: the author makes the fixes, and decisions go to Paul.
-- **A human reviews anything touching consent, scrub or store.** For a teammate's PR, that's Paul. For Paul's own, see [While Paul works solo](#while-paul-works-solo).
+- **A human reviews anything touching consent, scrub or store.** For a teammate's PR, that's Paul. For Paul's own, see [Human review for consent, scrub and store](#human-review-for-consent-scrub-and-store).
 - **If Paul becomes a bottleneck,** we'll change this. Any human can review, whichever AI they use.
 
 ### Codex, for risky changes
@@ -93,20 +93,21 @@ Since 2026-10-16, the Claude session that wrote the code runs the reviews itself
 
 1. Once the PR is open and CI passes, it runs the `pr-reviewer` agent, and Codex if it was agreed, on the same commit. It posts both reviews on the PR word for word, leaving out the agent's notes after the review: its Codex focus line and its list of denied tool calls.
 2. It fixes the must-fix items, Codex's high findings, and small items inside the PR's own lines. Everything else goes into one follow-up Issue for the PR. One "Review fixes" comment lists what was fixed, what was backlogged, and what wasn't changed and why.
-3. It runs `/review-pr` once more on the fix commit. Codex runs at most twice per PR. If must-fix items are still open after that, it stops and asks Paul.
+3. It runs `/review-pr` once more on the fix commit. Codex runs at most twice per PR. If must-fix items are still open after that, it stops and asks Paul. The commit Paul merges always gets a final `/review-pr`, even when fixes land after the last round: the limit is on fix rounds and on Codex, not on checking what gets merged.
 4. It gives Paul one line: the verdict, what was fixed and backlogged, and what needs him. Paul reads the lines that need a human, then merges.
 
-### While Paul works solo
+### Human review for consent, scrub and store
 
-**Status: Ended on 2026-10-16,** when Lachlan opened PR #51. It was in effect from 2026-10-09.
+These lanes decide what we collect, what we remove before release and where data goes, so a mistake there costs people's trust. For Paul's own PRs in these lanes, each person checks what they check best:
 
-From 2026-10-09 to 2026-10-16, Paul was the only active contributor. For his PRs that touched consent, scrub or store, the AI review plus Paul's own read counted as the human review.
+1. **Before coding, the rules in plain words.** The plan lists what the code must refuse or stop on, and what happens instead: its must-refuse list. Paul approves it along with the plan. `/plan-issue` asks for it.
+2. **Before merge, a hands-on check.** Paul runs the change himself, or watches a demo, and sees each refusal happen.
+3. **A teammate who reads Python reads the code.** That's Lachlan, who leads legal and compliance.
+4. **Both AI reviews,** `/review-pr` and Codex, with Codex always run.
 
-Now, for Paul's own consent, scrub and store PRs, the human review is:
-- Paul's own read of every changed line, and
-- both AI reviews, `/review-pr` and Codex, with Codex always run.
+The PR says it got this review by ticking the template's box for it.
 
-A teammate is invited to read along too, but isn't required to while they're learning. The PR says which review it got by ticking the template's box for it.
+**How we got here.** From 2026-10-09 to 2026-10-16, Paul worked solo, and the AI review plus his own read counted as the human review. Until 2026-10-23, Paul read every changed line himself. His hands-on runs caught more than those reads did: on #59, a real export run found a bug that every AI review had missed.
 
 ## Getting help
 
