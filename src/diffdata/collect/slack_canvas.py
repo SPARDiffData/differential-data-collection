@@ -61,15 +61,18 @@ MENTION = re.compile(r"<([@#])([A-Z][A-Z0-9]+)(?:\|([^<>\n]*))?>")
 # A files search's `results` text: "## Files (20 results)", then one block per file,
 # starting "### Result 1 of 20", with one "Size: 26.5 KB" line and one "File ID: F..."
 # line. A file's title or content could hold line breaks and lines that look like these,
-# so a search is refused when any block, anywhere in it, has a second ID or size line, a
-# value in another shape, or isn't one the count announced. One file's text mustn't pass
-# as another file's ID or size, and a size is only a number and a byte unit (CON-1).
+# so a search is refused when any block, anywhere in it, has a second ID line or an ID in
+# another shape, or isn't one the count announced, or when a listed canvas's block has a
+# second size line or a size in another shape. One file's text mustn't pass as another
+# file's ID or size, and a size is only a number and a byte unit (CON-1). Other files'
+# sizes aren't kept, so theirs may be missing or in a shape diffdata doesn't know, and
+# one such file can't stop the export (#58).
 FILE_COUNT = re.compile(r"^## Files \((\d+) results?\)", re.MULTILINE)
 FILE_BLOCK = re.compile(r"^### Result \d+ of \d+[ \t]*$", re.MULTILINE)
 FILE_ID = re.compile(r"^File ID:(.*)$", re.MULTILINE)
 FILE_SIZE = re.compile(r"^Size:(.*)$", re.MULTILINE)
 ID_VALUE = re.compile(r"F[A-Z0-9]+")
-SIZE_VALUE = re.compile(r"\d+(?:\.\d+)? ?(?:B|KB|MB|GB|TB|bytes)")  # like 26.5 KB or 244.4 MB
+SIZE_VALUE = re.compile(r"\d+(?:\.\d+)? ?(?:B|KB|MB|GB|TB|[Bb]ytes)")  # like 26.5 KB or 0 Bytes
 # Slackbot posts this in the channel when someone edits a canvas pinned as a channel tab.
 TAB_NOTICE = re.compile(r"made updates to a canvas tab: (F[A-Z0-9]+)")
 SLACKBOT = "USLACKBOT"
@@ -120,9 +123,10 @@ def sizes_dir(data: Path) -> Path:
     return data / "slack" / "canvas-sizes"
 
 
-def search_rows(response) -> list[tuple[str, str]] | None:
-    """(file ID, size) for each file a files search shows. None if any file doesn't show
-    exactly one ID and one size, or the results aren't where diffdata expects them."""
+def search_rows(response, canvases: Iterable[str]) -> tuple[int, dict[str, str]] | None:
+    """How many files a files search shows, and the size of each listed canvas among them.
+    None if any file doesn't show exactly one ID, a listed canvas doesn't show exactly one
+    size, or the results aren't where diffdata expects them."""
     found = result_json(response)
     text = found.get("results") if found else None
     if not isinstance(text, str):
@@ -131,17 +135,22 @@ def search_rows(response) -> list[tuple[str, str]] | None:
     count = FILE_COUNT.search(text)
     if (int(count[1]) if count else 0) != len(blocks):
         return None
-    rows: dict[str, str] = {}
+    files: set[str] = set()
+    sizes: dict[str, str] = {}
     for block in blocks:
-        ids, sizes = FILE_ID.findall(block), FILE_SIZE.findall(block)
-        if len(ids) != 1 or len(sizes) != 1:
+        ids, found_sizes = FILE_ID.findall(block), FILE_SIZE.findall(block)
+        file_id = ids[0].strip() if len(ids) == 1 else ""
+        if not ID_VALUE.fullmatch(file_id):
             return None
-        file_id, size = ids[0].strip(), sizes[0].strip()
-        if not ID_VALUE.fullmatch(file_id) or not SIZE_VALUE.fullmatch(size):
+        files.add(file_id)
+        if file_id not in canvases:
+            continue  # its size isn't kept, so it needn't have one diffdata can read
+        size = found_sizes[0].strip() if len(found_sizes) == 1 else ""
+        if not SIZE_VALUE.fullmatch(size):
             return None
-        if rows.setdefault(file_id, size) != size:  # one file shown twice, with two sizes
+        if sizes.setdefault(file_id, size) != size:  # one canvas shown twice, with two sizes
             return None
-    return list(rows.items())
+    return len(files), sizes
 
 
 def save_search(
@@ -156,14 +165,14 @@ def save_search(
     """Save the size of each listed canvas a files search shows. Every other row is dropped
     before anything is written, so no other file's ID, title or author reaches disk (CON-1).
     Returns the note for Claude, which gives counts only."""
-    rows = search_rows(response)
+    rows = search_rows(response, canvases)
     if rows is None:
         raise CanvasError(
-            "This files search shows a file without an ID or size, or diffdata can't find its "
-            "results, so nothing was saved. The connector's format may have changed. Stop the "
-            "export."
+            "This files search shows a file without an ID, or a listed canvas without a size, "
+            "or diffdata can't find its results, so nothing was saved. The connector's format "
+            "may have changed. Stop the export."
         )
-    sizes = {file_id: size for file_id, size in rows if file_id in canvases}
+    files, sizes = rows
     record = {"saved_at": saved_at, "run_id": run_id, "channel_id": channel_id, "sizes": sizes}
     path = sizes_dir(data) / run_id / f"search_files-{call}.json"
     try:
@@ -171,7 +180,7 @@ def save_search(
         path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     except OSError as e:
         raise CanvasError(f"Couldn't save a files search's canvas sizes: {e}") from e
-    note = f"diffdata saved this result: {len(rows)} file(s), {len(sizes)} of them listed canvases."
+    note = f"diffdata saved this result: {files} file(s), {len(sizes)} of them listed canvases."
     cursor = next_cursor(response)
     return note + (
         f" Next page: call again with cursor `{cursor}`." if cursor else " No more pages."
