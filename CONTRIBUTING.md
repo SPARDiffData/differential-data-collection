@@ -94,7 +94,7 @@ Since 2026-10-16, the Claude session that wrote the code runs the reviews itself
 1. Once the PR is open and CI passes, it runs the `pr-reviewer` agent, and Codex if it was agreed, on the same commit. It posts both reviews on the PR word for word, leaving out the agent's notes after the review: its Codex focus line and its list of denied tool calls.
 2. It fixes the must-fix items, Codex's high findings, and small items inside the PR's own lines. Everything else goes into one follow-up Issue for the PR. One "Review fixes" comment lists what was fixed, what was backlogged, and what wasn't changed and why.
 3. It runs `/review-pr` once more on the fix commit. Codex runs at most twice per PR. If must-fix items are still open after that, it stops and asks Paul. The commit Paul merges always gets a final `/review-pr`, even when fixes land after the last round: the limit is on fix rounds and on Codex, not on checking what gets merged.
-4. It gives Paul one line: the verdict, what was fixed and backlogged, and what needs him. Paul reads the lines that need a human, then merges.
+4. It gives Paul one line: the verdict, what was fixed and backlogged, and what needs him. Paul does the human checks the PR needs (see [Human review for consent, scrub and store](#human-review-for-consent-scrub-and-store)), then merges.
 
 ### Human review for consent, scrub and store
 
