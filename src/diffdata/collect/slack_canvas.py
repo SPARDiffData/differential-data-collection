@@ -35,7 +35,7 @@ and the rest of the shared format, including the clean copy in documents/current
 import json
 import re
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -123,7 +123,7 @@ def sizes_dir(data: Path) -> Path:
     return data / "slack" / "canvas-sizes"
 
 
-def search_rows(response, canvases: Iterable[str]) -> tuple[int, dict[str, str]] | None:
+def search_rows(response, canvases: Collection[str]) -> tuple[int, dict[str, str]] | None:
     """How many files a files search shows, and the size of each listed canvas among them.
     None if any file doesn't show exactly one ID, a listed canvas doesn't show exactly one
     size, or the results aren't where diffdata expects them."""
