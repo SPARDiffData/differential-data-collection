@@ -38,7 +38,7 @@ These rules keep real data out of the repo and out of other companies' AI tools.
 - **Codex, or any AI tool outside Claude, never gets the data folder, `config.toml` or `.env`.** It sends what it reads to its company.
 - **Invent every value in fixtures and code comments.** When a live read shows you a format, copy its structure (field names, separators, the wording of notices) and make up every value: IDs, names, titles, times, sizes and cursors. Use values nobody saw, such as round times and `FAKE-` IDs.
 - **Scan before anything leaves the machine.** Before each commit, search the staged diff for real values: the workspace's ID prefixes, people's names, email domains, titles, times and sizes. Scan PR descriptions, comments and Issues the same way before posting them. GitHub keeps every edit, so fixing a post afterwards is too late.
-- **If `/slack-export` fails, don't fix the code in that session.** Take the error message to a coding session.
+- **If `/slack-export` fails, don't fix the code in that session.** Take the error message to a coding session, with any real values in it (times, IDs, names, quoted text) replaced by placeholders first. A session handed real values counts as having seen real data.
 
 ## Lanes
 
