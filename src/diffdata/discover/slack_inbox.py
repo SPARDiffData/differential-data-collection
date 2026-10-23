@@ -222,6 +222,8 @@ def begin(config: Config, pairs: list[str], now: datetime | None = None, full: b
     if full:
         notes.append("This is a full run: every channel from the start, and every listed canvas.")
     points = {} if full else slack_state.read_state(config.data_dir)
+    if points is None:  # no state file yet, as after updating diffdata, or a damaged one
+        points = slack_state.start_points(inbox_dir(config.data_dir))[0]
     notes.append("Where each channel starts:")
     for channel_id in channels:
         start = slack_state.planned_start(points.get(channel_id))

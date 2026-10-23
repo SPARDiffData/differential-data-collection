@@ -19,9 +19,10 @@ before it. The overlap covers clock differences and the search index's delay. Ot
 start point stays, and the next run covers the same stretch again; dedupe drops the repeats.
 
 `build` works the start points out from the whole inbox, run by run from oldest to newest,
-the same way it rebuilds the store. slack/state.json only remembers the result for `begin`:
-delete it and the next run reads every channel from the beginning, and the next build
-writes it again. A run's start time is its run ID, so nothing else is needed.
+the same way it rebuilds the store. slack/state.json only remembers the result for `begin`.
+If it's missing or damaged, `begin` works the start points out from the inbox the same
+way, and the next build writes it again. A run's start time is its run ID, so nothing
+else is needed.
 """
 
 import json
@@ -54,16 +55,19 @@ def state_path(data: Path) -> Path:
     return data / "slack" / "state.json"
 
 
-def read_state(data: Path) -> dict[str, str]:
-    """Channel ID to the start time of its newest complete run. Nothing on record means
-    read from the beginning, which is the safe way to fail."""
+def read_state(data: Path) -> dict[str, str] | None:
+    """Channel ID to the start time of its newest complete run. None if there's no state
+    file yet, as after updating diffdata, or it can't be trusted: then `begin` works the
+    start points out from the inbox itself, the same way `build` does."""
     try:
         found = json.loads(state_path(data).read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return {}
+        return None
     if not isinstance(found, dict):
-        return {}
-    return {k: v for k, v in found.items() if isinstance(v, str) and start_time(v) is not None}
+        return None
+    if not all(isinstance(v, str) and start_time(v) is not None for v in found.values()):
+        return None
+    return found
 
 
 def write_state(data: Path, points: dict[str, str]) -> None:

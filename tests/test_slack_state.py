@@ -346,24 +346,31 @@ def test_a_run_whose_canvases_werent_read_still_moves_the_start_point(
     assert "1 of 1 channel(s) moved" in report
 
 
-def test_deleting_the_state_and_building_again_gives_the_same_start_points(
+def test_without_a_state_file_begin_works_the_start_points_out_from_the_inbox(
     config, first_export, slack_run, incremental
 ):
+    # As on the first run after updating diffdata: exports are saved, but no build has
+    # written state.json yet. The next run is still incremental, from the same start.
     slack_run(config, T1, incremental)
     build(config)
     points = read_state(config.data_dir)
     state_path(config.data_dir).unlink()
-    assert f"{CHANNEL}: from the start" in begin(config, [PAIR], now=T1 + timedelta(hours=1))
+    report = begin(config, [PAIR], now=T1 + timedelta(hours=1))
+    assert f'{CHANNEL}: from "1791284400" (2026-10-06 11:00 UTC)' in report
+    assert not state_path(config.data_dir).exists()  # begin writes nothing new; build does
     build(config)
     assert read_state(config.data_dir) == points == {CHANNEL: "2026-10-06T12:00:00Z"}
 
 
 @pytest.mark.parametrize("damage", ["not JSON", "[]", '{"C00000001": "yesterday"}'])
-def test_a_damaged_state_file_means_the_next_run_starts_from_the_beginning(
-    config, first_export, damage
-):
+def test_a_damaged_state_file_is_worked_out_again_from_the_inbox(config, first_export, damage):
     state_path(config.data_dir).write_text(damage, encoding="utf-8")
-    assert f"{CHANNEL}: from the start" in begin(config, [PAIR], now=T1)
+    assert f'{CHANNEL}: from "{START}" (2026-10-04 11:00 UTC)' in begin(config, [PAIR], now=T1)
+
+
+def test_with_no_exports_saved_begin_starts_from_the_beginning(config):
+    assert read_state(config.data_dir) is None
+    assert f"{CHANNEL}: from the start" in begin(config, [PAIR], now=T0)
 
 
 def test_a_run_from_before_incremental_exports_counts_as_a_complete_first_export(
