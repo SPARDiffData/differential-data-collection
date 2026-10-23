@@ -60,7 +60,7 @@ HEADING = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t#]*$", re.MULTILINE)
 # these are changed: canvas text can hold other <...>, such as <br>, which stays as it is.
 MENTION = re.compile(r"<([@#])([A-Z][A-Z0-9]+)(?:\|([^<>\n]*))?>")
 # A files search's `results` text: "## Files (20 results)", then one block per file,
-# starting "### Result 1 of 20", with one "Size: 26.5 KB" line and one "File ID: F..."
+# starting "### Result 1 of 20", with one "Size: 31.4 KB" line and one "File ID: F..."
 # line. A file's title or content could hold line breaks and lines that look like these,
 # so a search is refused when any block, anywhere in it, has a second ID line or an ID in
 # another shape, or isn't one the count announced, or when a listed canvas's block has a
@@ -73,7 +73,7 @@ FILE_BLOCK = re.compile(r"^### Result \d+ of \d+[ \t]*$", re.MULTILINE)
 FILE_ID = re.compile(r"^File ID:(.*)$", re.MULTILINE)
 FILE_SIZE = re.compile(r"^Size:(.*)$", re.MULTILINE)
 ID_VALUE = re.compile(r"F[A-Z0-9]+")
-SIZE_VALUE = re.compile(r"\d+(?:\.\d+)? ?(?:B|KB|MB|GB|TB|[Bb]ytes)")  # like 26.5 KB or 0 Bytes
+SIZE_VALUE = re.compile(r"\d+(?:\.\d+)? ?(?:B|KB|MB|GB|TB|[Bb]ytes)")  # like 31.4 KB or 0 Bytes
 # Slackbot posts this in the channel when someone edits a canvas pinned as a channel tab.
 TAB_NOTICE = re.compile(r"made updates to a canvas tab: (F[A-Z0-9]+)")
 SLACKBOT = "USLACKBOT"

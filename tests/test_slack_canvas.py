@@ -477,7 +477,7 @@ def test_a_file_that_isnt_a_listed_canvas_needs_no_size(
     assert "4 file(s), 2 of them listed canvases" in hook_note(capsys)
 
 
-@pytest.mark.parametrize("size", ["0 Bytes", "0 bytes", "512 B", "26.5 KB", "244.4 MB", "1 GB"])
+@pytest.mark.parametrize("size", ["0 Bytes", "0 bytes", "512 B", "31.4 KB", "128.0 MB", "1 GB"])
 def test_a_listed_canvas_size_in_any_byte_unit_is_kept(config, slack_hook, slack_response, size):
     begin(config, ["example-channel=C00000001"], now=T0)
     read_the_channel(config, slack_hook, slack_response)
