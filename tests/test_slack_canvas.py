@@ -408,12 +408,14 @@ def test_a_files_search_keeps_only_the_listed_canvases_sizes(
 @pytest.mark.parametrize(
     "broken",
     [
-        fixture_results().replace("Size: 4.5 KB\n", ""),  # a file with no size
+        fixture_results().replace("Size: 4.5 KB\n", ""),  # a listed canvas with no size
         fixture_results().replace("File ID: F00000009\n", ""),  # a file with no ID
+        fixture_results().replace("File ID: F00000009", "File ID: example"),  # not an ID
         fixture_results().replace("(4 results)", "(5 results)"),  # a file diffdata didn't find
         fixture_results().replace("## Files (4 results)\n", ""),  # files, but no count
         fixture_results().replace("Size: 4.5 KB", "Size: about four"),  # not a size
         fixture_results().replace("Size: 4.5 KB", "Size: 7 Alice"),  # not a byte unit
+        fixture_results().replace("Size: 4.5 KB", "Size: 4.5 KB\nSize: 9.9 KB"),  # two sizes
         # A title or content with line breaks mustn't pass off its own text as a listed
         # canvas's ID or size, even with a Content: line of its own.
         fixture_results().replace(
@@ -438,12 +440,51 @@ def test_a_files_search_keeps_only_the_listed_canvases_sizes(
 def test_a_files_search_diffdata_cant_read_is_refused(
     config, slack_hook, slack_response, capsys, broken
 ):
+    config = replace(config, slack_canvases=LISTED)
     begin(config, ["example-channel=C00000001"], now=T0)
     read_the_channel(config, slack_hook, slack_response)
     search = slack_hook(SEARCH_TOOL, SEARCH_INPUT, search_fixture(broken))
     assert save(config, search, now=T0) == 2
     assert "Stop the export" in capsys.readouterr().err
     assert size_files(config) == []
+
+
+@pytest.mark.parametrize(
+    "results",
+    [
+        # A file that isn't a canvas, with no size, one in another shape, or two.
+        fixture_results().replace("Size: 51.7 KB\n", ""),
+        fixture_results().replace("Size: 51.7 KB", "Size: unknown"),
+        fixture_results().replace("Size: 51.7 KB", "Size: 51.7 KB\nSize: 9.9 KB"),
+        # A canvas that isn't listed, with two sizes.
+        fixture_results().replace("Size: 2.0 KB", "Size: 2.0 KB\nSize: 9.9 KB"),
+    ],
+)
+def test_a_file_that_isnt_a_listed_canvas_needs_no_size(
+    config, slack_hook, slack_response, capsys, results
+):
+    # Only listed canvases' sizes are kept, so another file can't stop the export (#58).
+    config = replace(config, slack_canvases=LISTED)
+    begin(config, ["example-channel=C00000001"], now=T0)
+    read_the_channel(config, slack_hook, slack_response)
+    capsys.readouterr()
+    assert save(config, slack_hook(SEARCH_TOOL, SEARCH_INPUT, search_fixture(results)), now=T0) == 0
+    [path] = size_files(config)
+    assert json.loads(path.read_text(encoding="utf-8"))["sizes"] == {
+        CANVAS: "12.3 KB",
+        "F00000004": "4.5 KB",
+    }
+    assert "4 file(s), 2 of them listed canvases" in hook_note(capsys)
+
+
+@pytest.mark.parametrize("size", ["0 Bytes", "0 bytes", "512 B", "26.5 KB", "244.4 MB", "1 GB"])
+def test_a_listed_canvas_size_in_any_byte_unit_is_kept(config, slack_hook, slack_response, size):
+    begin(config, ["example-channel=C00000001"], now=T0)
+    read_the_channel(config, slack_hook, slack_response)
+    search = slack_hook(SEARCH_TOOL, SEARCH_INPUT, files_search({CANVAS: size}))
+    assert save(config, search, now=T0) == 0
+    [path] = size_files(config)
+    assert json.loads(path.read_text(encoding="utf-8"))["sizes"] == {CANVAS: size}
 
 
 @pytest.mark.parametrize("response", ["not JSON", [{"type": "text", "text": '{"other": 1}'}]])
