@@ -19,9 +19,18 @@ Style ops change no text, so the replay skips them:
   astss style suggested text   {si, ei, st}   its author formatting it while suggesting
 Anything else (entities and so on) is kept as it came, as kind "format" or "other".
 
-Google's op for *accepting* a suggestion isn't known yet. Accepted text would stay flagged
-as suggested, so an unknown op on a suggestion still in the doc is counted as a warning:
-one whose range covers suggested or marked text, or that names such a suggestion's ID.
+Suggestions have no op of their own for their outcome (seen on a test doc, Oct 2026):
+- Accepting a suggested insertion is one entry that deletes its text (`ds`) and inserts
+  the same text again as plain text (`is`), with style ops (`as`) around it.
+- Rejecting it is `dss`, and rejecting a suggested deletion is `usfd`. The suggestion's
+  own author withdrawing it looks the same.
+- A replacement is one suggestion ID with both parts: `msfd` on the old text and `iss`
+  for the new.
+- Someone can suggest deleting another person's suggested insertion, so a character can
+  belong to one suggested insertion and be marked by another suggestion at once.
+An unknown op on a suggestion still in the doc is counted as a warning, in case Google
+adds an op we don't handle: one whose range covers suggested or marked text, or that
+names such a suggestion's ID.
 
 The text buffer starts with one end-of-body marker. The body is everything before it;
 anything after it (footnotes and so on) is left out of `text()`.
@@ -42,8 +51,8 @@ TEXT_KINDS = {
 }
 FORMAT_OPS = {"as", "sas", "ras", "astss"}
 END_OF_BODY = "\x00"
-# What each character is: plain text, a suggested insertion, or marked for suggested deletion.
-PLAIN, SUGGESTED, MARKED = 0, 1, -1
+# A suggestion Google gave no ID. It's still a suggestion, but can't be followed.
+NO_ID = ""
 
 
 def units(text: str) -> list[str]:
@@ -120,14 +129,14 @@ def edit_events(changelog: dict) -> list[dict]:
 
 
 class DocState:
-    """The doc's characters at one point in its history, with a suggestion flag on each."""
+    """The doc's characters at one point in its history. Each character records the
+    suggested insertion it belongs to and the suggested deletion that marks it, if any."""
 
     def __init__(self):
         self.chars = [END_OF_BODY]
-        self.flags = [PLAIN]
-        # The suggestion each character belongs to, if any: a suggested insertion's ID, or
-        # the ID of the suggested deletion that marks it.
-        self.ids: list[str | None] = [None]
+        # A suggestion's ID, NO_ID for one without, or None for plain text.
+        self.ins: list[str | None] = [None]
+        self.marks: list[str | None] = [None]
         self.warnings: list[str] = []
 
     def clamp(self, index, low: int, high: int, what: str) -> int:
@@ -136,64 +145,80 @@ class DocState:
             return max(low, min(high, index)) if isinstance(index, int) else low
         return index
 
-    def insert(self, index, text: str, flag: int = PLAIN, sid: str | None = None) -> None:
+    def insert(self, index, text: str, sid: str | None = None) -> None:
+        """Insert plain text, or a suggested insertion when `sid` isn't None."""
         at = self.clamp(index, 1, len(self.chars) + 1, "insert") - 1
         added = units(text)
         self.chars[at:at] = added
-        self.flags[at:at] = [flag] * len(added)
-        self.ids[at:at] = [sid] * len(added)
+        self.ins[at:at] = [sid] * len(added)
+        self.marks[at:at] = [None] * len(added)
 
     def span(self, start, end, what: str) -> tuple[int, int]:
         start = self.clamp(start, 1, len(self.chars), f"{what} start")
         end = self.clamp(end, start, len(self.chars), f"{what} end")
         return start - 1, end
 
-    def delete(self, start, end) -> str:
+    def delete(self, start, end) -> dict:
+        """Delete a range. Returns its text, where it started, and the text each suggestion
+        lost: the part it inserted, and the part it marked for deletion."""
         a, b = self.span(start, end, "delete")
-        removed = joined(self.chars[a:b])
-        del self.chars[a:b], self.flags[a:b], self.ids[a:b]
-        if END_OF_BODY in removed:
+        removed = {"start": a + 1, "text": joined(self.chars[a:b]), "ins": {}, "marks": {}}
+        for part, ids in (("ins", self.ins), ("marks", self.marks)):
+            for sid in {i for i in ids[a:b] if i}:
+                chars = [c for c, i in zip(self.chars[a:b], ids[a:b], strict=True) if i == sid]
+                removed[part][sid] = joined(chars)
+        del self.chars[a:b], self.ins[a:b], self.marks[a:b]
+        if END_OF_BODY in removed["text"]:
             self.warnings.append("deleted the end-of-body marker (the index model may be off)")
         return removed
 
-    def mark(self, start, end, flag: int, sid: str | None = None) -> str:
+    def mark(self, start, end, sid: str | None) -> tuple[str, set[str]]:
+        """Mark a range for deletion by suggestion `sid`, or unmark it when `sid` is None.
+        Returns the range's text and the suggestions whose marks it replaced."""
         a, b = self.span(start, end, "mark")
-        self.flags[a:b] = [flag] * (b - a)
-        self.ids[a:b] = [sid] * (b - a)
-        return joined(self.chars[a:b])
+        before = {i for i in self.marks[a:b] if i}
+        self.marks[a:b] = [sid] * (b - a)
+        return joined(self.chars[a:b]), before
 
     def apply(self, event: dict) -> None:
-        """Apply one edit event, filling in the text it deleted or marked."""
+        """Apply one edit event, filling in the text it deleted or marked. `event["removed"]`
+        and `event["unmarked"]` say which suggestions it touched (see `delete` and `mark`)."""
         kind, sid = event.get("kind"), event.get("suggestion_id")
         if kind == "insert":
             self.insert(event["index"], event["text"])
         elif kind == "suggest_insert":
-            self.insert(event["index"], event["text"], SUGGESTED, sid)
+            self.insert(event["index"], event["text"], sid or NO_ID)
         elif kind in ("delete", "remove_suggested"):
-            event["deleted_text"] = self.delete(event["start"], event["end"])
+            event["removed"] = self.delete(event["start"], event["end"])
+            event["deleted_text"] = event["removed"]["text"]
         elif kind == "suggest_delete_mark":
-            event["marked_text"] = self.mark(event["start"], event["end"], MARKED, sid)
+            event["marked_text"], _ = self.mark(event["start"], event["end"], sid or NO_ID)
         elif kind == "suggest_delete_unmark":
-            event["marked_text"] = self.mark(event["start"], event["end"], PLAIN)
+            event["marked_text"], event["unmarked"] = self.mark(event["start"], event["end"], None)
         elif kind == "other" and self.touches_suggestion(event.get("raw") or {}):
-            # Maybe Google's op for accepting a suggestion, which the replay doesn't know.
+            # Maybe an op for a suggestion's outcome that the replay doesn't know.
             self.warnings.append(f"unhandled op {event.get('op_type')!r} on a suggestion")
 
     def touches_suggestion(self, op: dict) -> bool:
         """Whether an op names a suggestion still in the doc, or its range covers one."""
-        if op.get("sugid") is not None and op["sugid"] in self.ids:
+        if op.get("sugid") and op["sugid"] in self.live():
             return True
         start, end = op.get("si"), op.get("ei")
         if not (isinstance(start, int) and isinstance(end, int) and 1 <= start <= end):
             return False
-        return any(flag != PLAIN for flag in self.flags[start - 1 : end])
+        pairs = zip(self.ins[start - 1 : end], self.marks[start - 1 : end], strict=True)
+        return any(i is not None or m is not None for i, m in pairs)
 
-    def suggestion_text(self, sid: str) -> str:
-        """The text that belongs to one suggestion now: what it inserts or marks."""
+    def live(self) -> set[str]:
+        """The IDs of the suggestions that still have text in the doc."""
+        return {i for i in self.ins + self.marks if i}
+
+    def suggestion_text(self, sid: str, part: str = "insert") -> str:
+        """The text that belongs to one suggestion now: what it inserts ("insert") or what it
+        marks for deletion ("delete")."""
         end = self.body_end()
-        return joined(
-            [c for c, i in zip(self.chars[:end], self.ids[:end], strict=True) if i == sid]
-        )
+        ids = (self.ins if part == "insert" else self.marks)[:end]
+        return joined([c for c, i in zip(self.chars[:end], ids, strict=True) if i == sid])
 
     def body_end(self) -> int:
         return self.chars.index(END_OF_BODY) if END_OF_BODY in self.chars else len(self.chars)
@@ -203,7 +228,8 @@ class DocState:
         return joined(self.chars[: self.body_end()])
 
     def base_text(self) -> str:
-        """The body with every pending suggestion rejected."""
+        """The body with every pending suggestion rejected. Text that one suggestion inserts
+        and another marks for deletion is still a suggested insertion, so it's left out."""
         end = self.body_end()
-        pairs = zip(self.chars[:end], self.flags[:end], strict=True)
-        return joined([char for char, flag in pairs if flag != SUGGESTED])
+        pairs = zip(self.chars[:end], self.ins[:end], strict=True)
+        return joined([char for char, sid in pairs if sid is None])
