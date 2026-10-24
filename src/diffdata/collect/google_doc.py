@@ -34,7 +34,9 @@ What the reader makes of them:
   again; the shared format keeps each one once. Drive writes an @-mention as the person's
   email ("+sam@example.com"), though they typed a name, so it becomes MENTION_SHOWN.
 - Suggestions, from the changelog: one per suggestion ID, with the text it inserts or
-  marks for deletion, after any typing fixed or marks taken back within it.
+  marks for deletion, after any typing fixed or marks taken back within it. A replacement
+  (both, under one ID) has the new text, and the old text as its anchor. Each suggestion
+  that ended gets an accept or reject event (see `outcome`).
 The changelog's single edits (every insert and delete) stay in raw for now: the shared
 format has no event type for them yet.
 """
@@ -224,13 +226,33 @@ def comment_events(fetch: Fetch) -> list[Event]:
     return events
 
 
+def outcome(entry: list[dict], sid: str, author: str | None) -> tuple[str, str | None]:
+    """How a suggestion whose last text went in one changelog entry ended: ("accept",
+    None), ("reject", None), or ("reject", "withdrawn") when its own author took it back.
+    Google has no op for this. Accepting an insertion deletes the suggested text and
+    inserts it again as plain text in the same entry. Accepting a deletion deletes the
+    marked text. Anything else that removes it (dss, usfd, or a plain delete) rejects it."""
+    inserts = [(e["index"], e["text"]) for e in entry if e["kind"] == "insert"]
+    for edit in entry:
+        removed = edit.get("removed")
+        if edit["kind"] != "delete" or not removed:
+            continue
+        again = (removed["start"], removed["text"]) in inserts
+        if (sid in removed["ins"] and again) or (sid in removed["marks"] and not again):
+            return "accept", None
+    actor = entry[0]["actor"]
+    return "reject", "withdrawn" if actor and actor == author else None
+
+
 def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event], int]:
     """Replay the newest changelog among `fetches` (oldest first; each holds the whole
     history up to when it was fetched). Returns a version per stretch of editing, a
-    suggestion per suggestion ID, and how many warnings the replay gave."""
+    suggestion per suggestion ID with its accept or reject, and how many warnings the
+    replay gave."""
     newest = fetches[-1]
-    state, versions, suggestions = DocState(), [], {}
+    state, versions, suggestions, outcomes = DocState(), [], {}, {}
     stretch = None  # {session, at (its last edit), editor, rev}
+    entry: list[dict] = []  # the ops of the changelog entry being replayed
 
     def first_seen(at: str | None) -> tuple[str, str]:
         """When we first collected something made at `at`, and the raw file it was in:
@@ -247,6 +269,21 @@ def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event],
         rev = f"rev-{stretch['rev']}"
         versions.append(Version(text, *first_seen(stretch["at"]), stretch["at"], actor, rev))
 
+    def touches(edit: dict) -> set[str]:
+        """The suggestions one edit added to, removed from, or unmarked."""
+        removed = edit.get("removed") or {}
+        found = {*removed.get("ins", {}), *removed.get("marks", {}), *edit.get("unmarked", ())}
+        return found | ({edit["suggestion_id"]} if edit.get("suggestion_id") else set())
+
+    def judge() -> None:
+        """Log the outcome of each suggestion whose last text went in this entry."""
+        touched = set().union(*map(touches, entry)) & suggestions.keys()
+        if not touched:
+            return
+        for sid in touched - state.live():
+            outcomes[sid] = (iso(entry[0]["ts_ms"]), entry[0]["actor"], entry[0]["rev"])
+            outcomes[sid] += outcome(entry, sid, suggestions[sid]["actor"])
+
     for edit in edit_events(newest.json("changelog.json")):
         at = iso(edit["ts_ms"])
         if edit["source"] == "snapshot" and stretch is None:
@@ -255,6 +292,9 @@ def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event],
             # taken, so its time is the first edit's, a bound rather than an edit time.
             stretch = {"session": None, "at": at, "editor": None, "rev": edit["rev"]}
         elif edit["source"] == "changelog":
+            if entry and (edit["rev"], edit["ts_ms"]) != (entry[0]["rev"], entry[0]["ts_ms"]):
+                judge()
+                entry = []
             # Google leaves the session out of some entries, so a missing one isn't a new
             # session. A new editor, a new session or a pause starts a new stretch.
             session = edit["session"] or (stretch or {}).get("session")
@@ -265,23 +305,38 @@ def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event],
             ):
                 close()
             stretch = {"session": session, "at": at, "editor": edit["actor"], "rev": edit["rev"]}
+            entry.append(edit)
         state.apply(edit)
-        kind = {"suggest_insert": "insert", "suggest_delete_mark": "delete"}.get(edit["kind"])
-        if kind:
+        part = {"suggest_insert": "insert", "suggest_delete_mark": "delete"}.get(edit["kind"])
+        if part:
             sid = edit.get("suggestion_id")
-            native_id = sid or f"{kind}-rev{edit['rev']}-{edit['op_in_rev']}"
+            native_id = sid or f"{part}-rev{edit['rev']}-{edit['op_in_rev']}"
             found = suggestions.setdefault(
-                native_id, {"kind": kind, "at": at, "actor": edit["actor"], "sid": sid, "text": ""}
+                native_id,
+                {"at": at, "actor": edit["actor"], "sid": sid, "insert": "", "delete": ""},
             )
-            # Its text so far, with any typing fixed or marks taken back since.
-            now = state.suggestion_text(sid) if sid else edit.get("text") or edit.get("marked_text")
-            found["text"] = now or found["text"]
+            # Typing into a suggestion after it seemed to end (its last character deleted,
+            # then typed again) means it didn't end.
+            outcomes.pop(native_id, None)
+            if sid:
+                # Its text so far, with any typing fixed since. Only when it grows: while
+                # it's being withdrawn or rejected a letter at a time, it only shrinks.
+                found[part] = state.suggestion_text(sid, part) or found[part]
+            else:
+                found[part] = edit.get("text") or edit.get("marked_text") or found[part]
+    if entry:
+        judge()
+    for sid in state.live() & suggestions.keys():
+        # Still pending at the end: its text now, after any fixes or marks taken back.
+        for part in ("insert", "delete"):
+            suggestions[sid][part] = state.suggestion_text(sid, part)
     if stretch is not None:
         close()
     events = []
     for native_id, found in suggestions.items():
         # Still in the doc at the end, or as it last stood before it was accepted or rejected.
-        text = (state.suggestion_text(found["sid"]) if found["sid"] else "") or found["text"]
+        kind = "replace" if found["insert"] and found["delete"] else None
+        kind = kind or ("delete" if found["delete"] else "insert")
         actor = Actor(found["actor"]) if found["actor"] else None
         events.append(
             Event(
@@ -290,8 +345,21 @@ def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event],
                 at=found["at"],
                 actor=actor,
                 native_id=native_id,
-                text=text,
-                kind=found["kind"],
+                text=found["delete"] if kind == "delete" else found["insert"],
+                anchor=Anchor(found["delete"]) if kind == "replace" else None,
+                kind=kind,
+            )
+        )
+    for sid, (at, actor, _rev, type_, kind) in outcomes.items():
+        events.append(
+            Event(
+                type_,
+                *first_seen(at),
+                at=at,
+                actor=Actor(actor) if actor else None,
+                native_id=sid,
+                parent=sid,
+                kind=kind,
             )
         )
     return versions, events, len(state.warnings)

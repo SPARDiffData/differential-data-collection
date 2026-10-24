@@ -51,7 +51,12 @@ name}, or null) and `raw` (the raw file it came from, like raw/<fetch id>/<name>
                reopen belongs to), `anchor` ({quote, section}: what it points at),
                `version` (the version current at `at`, if known; for snapshots, the last
                one seen by then) and `native_id`.
-  suggestion   Adds `kind` (insert or delete), `text`, `anchor` and `native_id`.
+  suggestion   Adds `kind` (insert, delete or replace), `text`, `anchor` and `native_id`.
+               For a replacement, `text` is the new text and `anchor.quote` the old.
+  accept, reject
+               A suggestion's outcome. Adds `parent` (the suggestion's native ID), `kind`
+               (for a reject, "withdrawn" when the suggestion's own author took it back,
+               else null) and `native_id`.
 Events with the same type and native ID are one event, seen again. So give each reply,
 resolve and reopen its own native ID, as Google does: a second resolve that reused its
 comment's ID would be lost.
@@ -81,6 +86,7 @@ COMMENT_TYPES = ("comment", "reply", "resolve", "reopen")
 EVENT_FIELDS = {
     **dict.fromkeys(COMMENT_TYPES, ("text", "parent", "anchor", "version", "native_id")),
     "suggestion": ("kind", "text", "anchor", "native_id"),
+    **dict.fromkeys(("accept", "reject"), ("parent", "kind", "native_id")),
 }
 # How each comment event starts in comments.md.
 COMMENT_HEADS = {
@@ -149,7 +155,7 @@ class Version:
 
 @dataclass(frozen=True)
 class Event:
-    """A comment, reply, resolve, reopen or suggestion, as one fetch saw it."""
+    """A comment, reply, resolve, reopen, suggestion, accept or reject, as one fetch saw it."""
 
     type: str
     seen_at: str
@@ -158,9 +164,9 @@ class Event:
     actor: Actor | None = None
     native_id: str | None = None
     text: str | None = None
-    parent: str | None = None  # the native ID of the comment it belongs to
+    parent: str | None = None  # the native ID of the comment or suggestion it belongs to
     anchor: Anchor | None = None
-    kind: str | None = None  # a suggestion's kind: insert or delete
+    kind: str | None = None  # a suggestion's kind, or "withdrawn" for a reject
 
 
 def documents_dir(data: Path) -> Path:
