@@ -1,0 +1,27 @@
+Channel: #example-channel (C00000001)
+
+=== Message from Slackbot (USLACKBOT) at 2026-10-07 11:00:00 CDT ===
+Message TS: 1791388800.000700
+Alex Example made updates to a canvas tab: F00000014
+
+=== Message from Sam Sample <sam@example.com> (U00000002) at 2026-10-07 10:00:00 CDT ===
+Message TS: 1791385200.000600
+The plan canvas: <https://example.slack.com/docs/T00000000/F00000010|Plan canvas>. The slides as a file: <https://example.slack.com/files/U00000002/F00000011/review.pdf>
+Files: meeting-recording.mp4 (ID: F00000012, video/mp4, 10.0 MB), Team notes (ID: F00000013, canvas, 1.0 KB)
+
+=== Message from Alex Example <alex@example.com> (U00000001) at 2026-10-07 09:00:00 CDT ===
+Message TS: 1791381600.000500
+Background: <https://example.org/paper?id=7#results|A paper>, the code at <https://code.example.com/example/repo>, and <https://example.slack.com/archives/C00000001/p1791295200000100|the first post>.
+
+=== Message from Riley Placeholder <riley@example.com> (U00000003) at 2026-10-06 11:00:00 CDT ===
+Message TS: 1791302400.000400
+The recording is in <https://drive.google.com/file/d/FAKE-FILE-0010/view?usp=sharing>, in <https://drive.google.com/drive/folders/FAKE-FOLDER-0010|the shared folder>. Questions to <mailto:riley@example.com|riley@example.com>.
+
+=== Message from Sam Sample <sam@example.com> (U00000002) at 2026-10-06 10:00:00 CDT ===
+Message TS: 1791298800.000300
+Numbers: <https://docs.google.com/spreadsheets/d/FAKE-SHEET-0010/edit#gid=0|Budget sheet>. Slides: <https://docs.google.com/presentation/d/FAKE-SLIDES-0010/edit|Review slides>
+
+=== Message from Alex Example <alex@example.com> (U00000001) at 2026-10-06 09:00:00 CDT ===
+Message TS: 1791295200.000100
+The draft is in <https://docs.google.com/document/d/FAKE-DOC-0010/edit#heading=h.fake01|Draft plan>
+Thread: 1 reply (latest: 2026-10-06 09:30:00 CDT)
