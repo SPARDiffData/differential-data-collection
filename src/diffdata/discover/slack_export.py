@@ -13,6 +13,9 @@ thread reads go to the store: a message search's record goes to the start points
 The build also writes the canvases (COL-2), using the store's names for their mentions.
 Before the canvas reads, `canvases_due()` says which canvases to read, using the canvas-tab
 notices in the channel reads saved so far. See collect/slack_canvas.py.
+
+Last, it adds every source the messages and canvases point to into the reference log
+(DIS-2, DIS-3). See references.py.
 """
 
 import json
@@ -26,7 +29,7 @@ from diffdata import __version__
 from diffdata.collect import slack_canvas
 from diffdata.common.config import Config
 from diffdata.common.documents import documents_dir
-from diffdata.discover import slack_state
+from diffdata.discover import references, slack_state
 from diffdata.discover.slack_inbox import (
     SAVED_TOOLS,
     SlackExportError,
@@ -50,10 +53,12 @@ def build(config: Config) -> str:
     names = run_channel_names(data)
     run = open_run(data)
     totals: Counter = Counter()
+    latest: dict[tuple[str, str], dict] = {}  # each message's last saved read
     channel_dirs = sorted(p for p in inbox_dir(data).glob("*") if p.is_dir())
     for channel_dir in channel_dirs:
         channel_id = channel_dir.name
         records, counts = read_inbox(channel_dir, channel_id, config.slack_workspace_url)
+        latest.update({(channel_id, record["ts"]): record for record in records})
         store_file = slack_dir(data) / "store" / channel_id / "messages.jsonl"
         totals.update(counts)
         totals["new"] += add_to_store(store_file, records)
@@ -63,12 +68,13 @@ def build(config: Config) -> str:
             folder, channel_id, name, names, config.slack_workspace_url, read_store(store_file)
         )
 
-    people = {}
-    for store_file in sorted((slack_dir(data) / "store").glob("*/messages.jsonl")):
-        people.update(
-            {r["user_id"]: r["user_name"] for r in read_store(store_file) if r["user_id"]}
-        )
+    stores = {
+        store_file.parent.name: read_store(store_file)
+        for store_file in sorted((slack_dir(data) / "store").glob("*/messages.jsonl"))
+    }
+    people = {r["user_id"]: r["user_name"] for s in stores.values() for r in s if r["user_id"]}
     canvases = slack_canvas.build(data, config.slack_workspace_url, people, names)
+    refs = references.build(config, stores, latest, names)
     points, outcomes = slack_state.start_points(inbox_dir(data))
     slack_state.write_state(data, points)
 
@@ -101,6 +107,7 @@ def build(config: Config) -> str:
             f"Couldn't write {canvases['failed']} canvas(es). Nothing is lost: the raw reads "
             "stay in the data folder."
         )
+    report += reference_report(refs)
     if run is None:
         report.append("No export run was open, so this rebuilt from the inbox.")
     else:
@@ -132,6 +139,28 @@ def build(config: Config) -> str:
         close_run(data, run, "built")
         report.append(f"Closed export run {run.run_id}.")
     return "\n".join(report)
+
+
+def reference_report(refs: Counter) -> list[str]:
+    """Counts only: what the reference log holds, and what's new in it."""
+    if refs["unreadable"]:
+        return ["Couldn't read the reference log, so it was left as it was, with nothing added."]
+    if refs["failed"]:
+        return ["Couldn't write the reference log, so it was left as it was."]
+    if not refs["sources"]:
+        return []
+    report = [
+        f"Reference log: {refs['sources']} source(s) from {refs['places']} place(s), "
+        f"{refs['added']} added this build. {refs[references.CANVAS]} canvas(es), "
+        f"{refs['google']} Google file(s), {refs[references.ATTACHMENT]} attachment(s), "
+        f"{refs[references.LINK]} other link(s)."
+    ]
+    if refs["new"]:
+        report.append(
+            f"{refs['new']} canvas(es) or Google file(s) aren't listed in config.toml: see "
+            "references/references.md in your data folder."
+        )
+    return report
 
 
 def start_point_report(run_id: str, channels: list[str], outcomes: dict) -> list[str]:
