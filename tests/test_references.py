@@ -464,10 +464,25 @@ def test_a_log_diffdata_cant_read_isnt_overwritten(config, export, damage):
     assert (log_file(config).read_bytes(), view_file(config).read_bytes()) == before
 
 
-@pytest.mark.parametrize("field, value", [("who", "Alex"), ("via", [1]), ("latest", "yes")])
-def test_a_log_line_with_a_damaged_field_isnt_overwritten(config, export, field, value):
+@pytest.mark.parametrize(
+    "in_place, field, value",
+    [
+        (True, "who", "Alex"),
+        (True, "via", [1]),
+        (True, "latest", "yes"),
+        (True, "link", ["https://example.org/"]),
+        (False, "state", ["new"]),
+        (False, "title", {"text": "Draft plan"}),
+        (False, "unreachable", 404),
+    ],
+)
+def test_a_log_line_with_a_damaged_field_isnt_overwritten(config, export, in_place, field, value):
     export()
-    rewrite_log(config, DOC, lambda entry: entry["places"][0].update({field: value}))
+    rewrite_log(
+        config,
+        DOC,
+        lambda entry: (entry["places"][0] if in_place else entry).update({field: value}),
+    )
     before = log_file(config).read_bytes()
     assert "Couldn't read the reference log" in build(config)
     assert log_file(config).read_bytes() == before

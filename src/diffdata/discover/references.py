@@ -417,6 +417,18 @@ def readable(entry) -> bool:
         and set(SOURCE_FIELDS) <= entry.keys()
         and isinstance(entry["key"], str)
         and entry["type"] in GROUPS
+        and all(
+            isinstance(entry[name], str | None)
+            for name in (
+                "state",
+                "reason",
+                "title",
+                "link",
+                "file_type",
+                "first_seen",
+                "unreachable",
+            )
+        )
         and isinstance(entry["places"], list)
         and entry["places"] != []  # every source was found somewhere
         and all(
@@ -430,7 +442,7 @@ def readable(entry) -> bool:
             and isinstance(place["latest"], bool)
             and all(
                 isinstance(place[name], str | None)
-                for name in ("channel_id", "canvas_id", "thread_ts")
+                for name in ("channel_id", "canvas_id", "thread_ts", "ts", "link")
             )
             for place in entry["places"]
         )
