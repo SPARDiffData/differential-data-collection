@@ -6,7 +6,8 @@ fetches nothing:
   - links and attachments in every saved message version (the Slack store)
   - each message's last saved read, from the inbox, to mark whether that read still has the
     link. Not the store's newest line: the store drops a version that matches an older one,
-    so after "no link, link, no link" its newest line still has the link.
+    so after "no link, link, no link" its newest line still has the link. A place with no
+    saved read left keeps the mark it had.
   - Slackbot's canvas-tab notices
   - links in every saved canvas version
 
@@ -121,11 +122,12 @@ GOOGLE_DOC = re.compile(
 )
 # https://drive.google.com/file/d/<id>/view. A folder (/drive/folders/) is an ordinary link.
 DRIVE_FILE = re.compile(r"https://drive\.google\.com/(?:u/\d+/)?file/d/([A-Za-z0-9_-]{10,})")
-# Slack's markup, <address> or <address|text>, which also wraps mentions (<@U...>), and in
-# canvases, some HTML (<br>). Canvas text is markdown: [text](address), or ![text](address)
-# for an image. An address can also be written out, and punctuation at its end is the
-# sentence's.
-SLACK_LINK = re.compile(r"<([^<>\n]+)>")
+# Slack's markup, <address> or <address|text>, which also wraps mentions (<@U...>, <#C...>,
+# <!here>). Only these count as markup, so canvas text's own < and >, as in HTML (<br>) or
+# "a < b", can't hide a link between them. An address holds no spaces or line breaks. Canvas
+# text is markdown: [text](address), or ![text](address) for an image. An address can also
+# be written out, and punctuation at its end is the sentence's.
+SLACK_LINK = re.compile(r"<((?:[A-Za-z][A-Za-z0-9+.-]*:|[@#!])[^<>|\s]*)(?:\|([^<>\r\n]*))?>")
 MARKDOWN_LINK = re.compile(r"!?\[([^\]\n]*)\]\(([^()\s]+)\)")
 BARE_LINK = re.compile(r"https?://[^\s<>()\[\]|\"'`]+")
 WEB = ("http://", "https://")
@@ -189,11 +191,7 @@ def links(text: str) -> list[tuple[str, str]]:
             found.append((address, "" if label == address else label))
         return " "  # so a link isn't found again as a written-out address
 
-    def slack(match: re.Match) -> str:
-        address, _, label = match[1].partition("|")
-        return keep(address, label)
-
-    text = SLACK_LINK.sub(slack, text)
+    text = SLACK_LINK.sub(lambda match: keep(match[1], match[2] or ""), text)
     text = MARKDOWN_LINK.sub(lambda match: keep(match[2], match[1]), text)
     for match in BARE_LINK.finditer(text):
         keep(match[0].rstrip(".,;:!?"))
@@ -241,18 +239,15 @@ def slack_time(ts: str) -> str:
     return datetime.fromtimestamp(int(ts.split(".")[0]), UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def in_messages(
-    stores: dict[str, list[dict]], latest: dict[tuple[str, str], dict]
-) -> Iterator[tuple[Found, dict]]:
-    """Each reference in every saved message version, with its place."""
+def in_messages(stores: dict[str, list[dict]]) -> Iterator[tuple[Found, dict]]:
+    """Each reference in every saved message version, with its place. A place's latest-read
+    mark here comes from the store's newest version. It's only a stand-in, for a place new
+    to the log whose message the inbox no longer has: `build()` sets it from the inbox."""
     for channel_id, store in sorted(stores.items()):
-        newest = {record["ts"]: record for record in store}  # if the inbox no longer has it
-        still: dict[str, set[str]] = {}
+        newest = {record["ts"]: record for record in store}
+        still = {ts: {found.key for found in in_message(record)} for ts, record in newest.items()}
         for record in store:
             ts = record["ts"]
-            if ts not in still:
-                read = latest.get((channel_id, ts), newest[ts])
-                still[ts] = {found.key for found in in_message(read)}
             place = {
                 "place": f"message:{channel_id}:{ts}",
                 "channel_id": channel_id,
@@ -267,12 +262,16 @@ def in_messages(
                 yield found, place | {"via": [found.via], "latest": found.key in still[ts]}
 
 
-def in_canvases(data: Path) -> tuple[list[tuple[Found, dict]], dict[str, str], set[str]]:
+def in_canvases(
+    data: Path,
+) -> tuple[list[tuple[Found, dict]], dict[str, str], set[str], dict[str, set[str]]]:
     """Each reference in every saved canvas version, with its place; each canvas's title
-    from its latest text; and the canvases with saved reads."""
+    from its latest text; the canvases with saved reads; and the sources each canvas's
+    latest text links to, by place."""
     found_here: list[tuple[Found, dict]] = []
     titles: dict[str, str] = {}
     read: set[str] = set()
+    current: dict[str, set[str]] = {}
     for folder in sorted(
         p for p in (documents_dir(data) / slack_canvas.SOURCE).glob("*") if p.is_dir()
     ):
@@ -286,7 +285,7 @@ def in_canvases(data: Path) -> tuple[list[tuple[Found, dict]], dict[str, str], s
         newest = kept[-1][1]
         if (title := slack_canvas.title(newest, canvas_id)) != canvas_id:
             titles[canvas_id] = title
-        still = {found.key for found in in_text(newest)}
+        still = current[f"canvas:{canvas_id}"] = {found.key for found in in_text(newest)}
         for event, text in kept:  # oldest first, so a place's time is its first version's
             place = dict.fromkeys(PLACE_FIELDS) | {
                 "place": f"canvas:{canvas_id}",
@@ -297,7 +296,7 @@ def in_canvases(data: Path) -> tuple[list[tuple[Found, dict]], dict[str, str], s
                 found_here.append(
                     (found, place | {"via": [found.via], "latest": found.key in still})
                 )
-    return found_here, titles, read
+    return found_here, titles, read, current
 
 
 def add(log: dict[str, dict], found: Found, place: dict) -> bool:
@@ -321,7 +320,6 @@ def add(log: dict[str, dict], found: Found, place: dict) -> bool:
         entry["places"][place["place"]] = place
         return added
     old["via"] = sorted(set(old["via"]) | set(place["via"]))
-    old["latest"] = place["latest"]
     if place["thread_ts"] and not old["thread_ts"]:  # a thread read's copy says which thread
         old["thread_ts"], old["link"] = place["thread_ts"], place["link"]
     return added
@@ -363,9 +361,17 @@ def build(
     if log is None:
         return Counter(unreadable=1)
     counts: Counter = Counter()
-    from_canvases, titles, read = in_canvases(data)
-    for found, place in [*in_messages(stores, latest), *from_canvases]:
+    from_canvases, titles, read, current = in_canvases(data)
+    for found, place in [*in_messages(stores), *from_canvases]:
         counts["added"] += add(log, found, place)
+    # Each place's mark comes from the latest saved read of its message or canvas, even when
+    # no saved version holds the link any more. With no such read, the mark stays as it was.
+    for (channel_id, ts), record in latest.items():
+        current[f"message:{channel_id}:{ts}"] = {found.key for found in in_message(record)}
+    for key, entry in log.items():
+        for place_id, place in entry["places"].items():
+            if place_id in current:
+                place["latest"] = key in current[place_id]
 
     listed = {f"slack-file:{canvas}" for canvas in config.slack_canvases}
     read_keys = {f"slack-file:{canvas}" for canvas in read}
@@ -419,6 +425,9 @@ def readable(entry) -> bool:
             and isinstance(place["place"], str)
             and isinstance(place["at"], str)
             and isinstance(place["via"], list)
+            and all(isinstance(via, str) for via in place["via"])
+            and isinstance(place["who"], dict | None)
+            and isinstance(place["latest"], bool)
             and all(
                 isinstance(place[name], str | None)
                 for name in ("channel_id", "canvas_id", "thread_ts")
@@ -435,7 +444,9 @@ def load(path: Path) -> dict[str, dict] | None:
         return {}
     log: dict[str, dict] = {}
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
+        # Only \n ends a line: splitlines() would also split a title at a character such
+        # as U+2028, which JSON written with ensure_ascii=False keeps as it is.
+        for line in path.read_text(encoding="utf-8").split("\n"):
             if not line.strip():
                 continue
             entry = json.loads(line)

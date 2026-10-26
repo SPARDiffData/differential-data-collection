@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from diffdata import __version__
+from diffdata.collect import slack_canvas
 from diffdata.common.config import Config
 from diffdata.discover.references import in_text, render
 from diffdata.discover.slack_export import build
@@ -94,8 +95,8 @@ def view_file(config) -> Path:
 
 
 def log(config) -> dict[str, dict]:
-    lines = log_file(config).read_text(encoding="utf-8").splitlines()
-    return {entry["key"]: entry for entry in map(json.loads, lines)}
+    lines = log_file(config).read_text(encoding="utf-8").split("\n")
+    return {entry["key"]: entry for entry in map(json.loads, filter(None, lines))}
 
 
 def states(config) -> dict[str, str]:
@@ -183,6 +184,16 @@ def test_emails_mentions_and_html_are_not_links(text):
 def test_link_text_is_kept_unless_it_only_repeats_the_address():
     found = in_text("<https://example.org/a|Notes> <https://example.org/b|https://example.org/b>")
     assert [found.title for found in found] == ["Notes", None]
+
+
+def test_a_less_than_sign_in_canvas_text_doesnt_hide_a_link():
+    found = in_text("If a < b see https://example.org/x and c > d")
+    assert [found.key for found in found] == ["url:https://example.org/x"]
+
+
+def test_a_link_never_holds_a_line_break():
+    found = in_text("<https://example.org/a\r- Key: fake|Notes>")
+    assert [found.link for found in found] == ["https://example.org/a"]
 
 
 # The log
@@ -283,6 +294,48 @@ def test_a_link_edited_out_of_a_canvas_is_kept_and_marked(config, export, tmp_pa
     assert canvas["at"] == "2026-10-08T12:03:00Z"  # when the canvas first had it
 
 
+def test_a_mark_stays_when_the_inbox_no_longer_has_the_message(config, export, tmp_path):
+    without = edited(tmp_path, "references_channel.txt", SHEET_LINK, "the sheet")
+    export(T0, without)
+    export(T0 + timedelta(days=1))
+    export(T0 + timedelta(days=2), without)
+    # The store's newest version of the message still has the link, so it mustn't decide.
+    shutil.rmtree(config.data_dir / "slack" / "inbox" / CHANNEL)
+    build(config)
+    [place] = log(config)[SHEET]["places"]
+    assert place["latest"] is False
+    assert states(config)[SHEET] == "taken-back"
+
+
+def test_a_new_read_without_the_link_updates_a_kept_place(config, export, tmp_path):
+    export()
+    # The saved data behind the references is deleted, then read again without the links.
+    shutil.rmtree(config.data_dir / "slack" / "store" / CHANNEL)
+    shutil.rmtree(config.data_dir / "slack" / "inbox" / CHANNEL)
+    shutil.rmtree(config.data_dir / "documents")
+    export(
+        T0 + timedelta(days=1),
+        edited(tmp_path, "references_channel.txt", SHEET_LINK, "the sheet"),
+        edited(tmp_path, "references_canvas.json", PAPER_LINE, ""),
+    )
+    [place] = log(config)[SHEET]["places"]
+    assert place["latest"] is False and states(config)[SHEET] == "taken-back"
+    message, canvas = log(config)[PAPER]["places"]
+    assert message["latest"] is True and canvas["latest"] is False
+
+
+def test_a_title_with_a_unicode_line_separator_doesnt_break_the_log(config, export, tmp_path):
+    # JSON keeps U+2028 and U+2029 as they are, and Python's splitlines() splits at them.
+    export(
+        canvas=edited(
+            tmp_path, "references_canvas.json", "![chart.png]", "![chart\\u2028one\\u2029.png]"
+        )
+    )
+    assert log(config)["slack-file:F00000015"]["title"] == "chart one .png"
+    report = build(config)
+    assert "Couldn't read the reference log" not in report and "0 added this build" in report
+
+
 # States
 
 
@@ -301,14 +354,19 @@ def test_a_listed_canvas_not_read_yet_is_approved(config, export):
     assert states(config)["slack-file:F00000014"] == "approved"
 
 
+def rewrite_log(config, key: str, change) -> None:
+    """Change one source in the log by hand, as a fetcher or a damaged file might."""
+    entries = list(log(config).values())
+    for entry in entries:
+        if entry["key"] == key:
+            change(entry)
+    log_file(config).write_text("".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8")
+
+
 def test_a_listed_source_a_fetcher_couldnt_reach_says_why(config, export):
     export()
-    lines = log_file(config).read_text(encoding="utf-8").splitlines()
-    entries = [json.loads(line) for line in lines]
-    for entry in entries:
-        if entry["key"] == "slack-file:F00000014":
-            entry["unreachable"] = "the connector said it doesn't exist"
-    log_file(config).write_text("".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8")
+    reason = "the connector said it doesn't exist"
+    rewrite_log(config, "slack-file:F00000014", lambda entry: entry.update(unreachable=reason))
     build(replace(config, slack_canvases=(CANVAS, "F00000014")))
     entry = log(config)["slack-file:F00000014"]
     assert (entry["state"], entry["reason"]) == (
@@ -326,6 +384,47 @@ def test_a_canvas_collected_or_listed_before_but_unlisted_now_is_withdrawn(confi
     build(replace(config, slack_canvases=()))
     assert states(config)["slack-file:F00000010"] == "withdrawn"  # it was read
     assert states(config)["slack-file:F00000014"] == "withdrawn"  # it was listed
+
+
+def test_an_attachment_listed_in_config_becomes_a_canvas_for_good(config, export):
+    export()
+    build(replace(config, slack_canvases=(CANVAS, "F00000012")))
+    entry = log(config)["slack-file:F00000012"]
+    assert (entry["type"], entry["state"]) == ("slack-canvas", "approved")
+    build(config)
+    entry = log(config)["slack-file:F00000012"]
+    assert (entry["type"], entry["state"]) == ("slack-canvas", "withdrawn")
+
+
+def test_a_slack_file_with_saved_canvas_reads_is_a_canvas(config, export):
+    export()
+    read = {"canvas_id": "F00000011", "markdown_content": "# Review notes\n"}
+    record = {
+        "saved_at": "2026-10-08T13:00:00.000000Z",
+        "tool_response": [{"type": "text", "text": json.dumps(read)}],
+    }
+    slack_canvas.save_read(config.data_dir, "20261008T130000Z", "F00000011", record, "toolu_x")
+    build(config)
+    entry = log(config)["slack-file:F00000011"]
+    assert (entry["type"], entry["title"], entry["state"]) == (
+        "slack-canvas",
+        "Review notes",
+        "withdrawn",  # read before, and not listed now
+    )
+
+
+def test_a_canvas_with_an_unreadable_read_keeps_its_entries(config, export, tmp_path):
+    export()
+    raw = config.data_dir / "documents" / "slack-canvas" / CANVAS / "raw" / "20261008T130000Z"
+    raw.mkdir(parents=True)
+    (raw / "slack_read_canvas-broken.json").write_text("not JSON", encoding="utf-8")
+    # This read drops the paper link, but the canvas can't be built, so its entries stay.
+    export(
+        T0 + timedelta(days=1), canvas=edited(tmp_path, "references_canvas.json", PAPER_LINE, "")
+    )
+    _, canvas = log(config)[PAPER]["places"]
+    assert canvas["latest"] is True
+    assert log(config)["slack-file:F00000010"]["title"] == "Example Plan Canvas"
 
 
 def test_a_source_linked_only_from_places_no_longer_opted_in_is_history_only(config, export):
@@ -363,6 +462,25 @@ def test_a_log_diffdata_cant_read_isnt_overwritten(config, export, damage):
     )
     assert report.splitlines()[0].startswith("1 channel(s)")  # the rest of the build finished
     assert (log_file(config).read_bytes(), view_file(config).read_bytes()) == before
+
+
+@pytest.mark.parametrize("field, value", [("who", "Alex"), ("via", [1]), ("latest", "yes")])
+def test_a_log_line_with_a_damaged_field_isnt_overwritten(config, export, field, value):
+    export()
+    rewrite_log(config, DOC, lambda entry: entry["places"][0].update({field: value}))
+    before = log_file(config).read_bytes()
+    assert "Couldn't read the reference log" in build(config)
+    assert log_file(config).read_bytes() == before
+
+
+def test_a_log_diffdata_cant_write_is_reported(config, export, monkeypatch):
+    def refuse(path, text):
+        raise PermissionError("synthetic: the file is open elsewhere")
+
+    monkeypatch.setattr("diffdata.discover.references.write_log", refuse)
+    report = export()
+    assert "Couldn't write the reference log, so it was left as it was." in report
+    assert report.splitlines()[-1].startswith("Closed export run")  # the build finished
 
 
 def test_building_twice_changes_nothing(config, export):
