@@ -3,6 +3,7 @@ Synthetic data only."""
 
 import json
 import re
+from datetime import timedelta
 
 import pytest
 
@@ -834,3 +835,118 @@ def test_typing_into_a_suggestion_again_after_deleting_it_all_isnt_an_outcome(tm
     assert of_type(tmp_path, "reject") == []
     (suggestion,) = of_type(tmp_path, "suggestion")
     assert suggestion["text"] == " y"
+
+
+# The version rule: when a stretch of editing ends and becomes a version.
+
+
+def minute(n: float) -> str:
+    return (exact("2026-10-05T10:00:00Z") + timedelta(minutes=n)).isoformat().replace("+00:00", "Z")
+
+
+def typed(n: int, text: str, when: float, user: str, session: str, index: int) -> list:
+    return entry({"ty": "is", "ibi": index, "s": text}, minute(when), user, n, session)
+
+
+def versions_of(tmp_path, *entries) -> list[tuple[str, str]]:
+    """Build a doc from the given entries. Returns each version's editor and text."""
+    save_fetch(
+        tmp_path,
+        DOC,
+        "f1",
+        "2026-10-06T09:00:00Z",
+        "browser-file",
+        {"changelog.json": changelog_of(*entries)},
+    )
+    build(tmp_path)
+    folder = document_dir(tmp_path, "google-doc", DOC)
+    return [
+        (v["actor"]["id"], (folder / "versions" / v["version"]).read_text("utf-8"))
+        for v in of_type(tmp_path, "version")
+    ]
+
+
+def test_switching_between_two_windows_isnt_a_new_version(tmp_path):
+    # One person with the doc open in two windows has two editing sessions.
+    found = versions_of(
+        tmp_path,
+        typed(1, "One", 0, A, "window-1", 1),
+        typed(2, " two", 0.1, A, "window-2", 4),
+        typed(3, " three", 0.2, A, "window-1", 8),
+        typed(4, " four", 0.3, A, "window-2", 14),
+    )
+    assert found == [("gaia:111", "One two three four")]
+
+
+def test_people_writing_together_make_one_version_not_one_per_turn(tmp_path):
+    # A writes alone. Then B joins, and they take turns every few seconds.
+    found = versions_of(
+        tmp_path,
+        typed(1, "Alone.", 0, A, "A", 1),
+        typed(2, " We", 1, B, "B", 7),
+        typed(3, " write", 1.05, A, "A", 10),
+        typed(4, " this", 1.1, B, "B", 16),
+        typed(5, " together", 1.15, A, "A", 21),
+        typed(6, " now.", 1.2, B, "B", 30),
+        typed(7, "!", 1.25, B, "B", 35),
+    )
+    # B joining starts a version. After that, nobody's turn does. B made the most edits.
+    assert found == [
+        ("gaia:111", "Alone."),
+        ("gaia:222", "Alone. We write this together now.!"),
+    ]
+
+
+def test_someone_back_after_a_while_starts_a_new_version(tmp_path):
+    found = versions_of(
+        tmp_path,
+        typed(1, "A1.", 0, A, "A", 1),
+        typed(2, " B1.", 1, B, "B", 4),
+        # A last edited 20 minutes ago: not writing together any more.
+        typed(3, " A2.", 20, A, "A", 8),
+    )
+    assert [editor for editor, _ in found] == ["gaia:111", "gaia:222", "gaia:111"]
+
+
+def test_a_long_sitting_is_cut_into_versions(tmp_path):
+    # An edit every 20 minutes for 5 hours: never a 30-minute pause, but no idea should be
+    # lost inside one sitting that long.
+    edits = [
+        typed(n + 1, f"{n}.", n * 20, A, "A", 1 + len("".join(f"{m}." for m in range(n))))
+        for n in range(16)
+    ]
+    found = versions_of(tmp_path, *edits)
+    assert len(found) == 3
+    assert found[-1][1] == "".join(f"{n}." for n in range(16))
+
+
+def test_text_written_then_replaced_is_kept_in_a_version(tmp_path):
+    # A writes a paragraph, deletes it a minute later, and writes a different one.
+    first = "An argument someone wrote and then thought better of. " * 3  # 162 characters
+    found = versions_of(
+        tmp_path,
+        typed(1, first, 0, A, "A", 1),
+        entry({"ty": "ds", "si": 1, "ei": len(first)}, minute(1), A, 2, "A"),
+        typed(3, "A better one.", 1.1, A, "A", 1),
+    )
+    assert [text for _, text in found] == [first, "A better one."]
+
+
+def test_small_deletions_and_accepting_a_long_suggestion_dont_cut_a_version(tmp_path):
+    long = "x" * 150
+    found = versions_of(
+        tmp_path,
+        typed(1, "Typo fixed. ", 0, A, "A", 1),
+        entry({"ty": "ds", "si": 1, "ei": 4}, minute(0.1), A, 2, "A"),
+        # A suggests 150 characters, then accepts them: Google deletes the suggested text
+        # and inserts it again as plain text. That deletes no plain text.
+        entry({"ty": "iss", "ibi": 9, "s": long, "sugid": "sug-1"}, minute(0.2), A, 3, "A"),
+        entry(
+            several({"ty": "ds", "si": 9, "ei": 158}, {"ty": "is", "ibi": 9, "s": long}),
+            minute(0.3),
+            A,
+            4,
+            "A",
+        ),
+    )
+    assert [text for _, text in found] == [" fixed. " + long]

@@ -24,8 +24,8 @@ sent ({"comments": [...], "nextPageToken": ...}) or just the list. A list Drive 
 several pages is saved one page a file: comments.json, then comments-2.json and so on.
 What the reader makes of them:
 - Versions, best first. The newest changelog gives the full history: it's replayed, and
-  each stretch of editing becomes a version (a new one when the editor or the editing
-  session changes, or after IDLE without edits). Else each revision-<id>.txt is a
+  each stretch of editing becomes a version (see `new_stretch` for when one starts, and
+  LARGE_DELETION for a cut before a big deletion). Else each revision-<id>.txt is a
   version. With a changelog, a revision made after the newest changelog was fetched is
   kept too. An export.txt is our own snapshot (COL-9). One fetched no later than the
   newest changelog is dropped, since the changelog already covers it, and so is one whose
@@ -67,8 +67,16 @@ from diffdata.common.documents import (
 SOURCE = "google-doc"
 DOC_URL = "https://docs.google.com/document/d/{id}"
 ROUTES = ("google-login", "shared-account", "connector", "browser-file")
-# A stretch of editing ends when nobody has edited for this long.
+# A stretch of editing ends when nobody has edited for this long,
 IDLE = timedelta(minutes=30)
+# or when it has gone on this long, so an idea isn't lost inside one long sitting,
+MAX_STRETCH = timedelta(hours=2)
+# or when someone starts editing who hasn't edited for this long. People writing together
+# take turns every few seconds, and that's one stretch, not one per turn.
+CO_WRITING = timedelta(minutes=5)
+# Deleting this much plain text (UTF-16 units) closes the version before it, so text
+# someone wrote and then replaced still shows up in a version.
+LARGE_DELETION = 100
 # Google puts this in front of the changelog's JSON so a browser won't run it as a script.
 XSSI_PREFIX = ")]}'"
 REPLY_TYPES = {"resolve": "resolve", "reopen": "reopen"}
@@ -226,6 +234,26 @@ def comment_events(fetch: Fetch) -> list[Event]:
     return events
 
 
+def new_stretch(stretch: dict, editor: str | None, at: str, their_last: str | None) -> bool:
+    """Whether an edit at `at` starts a new stretch of editing: after a pause of IDLE, once
+    the stretch has gone on for MAX_STRETCH, or when someone starts editing who isn't in it
+    and hasn't edited for CO_WRITING. Editing sessions don't count: one person with the
+    doc open in two windows has two sessions, and switching between them isn't news."""
+    now = exact(at)
+    if now - exact(stretch["at"]) > IDLE or now - exact(stretch["first"]) > MAX_STRETCH:
+        return True
+    joining = editor not in stretch["editors"]
+    return joining and (their_last is None or now - exact(their_last) > CO_WRITING)
+
+
+def big_deletion(state: DocState, edit: dict) -> bool:
+    """Whether an edit deletes LARGE_DELETION or more of the doc's plain text. Suggested
+    text doesn't count, so accepting a long suggestion isn't one."""
+    if edit["kind"] != "delete":
+        return False
+    return state.plain_count(edit["start"], edit["end"]) >= LARGE_DELETION
+
+
 def outcome(entry: list[dict], sid: str, author: str | None) -> tuple[str, str | None]:
     """How a suggestion whose last text went in one changelog entry ended: ("accept",
     None), ("reject", None), or ("reject", "withdrawn") when its own author took it back.
@@ -251,7 +279,8 @@ def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event],
     replay gave."""
     newest = fetches[-1]
     state, versions, suggestions, outcomes = DocState(), [], {}, {}
-    stretch = None  # {session, at (its last edit), editor, rev}
+    stretch = None  # {first, at (its last edit), rev, editors (edits per editor)}
+    last_edit: dict[str | None, str] = {}  # when each editor last edited
     entry: list[dict] = []  # the ops of the changelog entry being replayed
 
     def first_seen(at: str | None) -> tuple[str, str]:
@@ -265,7 +294,9 @@ def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event],
         text = state.base_text()
         if not versions and not text:
             return  # the empty doc before anyone typed isn't a version
-        actor = Actor(stretch["editor"]) if stretch["editor"] else None
+        # Several people writing together: the one who made the most edits.
+        editor = next(iter(stretch["editors"].most_common(1)), (None, 0))[0]
+        actor = Actor(editor) if editor else None
         rev = f"rev-{stretch['rev']}"
         versions.append(Version(text, *first_seen(stretch["at"]), stretch["at"], actor, rev))
 
@@ -290,21 +321,22 @@ def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event],
             # The doc as it stood when the changelog starts: a version of its own, by nobody
             # we know, even if no edits follow. Google doesn't say when the snapshot was
             # taken, so its time is the first edit's, a bound rather than an edit time.
-            stretch = {"session": None, "at": at, "editor": None, "rev": edit["rev"]}
+            stretch = {"first": at, "at": at, "rev": edit["rev"], "editors": Counter()}
         elif edit["source"] == "changelog":
             if entry and (edit["rev"], edit["ts_ms"]) != (entry[0]["rev"], entry[0]["ts_ms"]):
                 judge()
                 entry = []
-            # Google leaves the session out of some entries, so a missing one isn't a new
-            # session. A new editor, a new session or a pause starts a new stretch.
-            session = edit["session"] or (stretch or {}).get("session")
             if stretch is not None and (
-                edit["actor"] != stretch["editor"]
-                or session != stretch["session"]
-                or exact(at) - exact(stretch["at"]) > IDLE
+                new_stretch(stretch, edit["actor"], at, last_edit.get(edit["actor"]))
+                or big_deletion(state, edit)
             ):
                 close()
-            stretch = {"session": session, "at": at, "editor": edit["actor"], "rev": edit["rev"]}
+                stretch = None
+            if stretch is None:
+                stretch = {"first": at, "editors": Counter()}
+            stretch.update(at=at, rev=edit["rev"])
+            stretch["editors"][edit["actor"]] += 1
+            last_edit[edit["actor"]] = at
             entry.append(edit)
         state.apply(edit)
         part = {"suggest_insert": "insert", "suggest_delete_mark": "delete"}.get(edit["kind"])

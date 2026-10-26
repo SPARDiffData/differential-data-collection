@@ -209,6 +209,13 @@ class DocState:
         pairs = zip(self.ins[start - 1 : end], self.marks[start - 1 : end], strict=True)
         return any(i is not None or m is not None for i, m in pairs)
 
+    def plain_count(self, start, end) -> int:
+        """How much plain text (not a suggested insertion) a range holds, in UTF-16 units.
+        Indices out of range count what's there, without a warning."""
+        if not (isinstance(start, int) and isinstance(end, int)):
+            return 0
+        return sum(sid is None for sid in self.ins[max(start, 1) - 1 : max(end, 0)])
+
     def live(self) -> set[str]:
         """The IDs of the suggestions that still have text in the doc."""
         return {i for i in self.ins + self.marks if i}
