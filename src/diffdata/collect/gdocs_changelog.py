@@ -192,7 +192,11 @@ class DocState:
             event["removed"] = self.delete(event["start"], event["end"])
             event["deleted_text"] = event["removed"]["text"]
         elif kind == "suggest_delete_mark":
-            event["marked_text"], _ = self.mark(event["start"], event["end"], sid or NO_ID)
+            event["marked_text"], replaced = self.mark(event["start"], event["end"], sid or NO_ID)
+            if replaced - {sid}:
+                # Another suggested deletion's mark is gone without an outcome. We don't
+                # know yet whether Google allows this, so it's counted.
+                self.warnings.append("a suggested deletion replaced another one's mark")
         elif kind == "suggest_delete_unmark":
             event["marked_text"], event["unmarked"] = self.mark(event["start"], event["end"], None)
         elif kind == "other" and self.touches_suggestion(event.get("raw") or {}):
@@ -208,6 +212,13 @@ class DocState:
             return False
         pairs = zip(self.ins[start - 1 : end], self.marks[start - 1 : end], strict=True)
         return any(i is not None or m is not None for i, m in pairs)
+
+    def ids_in(self, start, end) -> set[str]:
+        """The suggestions with text in a range: inserted there, or marking it."""
+        if not (isinstance(start, int) and isinstance(end, int)):
+            return set()
+        a, b = max(start, 1) - 1, max(end, 0)
+        return {i for i in self.ins[a:b] + self.marks[a:b] if i}
 
     def live(self) -> set[str]:
         """The IDs of the suggestions that still have text in the doc."""
