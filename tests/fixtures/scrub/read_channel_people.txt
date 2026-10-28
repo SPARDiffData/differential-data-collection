@@ -1,0 +1,13 @@
+Channel: #example-channel (C00000001)
+
+=== Message from Jamie Q. Tester <jamie@example.com> (U00000007) at 2026-10-05 07:20:00 CDT ===
+Message TS: 1791202800.000300
+Q&A notes from José are in the doc. My old account was W00000099.
+
+=== Message from José Ejemplo <jose@example.com> (U00000006) at 2026-10-05 07:10:00 CDT ===
+Message TS: 1791202200.000200
+Thanks riley! Ping @Jordan about the venue. Sam from the other lab says hi.
+
+=== Message from Alex Fakename <alex.fakename@example.com> (U00000005) at 2026-10-05 07:00:00 CDT ===
+Message TS: 1791201600.000100
+Hi all, Alex here. Looping in <@U00000004|Casey Silentia>, who hasn't posted yet.
