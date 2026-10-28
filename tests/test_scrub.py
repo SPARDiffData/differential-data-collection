@@ -311,6 +311,57 @@ def test_a_name_is_matched_whole_and_never_inside_a_placeholder():
     assert text == "[Person 1] met [Person 2]. Alexander isn't [Person 1]'s: [Person 1]_2."
 
 
+def test_a_name_is_found_however_its_written():
+    people = People(
+        [
+            Person("[Person 1]", ["U00000001"], ["Kim O'Example", "riley.fake"]),
+            Person("[Person 2]", ["U00000002"], ["Anne-Marie Sample", "José Ejemplo"]),
+        ]
+    )
+    scrubber = Scrubber(people)
+    written = "O’Example and Riley met Anne, then Marie, then Jose and jose ejemplo."
+    text, flags = scrubber.scrub(written)
+    assert text == (
+        "[Person 1] and [Person 1] met [Person 2], then [Person 2], then [Person 2] and [Person 2]."
+    )
+    assert flags == [] and scrubber.leftovers(written) == ["a name"]
+
+
+@pytest.mark.parametrize(
+    "written, scrubbed, flagged",
+    [
+        ("Ask @alex.newperson.", "Ask @[name?].", ["alex.newperson"]),  # holds a known name
+        ("Ask @_newperson.", "Ask @[name?].", ["_newperson"]),
+        ("cc:@newperson", "cc:@[name?]", ["newperson"]),
+        ("Thanks @Alex Example Today", "Thanks @[Person 1] Today", []),
+        ("Thanks @alex.", "Thanks @[Person 1].", []),
+        ("@here and @Channel", "@here and @Channel", []),
+    ],
+)
+def test_a_mention_is_read_whole(written, scrubbed, flagged):
+    text, flags = Scrubber(People([Person("[Person 1]", [], ["Alex Example"])])).scrub(written)
+    assert text == scrubbed and [flag.text for flag in flags] == flagged
+
+
+@pytest.mark.parametrize(
+    "name, written",
+    [
+        ("Kim Weiß", "WEISS replied."),  # one letter folds to two
+        ("Kim Weiss", "Weiß replied."),
+        ("李", "李 replied."),  # one letter, in a script without capitals
+    ],
+)
+def test_a_name_is_found_in_any_case_and_any_length(name, written):
+    scrubber = Scrubber(People([Person("[Person 1]", [], [name])]))
+    assert scrubber.scrub(written) == ("[Person 1] replied.", [])
+    assert scrubber.leftovers(written) == ["a name"]
+
+
+def test_an_initial_is_never_a_name_but_a_one_letter_nickname_is():
+    scrubber = Scrubber(People([Person("[Person 1]", [], ["Jamie Q. Tester"], ["Z"])]))
+    assert scrubber.scrub("Q and Z")[0] == "Q and [Person 1]"
+
+
 def test_a_long_run_of_letters_is_read_quickly():
     # Like an image pasted into a canvas. Read once per letter, this takes about a minute.
     blob = "data:image/png;base64," + "A" * 100_000
@@ -364,6 +415,21 @@ def test_must_refuse_2_a_run_deletes_nothing_it_didnt_make(config, scrubbed):
     with pytest.raises(ScrubError):
         scrub(config)
     assert [path.read_text(encoding="utf-8") for path in beside] == ["keep"] * len(beside)
+
+
+@pytest.mark.parametrize("folder", ["scrubbed", "scrubbed-in-progress"])
+@pytest.mark.parametrize("name", ["notes.md", "slack/export/C00000001/notes.md"])
+def test_must_refuse_2_a_folder_the_scrub_replaces_with_someone_elses_file_is_left_alone(
+    config, scrubbed, folder, name
+):
+    theirs = config.data_dir / folder / name
+    theirs.parent.mkdir(parents=True, exist_ok=True)
+    theirs.write_text("keep", encoding="utf-8")
+    before = copies(config)
+    with pytest.raises(ScrubError, match=f"{folder}/ in your data folder holds a file"):
+        scrub(config)
+    assert theirs.read_text(encoding="utf-8") == "keep"
+    assert copies(config) == before
 
 
 def make_link(link: Path, target: Path, kind: str) -> None:

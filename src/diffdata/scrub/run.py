@@ -16,8 +16,10 @@ that's no longer opted in can't linger. A copy the last check finds anything lef
 the manifest lists it as held back.
 
 A scrub writes only in scrubbed/, scrubbed-in-progress/ and private/. If any of them is a
-link or holds one, it stops before writing anything. Every file is written to a temporary
-file and renamed into place, so a hard link is replaced, never written through.
+link or holds one, it stops before writing anything, and so it does if scrubbed/ or
+scrubbed-in-progress/, which it replaces whole, holds a file a scrub doesn't make. Every
+file is written to a temporary file and renamed into place, so a hard link is replaced,
+never written through.
 """
 
 import hashlib
@@ -55,6 +57,12 @@ FLAGS = "flags.md"
 DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 SAFE_ID = re.compile(r"[A-Z0-9]+")
 CHANNEL_LINE = re.compile(r"^channel_id: (\S+)$", re.MULTILINE)
+# Every file a scrub makes in scrubbed/ and scrubbed-in-progress/, the folders it replaces,
+# including a temporary file a run cut short left. Anything else stops the run.
+MADE = re.compile(
+    r"manifest\.json|slack/export/[A-Z0-9]+/\d{4}-\d{2}-\d{2}\.md"
+    r"|documents/current/slack-canvas_[A-Z0-9]+\.md|(?:.+/)?\.writing-[^/]+"
+)
 FLAG_KINDS = {
     SHARED: "A name more than one person has, hidden as [name]",
     UNKNOWN_MENTION: "A mention of someone not in the list, hidden as @[name?]",
@@ -123,6 +131,8 @@ def scrub(config: Config) -> str:
         raise ScrubError("The data folder doesn't exist yet. Run /slack-export first.")
     for name in (SCRUBBED, IN_PROGRESS, PRIVATE):
         refuse_links(data, name)
+    for name in (SCRUBBED, IN_PROGRESS):
+        refuse_others(data, name)
     private = data / PRIVATE
     earlier = private.is_dir() and any(private.iterdir())
     private.mkdir(exist_ok=True)
@@ -284,6 +294,19 @@ def refuse_links(data: Path, name: str) -> None:
             f"{name}/ in your data folder is a link, holds one, or isn't a folder, so the scrub "
             "stopped without writing anything. Writing there could change files somewhere "
             f"else. Make {name}/ an ordinary folder with no links in it, and run again."
+        )
+
+
+def refuse_others(data: Path, name: str) -> None:
+    """Stop if a folder the scrub replaces holds a file a scrub doesn't make: replacing the
+    folder would delete it."""
+    folder = data / name
+    files = [path.relative_to(folder).as_posix() for path in folder.rglob("*") if path.is_file()]
+    if not all(MADE.fullmatch(file) for file in files):
+        raise ScrubError(
+            f"{name}/ in your data folder holds a file the scrub didn't make, so it stopped "
+            f"without changing anything. A scrub replaces all of {name}/, so move the file "
+            "out, and run again."
         )
 
 
