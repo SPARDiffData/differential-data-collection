@@ -123,8 +123,29 @@ def slack_export_hooks():
     return {event: (matcher, step, on_failure) for event, matcher, step, on_failure in found}
 
 
-@pytest.mark.parametrize("event, step", [("PreToolUse", "check"), ("PostToolUse", "save")])
-def test_the_hooks_check_and_save_channel_thread_and_canvas_reads_and_the_search_only(event, step):
+SAVED_READS = [
+    "slack_read_canvas",
+    "slack_read_channel",
+    "slack_read_thread",
+    "slack_search_public_and_private",
+]
+# Reads the export never makes. The check hook matches them too, so it can stop them before
+# they run: slack_read_file would download an attachment, which is never collected (#65).
+UNUSED_READS = [
+    "slack_read_file",
+    "slack_read_list",
+    "slack_read_user_profile",
+    "slack_search_public",
+]
+
+
+@pytest.mark.parametrize(
+    "event, step, tools",
+    [("PreToolUse", "check", SAVED_READS + UNUSED_READS), ("PostToolUse", "save", SAVED_READS)],
+)
+def test_the_hooks_check_and_save_the_reads_the_export_makes_and_check_the_unused_ones(
+    event, step, tools
+):
     # CON-1: the read is checked before it runs, and the result is checked before it's saved.
     matcher, hook_step, on_failure = slack_export_hooks()[event]
     assert hook_step == step
@@ -132,12 +153,21 @@ def test_the_hooks_check_and_save_channel_thread_and_canvas_reads_and_the_search
     # Code carries on as if the check had passed (needs Claude Code 2.1.295 or later).
     assert on_failure == "block"
     matched = [t for t in SLACK_READ_TOOLS + SLACK_WRITE_TOOLS if re.fullmatch(matcher, SLACK + t)]
-    assert matched == [
-        "slack_read_canvas",
-        "slack_read_channel",
-        "slack_read_thread",
-        "slack_search_public_and_private",
-    ]
+    assert matched == sorted(tools)
+
+
+def test_the_check_stops_every_unused_read_the_hook_matches():
+    from diffdata.discover.slack_inbox import UNUSED_READS as STOPPED
+
+    assert list(STOPPED) == UNUSED_READS
+
+
+def test_slack_export_never_runs_consent_review():
+    # CON-1: approvals are typed by a person in a terminal. The command pre-approves only its
+    # own export steps, and tells Claude never to run review.
+    assert not [tool for tool in frontmatter_line("allowed-tools") if "consent" in tool]
+    body = (ROOT / ".claude" / "commands" / "slack-export.md").read_text(encoding="utf-8")
+    assert "run `uv run diffdata consent review`. **Never run it yourself.**" in body
 
 
 def test_slack_export_reads_canvases_but_cant_write_them():

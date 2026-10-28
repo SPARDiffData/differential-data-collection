@@ -512,8 +512,8 @@ def test_the_report_gives_counts_only(export):
         "4 Google file(s), 3 attachment(s), 4 other link(s)."
     ) in report
     assert (
-        "6 canvas(es) or Google file(s) aren't listed in config.toml: see "
-        "references/references.md in your data folder."
+        "6 canvas(es) or Google file(s) are waiting for review. To approve or skip them, the "
+        "user runs this in their own terminal: uv run diffdata consent review"
     ) in report
     for private in ("FAKE-", "F0000", "U0000", "Draft", "Example Plan", "Sam", "Slackbot", "http"):
         assert private not in report

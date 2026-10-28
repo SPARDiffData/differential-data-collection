@@ -30,7 +30,7 @@ Collected.
 
 ### Team notes
 
-New: not listed in config.toml.
+New: waiting for review. To approve or skip it, run uv run diffdata consent review.
 
 - Key: `slack-file:F00000013`
 - File type: canvas
@@ -39,7 +39,7 @@ New: not listed in config.toml.
 
 ### slack-file:F00000014
 
-New: not listed in config.toml.
+New: waiting for review. To approve or skip it, run uv run diffdata consent review.
 
 - Key: `slack-file:F00000014`
 - Referenced from:
@@ -49,7 +49,7 @@ New: not listed in config.toml.
 
 ### Draft plan
 
-New: not listed in config.toml.
+New: waiting for review. To approve or skip it, run uv run diffdata consent review.
 
 - Key: `google:FAKE-DOC-0010`
 - Link: https://docs.google.com/document/d/FAKE-DOC-0010/edit#heading=h.fake01
@@ -62,7 +62,7 @@ New: not listed in config.toml.
 
 ### Budget sheet
 
-New: not listed in config.toml.
+New: waiting for review. To approve or skip it, run uv run diffdata consent review.
 
 - Key: `google:FAKE-SHEET-0010`
 - Link: https://docs.google.com/spreadsheets/d/FAKE-SHEET-0010/edit#gid=0
@@ -73,7 +73,7 @@ New: not listed in config.toml.
 
 ### Review slides
 
-New: not listed in config.toml.
+New: waiting for review. To approve or skip it, run uv run diffdata consent review.
 
 - Key: `google:FAKE-SLIDES-0010`
 - Link: https://docs.google.com/presentation/d/FAKE-SLIDES-0010/edit
@@ -84,7 +84,7 @@ New: not listed in config.toml.
 
 ### https://drive.google.com/file/d/FAKE-FILE-0010/view?usp=sharing
 
-New: not listed in config.toml.
+New: waiting for review. To approve or skip it, run uv run diffdata consent review.
 
 - Key: `google:FAKE-FILE-0010`
 - Link: https://drive.google.com/file/d/FAKE-FILE-0010/view?usp=sharing

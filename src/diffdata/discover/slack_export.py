@@ -128,12 +128,12 @@ def build(config: Config) -> str:
             if run.due is None:
                 report.append(
                     f"This run saved reads for {saved(run.canvases)} of {len(run.canvases)} "
-                    "listed canvas(es)."
+                    "listed or approved canvas(es)."
                 )
             else:
                 report.append(
                     f"This run saved reads for {saved(run.due)} of {len(run.due)} due "
-                    f"canvas(es), {len(run.canvases)} listed."
+                    f"canvas(es), {len(run.canvases)} listed or approved."
                 )
         report += start_point_report(run.run_id, list(run.channels), outcomes)
         close_run(data, run, "built")
@@ -155,10 +155,15 @@ def reference_report(refs: Counter) -> list[str]:
         f"{refs['google']} Google file(s), {refs[references.ATTACHMENT]} attachment(s), "
         f"{refs[references.LINK]} other link(s)."
     ]
-    if refs["new"]:
+    if refs["approvals_unreadable"]:
         report.append(
-            f"{refs['new']} canvas(es) or Google file(s) aren't listed in config.toml: see "
-            "references/references.md in your data folder."
+            "Couldn't read the approvals file next to config.toml, so the reference log's "
+            "states count config.toml only, and review and withdraw won't run until it's fixed."
+        )
+    elif refs["new"]:
+        report.append(
+            f"{refs['new']} canvas(es) or Google file(s) are waiting for review. To approve or "
+            "skip them, the user runs this in their own terminal: uv run diffdata consent review"
         )
     return report
 
@@ -178,8 +183,9 @@ def start_point_report(run_id: str, channels: list[str], outcomes: dict) -> list
 
 
 def canvases_due(config: Config, now: datetime | None = None) -> str:
-    """Say which listed canvases this run should read (COL-8), and keep the list in run.json
-    for the build's report. Returns the report: the IDs to read, and the reasons as counts."""
+    """Say which of the run's canvases, listed or approved, it should read (COL-8), and keep
+    the list in run.json for the build's report. Returns the report: the IDs to read, and the
+    reasons as counts."""
     now = now or datetime.now(UTC)
     require_workspace(config)
     data = config.data_dir
@@ -202,7 +208,7 @@ def canvases_due(config: Config, now: datetime | None = None) -> str:
     run.due = [canvas for canvas, why in found.items() if why]
     write_json(run_path(data), asdict(run))
 
-    report = [f"{len(run.due)} of {len(run.canvases)} listed canvas(es) to read."]
+    report = [f"{len(run.due)} of {len(run.canvases)} listed or approved canvas(es) to read."]
     counts = Counter(reason for why in found.values() for reason in why)
     if counts:
         listed = ", ".join(f"{counts[r]} {r}" for r in slack_canvas.REASONS if counts[r])

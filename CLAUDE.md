@@ -57,8 +57,10 @@ These rules keep real data out of the repo and out of other companies' AI tools.
 
 ```
 src/diffdata/
-  cli.py            the `diffdata` command; `discover slack` is built, the rest are stubs
+  cli.py            the `diffdata` command; `discover slack` and `consent` are built, the rest are stubs
   consent/ discover/ collect/ organize/ scrub/ store/    one package per stage
+  consent/approvals.py   the approvals file next to config.toml (CON-1, CON-3): approved, skipped or withdrawn, per canvas or Google file; it only grows
+  consent/review.py   `diffdata consent review` and `withdraw`: a person approves new items from the reference log, typed in a terminal; they refuse to run anywhere else, as in Claude's tools
   discover/slack_*.py   Slack export (DIS-1): inbox, parser, store and markdown view, and each channel's start point for incremental runs (slack_state.py)
   discover/references.py   the reference log (DIS-2, DIS-3): every source the saved messages and canvases point to, written at the end of the Slack build; it only grows
   collect/slack_canvas.py   Slack canvases (COL-2), read in /slack-export when a files search or a tab notice says they may have changed: saved reads become versions and clean copies

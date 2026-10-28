@@ -28,16 +28,19 @@ latest-read marks, but never removes anything, so a reference stays after the da
 is deleted. A log diffdata can't read is left as it was. The log is private, like the store
 it comes from, and is never released or pushed.
 
-A source's state:
-  collected      listed in config.toml, and read
-  approved       listed, not read yet
-  unreachable    listed, but a fetcher couldn't reach it, for the reason in `unreachable`
+A source is opted in when config.toml lists it, or its latest decision in the approvals file
+is "approved" (consent/approvals.py). Its state:
+  collected      opted in, and read
+  approved       opted in, not read yet
+  unreachable    opted in, but a fetcher couldn't reach it, for the reason in `unreachable`
                  (COL-7). Nothing sets that yet: it's kept for the fetchers.
-  withdrawn      collected or listed before, but not listed now
+  withdrawn      collected or opted in before, but not now, or withdrawn at review
+  declined       skipped at review
   history-only   referenced only from channels or canvases no longer opted in
   taken-back     every link to it from an opted-in place was edited out
-  new            any other canvas or Google file
+  new            any other canvas or Google file: waiting for review
   not-collected  attachments (never downloaded) and ordinary links (logged only)
+Only new sources are offered for review (consent/review.py).
 
 Under the data folder:
   references/references.jsonl   one source per line, by key, with its places
@@ -58,6 +61,7 @@ from diffdata import __version__
 from diffdata.collect import slack_canvas
 from diffdata.common.config import Config
 from diffdata.common.documents import documents_dir, keep_changes, stamp, write_if_changed
+from diffdata.consent import approvals
 
 CANVAS = "slack-canvas"
 ATTACHMENT = "slack-attachment"
@@ -89,6 +93,7 @@ COLLECTED = "collected"
 APPROVED = "approved"
 UNREACHABLE = "unreachable"
 WITHDRAWN = "withdrawn"
+DECLINED = "declined"
 HISTORY_ONLY = "history-only"
 TAKEN_BACK = "taken-back"
 NEW = "new"
@@ -97,12 +102,13 @@ NOT_COLLECTED = "not-collected"
 OPTED_IN = {COLLECTED, APPROVED, UNREACHABLE, WITHDRAWN}
 STATE_TEXT = {
     COLLECTED: "Collected.",
-    APPROVED: "Listed in config.toml, not collected yet.",
-    UNREACHABLE: "Listed in config.toml, but diffdata can't reach it: {reason}.",
-    WITHDRAWN: "Withdrawn: collected or listed before, but not listed now.",
+    APPROVED: "Listed in config.toml or approved, not collected yet.",
+    UNREACHABLE: "Listed in config.toml or approved, but diffdata can't reach it: {reason}.",
+    WITHDRAWN: "Withdrawn: collected, listed or approved before, but not now.",
+    DECLINED: "Declined: skipped at review, so it isn't asked about again.",
     HISTORY_ONLY: "History only: referenced only from channels or canvases no longer opted in.",
     TAKEN_BACK: "Taken back: every link to it was edited out.",
-    NEW: "New: not listed in config.toml.",
+    NEW: "New: waiting for review. To approve or skip it, run uv run diffdata consent review.",
     NOT_COLLECTED: "Not collected: {reason}.",
 }
 
@@ -270,14 +276,12 @@ def in_canvases(
     latest text links to, by place."""
     found_here: list[tuple[Found, dict]] = []
     titles: dict[str, str] = {}
-    read: set[str] = set()
+    read = canvases_read(data)
     current: dict[str, set[str]] = {}
     for folder in sorted(
         p for p in (documents_dir(data) / slack_canvas.SOURCE).glob("*") if p.is_dir()
     ):
         canvas_id = folder.name
-        if any(folder.glob("raw/*/*.json")):
-            read.add(canvas_id)
         versions, unreadable = slack_canvas.read_versions(folder)
         if unreadable or not versions:
             continue  # the canvas build leaves such a canvas as it was, and so does this
@@ -297,6 +301,12 @@ def in_canvases(
                     (found, place | {"via": [found.via], "latest": found.key in still})
                 )
     return found_here, titles, read, current
+
+
+def canvases_read(data: Path) -> set[str]:
+    """The canvases with saved reads."""
+    folder = documents_dir(data) / slack_canvas.SOURCE
+    return {p.name for p in folder.glob("*") if p.is_dir() and any(p.glob("raw/*/*.json"))}
 
 
 def add(log: dict[str, dict], found: Found, place: dict) -> bool:
@@ -325,19 +335,24 @@ def add(log: dict[str, dict], found: Found, place: dict) -> bool:
     return added
 
 
-def state(entry: dict, listed: set[str], read: set[str], opted_in) -> tuple[str, str | None]:
-    """A source's state, and the reason for one that isn't collected. `opted_in` says
-    whether a place is still opted in."""
+def state(
+    entry: dict, chosen: set[str], read: set[str], decision: str | None, opted_in
+) -> tuple[str, str | None]:
+    """A source's state, and the reason for one that isn't collected. `chosen`: the keys
+    listed in config.toml or approved. `decision`: its latest one at review, if any.
+    `opted_in` says whether a place is still opted in."""
     if entry["type"] == ATTACHMENT:
         return NOT_COLLECTED, "attachments are never downloaded"
     if entry["type"] == LINK:
         return NOT_COLLECTED, "ordinary links are logged only"
-    if entry["key"] in listed:
+    if entry["key"] in chosen:
         if entry["key"] in read:
             return COLLECTED, None
         return (UNREACHABLE, entry["unreachable"]) if entry["unreachable"] else (APPROVED, None)
-    if entry["key"] in read or entry["state"] in OPTED_IN:
+    if entry["key"] in read or entry["state"] in OPTED_IN or decision == approvals.WITHDRAWN:
         return WITHDRAWN, None
+    if decision == approvals.SKIPPED:
+        return DECLINED, None
     places = [place for place in entry["places"].values() if opted_in(place)]
     if not places:
         return HISTORY_ONLY, None
@@ -373,21 +388,15 @@ def build(
             if place_id in current:
                 place["latest"] = key in current[place_id]
 
-    listed = {f"slack-file:{canvas}" for canvas in config.slack_canvases}
-    read_keys = {f"slack-file:{canvas}" for canvas in read}
-
-    def opted_in(place: dict) -> bool:
-        if place["canvas_id"]:
-            return place["canvas_id"] in config.slack_canvases
-        return channels.get(place["channel_id"]) in config.slack_channels
-
+    decisions = approvals.read_decisions(approvals.approvals_file(config))
+    if decisions is None:
+        # States then count config.toml only, until the file can be read again. Review and
+        # withdraw refuse to run meanwhile, so nothing is decided from these states.
+        counts["approvals_unreadable"] = 1
+    set_states(log, config, channels, read, decisions or {})
     for key, entry in log.items():
-        if key in listed or key in read_keys:
-            entry["type"] = CANVAS
         if (canvas := key.removeprefix("slack-file:")) in titles:
             entry["title"] = titles[canvas]  # a read's title is newer than any link's text
-        entry["state"], entry["reason"] = state(entry, listed, read_keys, opted_in)
-        entry["first_seen"] = min(place["at"] for place in entry["places"].values())
         counts["google" if entry["type"].startswith("google") else entry["type"]] += 1
         counts.update(sources=1, places=len(entry["places"]), new=entry["state"] == NEW)
 
@@ -408,6 +417,46 @@ def build(
     except OSError:
         return Counter(failed=1)
     return counts
+
+
+def set_states(
+    log: dict[str, dict],
+    config: Config,
+    channels: dict[str, str],
+    read: set[str],
+    decisions: dict[str, str],
+) -> None:
+    """Each source's type, state and first time seen, from config.toml, the canvases read
+    (by ID) and the latest decision on each source at review."""
+    listed = {f"slack-file:{canvas}" for canvas in config.slack_canvases}
+    chosen = listed | {key for key, decision in decisions.items() if decision == approvals.APPROVED}
+    read_keys = {f"slack-file:{canvas}" for canvas in read}
+    canvases = {key.removeprefix("slack-file:") for key in chosen if key.startswith("slack-file:")}
+
+    def opted_in(place: dict) -> bool:
+        if place["canvas_id"]:
+            return place["canvas_id"] in canvases
+        return channels.get(place["channel_id"]) in config.slack_channels
+
+    for key, entry in log.items():
+        if key in listed or key in read_keys:
+            entry["type"] = CANVAS
+        entry["state"], entry["reason"] = state(
+            entry, chosen, read_keys, decisions.get(key), opted_in
+        )
+        entry["first_seen"] = min(place["at"] for place in entry["places"].values())
+
+
+def log_now(
+    config: Config, decisions: dict[str, str], channels: dict[str, str]
+) -> dict[str, dict] | None:
+    """The log by key, with each source's state as the next build would set it from
+    config.toml, the canvases read and these decisions. None if diffdata can't read the
+    log. Writes nothing."""
+    log = load(log_dir(config.data_dir) / "references.jsonl")
+    if log is not None:
+        set_states(log, config, channels, canvases_read(config.data_dir), decisions)
+    return log
 
 
 def readable(entry) -> bool:
