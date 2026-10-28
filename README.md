@@ -61,7 +61,7 @@ Links in a canvas (Docs, images, other canvases) stay links: nothing fetches the
 
 ## Approve new canvases and Google files (CON-1)
 
-The build lists every canvas and Google file your saved Slack data links to. Nothing new is collected until you approve it, **typed in your own terminal**. Claude can't do it for you: the command refuses to run anywhere but a terminal a person types in.
+The build lists every canvas and Google file your saved Slack data links to. Nothing new is collected until you approve it, **typed in your own terminal**. Claude isn't meant to do it for you: the command refuses to run anywhere but a terminal a person types in, and this repo's `.claude/settings.json` stops Claude's shell tools from running it. A program written on purpose to fake typing could still get past both, so `/slack-export` also tells Claude never to run it.
 
 1. **When the build says items are waiting,** open PowerShell or Terminal in the repo folder and run `uv run diffdata consent review`. It explains what approving means, then shows a lettered list: each item's type, its real link, its title, and where and when it was first shared.
 2. **Answer** `all`, `none`, or `all but b, d` to skip some. Skipped items aren't asked about again. Pressing Enter alone records nothing, and the items wait for next time.

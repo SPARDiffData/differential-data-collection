@@ -73,15 +73,10 @@ CHECKED_READS = {
     "slack_read_thread": "channel_id",
     "slack_read_canvas": "canvas_id",
 }
-# Slack reads the export never makes. The command's PreToolUse hook matches them too, so
-# `check()` stops them before they run: slack_read_file would download an attachment, and
-# attachments are never collected.
-UNUSED_READS = (
-    "slack_read_file",
-    "slack_read_list",
-    "slack_read_user_profile",
-    "slack_search_public",
-)
+# The command's PreToolUse hook matches every Slack tool, so `check()` stops any the export
+# never uses before it runs, such as slack_read_file, which would download an attachment.
+# Finding a channel's ID comes before the run opens, so that one is always let through.
+FIND_CHANNEL = "slack_search_channels"
 # The search tool. It searches DMs too unless told not to, and every file or message the
 # person can see unless its filter names a channel.
 SEARCH_TOOL = "slack_search_public_and_private"
@@ -436,15 +431,18 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
 
 
 def check(config: Config, payload: bytes, now: datetime | None = None) -> int:
-    """Before a Slack read or search: let it go ahead only if the open run names the channel
-    or canvas it reads, or the search is one `search_channel()` allows (CON-1). Returns the
-    hook's exit code: 0 lets the call go ahead, and 2 stops it before anything is fetched,
-    with our stderr message shown to Claude. Writes nothing."""
+    """Before any Slack tool: let it go ahead only if it finds a channel's ID, or the open
+    run names the channel or canvas it reads, or the search is one `search_channel()` allows
+    (CON-1). Any other Slack tool is stopped. Returns the hook's exit code: 0 lets the call
+    go ahead, and 2 stops it before anything is fetched, with our stderr message shown to
+    Claude. Writes nothing."""
     now = now or datetime.now(UTC)
     try:
         hook = json.loads(payload.decode("utf-8"))
         tool = hook["tool_name"].rsplit("__", 1)[-1]
-        if tool in UNUSED_READS:
+        if tool == FIND_CHANNEL:
+            return 0
+        if tool != SEARCH_TOOL and tool not in CHECKED_READS:
             return fail(
                 f"/slack-export never uses {tool}, so it was stopped before it ran. "
                 "Stop the export."

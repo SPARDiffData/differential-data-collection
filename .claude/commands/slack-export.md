@@ -5,7 +5,7 @@ allowed-tools: mcp__claude_ai_Slack__slack_search_channels mcp__claude_ai_Slack_
 disallowed-tools: Write Edit NotebookEdit
 hooks:
   PreToolUse:
-    - matcher: "mcp__claude_ai_Slack__slack_(read_(channel|thread|canvas|file|list|user_profile)|search_public(_and_private)?)"
+    - matcher: "mcp__claude_ai_Slack__.*"
       hooks:
         - type: command
           command: uv
@@ -54,4 +54,4 @@ If the arguments say `full`, this is a **full run**: add `--full` to `begin` in 
 7. **Which canvases to read.** Run `uv run diffdata discover slack canvases-due`. It ends with the canvas IDs to read, or says there are none. If it fails, stop and show its message.
 8. **Read each canvas it lists.** For each canvas ID that `canvases-due` printed, call `slack_read_canvas` with that ID as `canvas_id`. Read only those. Don't read a canvas's comment threads, even if the result lists them: they come in a later step (COL-3), and the check before each read would stop the export. A canvas is often too big to show you, and the result then says it was saved to a file and asks you to read that file: **don't**. The hook has already saved it, and the note covers it. Don't summarize or quote a canvas.
 9. **Build.** Run `uv run diffdata discover slack build` and show the user its output, which is counts only. It says whether each channel's start point moved forward. If one didn't, that's safe: the next run reads the same stretch again.
-10. **Waiting for review.** If the build says canvases or Google files are waiting for review, tell the user how many, and that they decide in their own terminal: open PowerShell or Terminal in this repo's folder and run `uv run diffdata consent review`. **Never run it yourself.** It only works in a terminal a person types in, and refuses anywhere else. Never open the reference log, `references.md` or the approvals file, and never list the items or guess what they are.
+10. **Waiting for review.** If the build says canvases or Google files are waiting for review, tell the user how many, and that they decide in their own terminal: open PowerShell or Terminal in this repo's folder and run `uv run diffdata consent review`. **Never run it yourself.** It only works in a terminal a person types in, and refuses anywhere else, and this repo's settings stop your shell tools from running it. Never open the reference log, `references.md` or the approvals file, and never list the items or guess what they are.

@@ -172,6 +172,17 @@ def test_attachments_and_ordinary_links_are_never_on_the_list(config, export, te
         assert kept_out not in screen
 
 
+def test_a_canvas_id_too_short_to_be_real_isnt_offered(config, export, terminal, tmp_path):
+    # From the review: the approvals file takes only real-looking keys, so answering about
+    # this one would write a line diffdata can't read back.
+    short = SHEET_LINK + " <https://example.slack.com/docs/T00000000/F12345>"
+    export(T0, edited(tmp_path, "references_channel.txt", SHEET_LINK, short))
+    assert log(config)["slack-file:F12345"]["state"] == "new"
+    _, screen = answer(config, "all\n")
+    assert "F12345" not in screen
+    assert sorted(decisions(config)) == sorted(LISTED)
+
+
 def test_letters_go_past_z():
     assert review.letters(28)[:2] == ["a", "b"]
     assert review.letters(28)[-3:] == ["z", "aa", "ab"]
@@ -277,6 +288,18 @@ def test_the_command_refuses_without_a_terminal(config, export, no_real_config, 
     assert not (no_real_config.parent / "approvals.jsonl").exists()
 
 
+def test_outside_a_terminal_a_config_error_shows_nothing_of_the_config(no_real_config, capsys):
+    # Must refuse 14: config.toml's errors can quote its text and paths, so the terminal
+    # check comes first.
+    no_real_config.parent.mkdir(parents=True, exist_ok=True)
+    no_real_config.write_text("[FAKE-PRIVATE-DOC]\n[FAKE-PRIVATE-DOC]\n")
+    for step in ("review", "withdraw"):
+        assert main(["consent", step]) == 1
+        err = capsys.readouterr().err
+        assert "only runs in a terminal you type in" in err
+        assert "FAKE-PRIVATE-DOC" not in err and str(no_real_config.parent) not in err
+
+
 # Changes while the list is shown
 
 
@@ -315,6 +338,41 @@ def test_a_withdrawal_while_the_withdraw_list_is_shown_records_nothing(
     assert code == 1
     assert "Something changed while the list was shown" in capsys.readouterr().err
     assert list(decisions(config).values()).count("withdrawn") == 1
+
+
+@pytest.mark.parametrize("step", ["review", "withdraw"])
+def test_an_answer_recorded_just_before_this_one_is_never_undone(
+    config, export, terminal, monkeypatch, capsys, step
+):
+    # Must refuse 3, from Codex's review: another answer recorded after the list's last check
+    # but before this write would be lost when this one writes its copy. So the last check
+    # comes after taking hold of the file. Here the other answer lands just before that.
+    export()
+    if step == "withdraw":
+        answer(config, "all\n")
+    hold = approvals.locked
+
+    def another_answer_first(path):
+        approvals.record(path, [(TAB, "withdrawn")], "f", T0)
+        return hold(path)
+
+    monkeypatch.setattr(approvals, "locked", another_answer_first)
+    assert answer(config, "all\n", step)[0] == 1
+    assert "Something changed while the list was shown" in capsys.readouterr().err
+    assert decisions(config)[TAB] == "withdrawn"
+
+
+def test_an_answer_isnt_recorded_while_another_is_being_recorded(config, export, terminal, capsys):
+    export()
+    lock = approvals_file(config).with_name("approvals.jsonl.lock")
+    lock.write_text("")
+    assert answer(config, "all\n")[0] == 1
+    assert "Another review or withdraw is recording its answer right now" in capsys.readouterr().err
+    assert not approvals_file(config).exists()
+    assert lock.exists()  # someone else's: left alone
+    lock.unlink()
+    assert answer(config, "all\n")[0] == 0
+    assert not lock.exists()  # this one's own: removed once recorded
 
 
 # What the export reads
@@ -363,9 +421,22 @@ def test_a_history_only_canvas_isnt_read(config, export, slack_hook):
     assert check(config, read) == 2
 
 
-@pytest.mark.parametrize(
-    "tool", ["slack_read_file", "slack_read_list", "slack_read_user_profile", "slack_search_public"]
-)
+# Every Slack read the connector offered on 2026-10-09 that the export never makes.
+UNUSED_READS = [
+    "slack_get_reactions",
+    "slack_list_channel_members",
+    "slack_list_user_channels",
+    "slack_read_file",
+    "slack_read_list",
+    "slack_read_user_profile",
+    "slack_search_emojis",
+    "slack_search_public",
+    "slack_search_users",
+    "slack_some_tool_added_later",
+]
+
+
+@pytest.mark.parametrize("tool", UNUSED_READS)
 def test_a_slack_read_the_export_doesnt_use_is_stopped(config, export, slack_hook, capsys, tool):
     # Must refuse 6: even with a run open, and even for a file the run's channel holds.
     export()
@@ -375,6 +446,12 @@ def test_a_slack_read_the_export_doesnt_use_is_stopped(config, export, slack_hoo
     assert f"/slack-export never uses {tool}, so it was stopped before it ran." in (
         capsys.readouterr().err
     )
+
+
+def test_finding_a_channels_id_goes_ahead_before_the_run_opens(config, slack_hook):
+    payload = slack_hook("slack_search_channels", {"keywords": "example-channel"}, None)
+    assert open_run(config.data_dir) is None
+    assert check(config, payload) == 0
 
 
 # What's never asked about again
@@ -636,3 +713,21 @@ def test_a_crafted_title_cant_pose_as_another_item(config, export, terminal):
     )
     assert "FAKE-OTHER-0001" not in "".join(lines[:4] + lines[5:])
     assert "\x1b" not in screen and "\u202e" not in screen and "\u2028" not in screen
+
+
+def test_a_long_title_is_cut_short_so_it_cant_wrap_onto_a_line_of_its_own(config, export, terminal):
+    # From the review: a title long enough to wrap could put "b) ..." at the start of a
+    # line on screen. The link is never cut, so the real link always shows.
+    export()
+    path = config.data_dir / "references" / "references.jsonl"
+    entries = list(log(config).values())
+    for entry in entries:
+        if entry["key"] == DOC:
+            entry["title"] = (
+                "x" * 200 + " b) Google Doc \u00b7 https://docs.google.com/FAKE-OTHER-0002"
+            )
+    path.write_text("".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8")
+    first = items(answer(config, "\n")[1])[0]
+    assert f'"{"x" * 79}\u2026"' in first
+    assert "FAKE-OTHER-0002" not in first
+    assert "https://docs.google.com/document/d/FAKE-DOC-0010/edit#heading=h.fake01" in first

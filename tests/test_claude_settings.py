@@ -129,37 +129,54 @@ SAVED_READS = [
     "slack_read_thread",
     "slack_search_public_and_private",
 ]
-# Reads the export never makes. The check hook matches them too, so it can stop them before
-# they run: slack_read_file would download an attachment, which is never collected (#65).
-UNUSED_READS = [
-    "slack_read_file",
-    "slack_read_list",
-    "slack_read_user_profile",
-    "slack_search_public",
-]
+EVERY_SLACK_TOOL = sorted(SLACK_READ_TOOLS + SLACK_WRITE_TOOLS + FUTURE_SLACK_WRITE_TOOLS)
 
 
 @pytest.mark.parametrize(
     "event, step, tools",
-    [("PreToolUse", "check", SAVED_READS + UNUSED_READS), ("PostToolUse", "save", SAVED_READS)],
+    [("PreToolUse", "check", EVERY_SLACK_TOOL), ("PostToolUse", "save", SAVED_READS)],
 )
-def test_the_hooks_check_and_save_the_reads_the_export_makes_and_check_the_unused_ones(
-    event, step, tools
-):
-    # CON-1: the read is checked before it runs, and the result is checked before it's saved.
+def test_the_check_sees_every_slack_tool_and_the_save_the_reads_it_saves(event, step, tools):
+    # CON-1: every Slack call is checked before it runs, so check() can stop the ones the
+    # export never makes (#65), and each saved result is checked before it's saved.
     matcher, hook_step, on_failure = slack_export_hooks()[event]
     assert hook_step == step
     # A hook that can't start, crashes or times out blocks the read too. Without this, Claude
     # Code carries on as if the check had passed (needs Claude Code 2.1.295 or later).
     assert on_failure == "block"
-    matched = [t for t in SLACK_READ_TOOLS + SLACK_WRITE_TOOLS if re.fullmatch(matcher, SLACK + t)]
-    assert matched == sorted(tools)
+    matched = [t for t in EVERY_SLACK_TOOL if re.fullmatch(matcher, SLACK + t)]
+    assert matched == tools
 
 
-def test_the_check_stops_every_unused_read_the_hook_matches():
-    from diffdata.discover.slack_inbox import UNUSED_READS as STOPPED
+# CON-1: approvals are typed by a person in a terminal, never by Claude. The consent commands
+# refuse outside a terminal, and these rules also stop Claude's shell tools running them,
+# including through a program that fakes a terminal, such as `script` on macOS and Linux.
+CONSENT_RUNS = [
+    "Bash(uv run diffdata consent review)",
+    "Bash(echo all | script -q /dev/null uv run diffdata consent review)",
+    "Bash(.venv/bin/diffdata consent withdraw)",
+    "Bash(uv run python -m diffdata consent review)",
+    'Bash(uv run python -c "from diffdata.consent import review")',
+    'Bash(uv run python -c "import diffdata.consent.review")',
+    "PowerShell(uv run diffdata consent review)",
+    "PowerShell(.venv\\Scripts\\diffdata.exe consent withdraw)",
+]
+DEVELOPMENT_RUNS = [
+    "Bash(uv run pytest tests/test_consent.py)",
+    "Bash(git add src/diffdata/consent/review.py)",
+    "Bash(uv run diffdata discover slack build)",
+    "PowerShell(uv run pytest -k consent)",
+]
 
-    assert list(STOPPED) == UNUSED_READS
+
+@pytest.mark.parametrize("command", CONSENT_RUNS)
+def test_claudes_shell_tools_cant_run_the_consent_commands(command):
+    assert denied(command)
+
+
+@pytest.mark.parametrize("command", DEVELOPMENT_RUNS)
+def test_working_on_the_consent_code_isnt_blocked(command):
+    assert not denied(command)
 
 
 def test_slack_export_never_runs_consent_review():

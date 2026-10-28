@@ -19,6 +19,8 @@ import json
 import os
 import re
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -33,10 +35,33 @@ FIELDS = ("key", "decision", "at", "answer")
 # Only canvases and Google files are ever offered for review, so only their keys are kept.
 KEY = re.compile(r"slack-file:F[A-Z0-9]{6,}|google:[A-Za-z0-9_-]{10,}")
 CANVAS_PREFIX = "slack-file:"
+BUSY = (
+    "Another review or withdraw is recording its answer right now, so nothing was recorded. "
+    "Run this again. If none is running, delete approvals.jsonl.lock next to config.toml."
+)
 
 
 class ApprovalsError(Exception):
     """A decision can't be shown or recorded. The message says why, with no IDs or titles."""
+
+
+@contextmanager
+def locked(path: Path) -> Iterator[None]:
+    """Hold the approvals file for one last check and write, so two answers recorded at the
+    same moment can't undo each other: a review writing a stale copy over a withdrawal would
+    bring the approval back. If another holds it, refuse rather than wait."""
+    lock = path.with_name(path.name + ".lock")
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except FileExistsError as e:
+        raise ApprovalsError(BUSY) from e
+    except OSError as e:
+        raise ApprovalsError("Couldn't write next to config.toml, so nothing was recorded.") from e
+    try:
+        yield
+    finally:
+        lock.unlink(missing_ok=True)
 
 
 def approvals_file(config: Config) -> Path | None:
@@ -110,8 +135,8 @@ def safe_file(config: Config) -> Path:
 
 def record(path: Path, decisions: list[tuple[str, str]], answer: str, now: datetime) -> None:
     """Add one line per (key, decision) to the approvals file, through a temporary file, so
-    a write cut short leaves the old file whole. The caller has checked the file is safe to
-    write and can be read."""
+    a write cut short leaves the old file whole. The caller holds `locked()`, and has
+    checked the file is safe to write and can be read."""
     try:
         old = path.read_text(encoding="utf-8") if path.exists() else ""
     except (OSError, UnicodeDecodeError) as e:

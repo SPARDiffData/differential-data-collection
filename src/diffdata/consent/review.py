@@ -47,6 +47,8 @@ KINDS = {
 }
 # Letters as typed, after spaces are tidied: "b, d", "b,d" or "b d".
 LETTERS = re.compile(r"[a-z]+(?:(?: ?, ?| )[a-z]+)*")
+# Titles are cut at this many characters. Links aren't, so the real link always shows.
+TITLE_LIMIT = 80
 
 NOT_A_TERMINAL = (
     "diffdata consent {step} only runs in a terminal you type in, so nothing was recorded. "
@@ -133,11 +135,20 @@ def is_terminal(stream) -> bool:
     return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
 
 
-def clean(text) -> str:
+def in_terminal(stdin, stdout) -> bool:
+    """Whether a person can read the list and type the answer. A program can still fake a
+    terminal, such as with `script` on macOS and Linux: the repo's .claude/settings.json
+    also stops Claude's shell tools running these commands."""
+    return is_terminal(stdin) and is_terminal(stdout)
+
+
+def clean(text, limit: int | None = None) -> str:
     """One line with no control or format characters, so a crafted title or link can't start
-    a new line, move the cursor, or reorder what's shown, as a right-to-left mark can."""
+    a new line, move the cursor, or reorder what's shown, as a right-to-left mark can. With
+    a limit, a longer text is cut short, so it can't wrap onto a line of its own."""
     shown = "".join(" " if unicodedata.category(ch).startswith("C") else ch for ch in str(text))
-    return " ".join(shown.split())
+    shown = " ".join(shown.split())
+    return shown if limit is None or len(shown) <= limit else shown[: limit - 1] + "…"
 
 
 def letters(count: int) -> list[str]:
@@ -161,12 +172,13 @@ def describe(entry: dict, channels: dict[str, str], titles: dict[str, str]) -> s
         link or f"ID {clean(entry['key'].partition(':')[2])}, with no link in the saved data",
     ]
     if entry["title"] and clean(entry["title"]) != link:
-        parts.append(f'"{clean(entry["title"])}"')
+        parts.append(f'"{clean(entry["title"], TITLE_LIMIT)}"')
     places = sorted(entry["places"].values(), key=lambda p: (p["at"], p["place"]))
     if places:
         first = places[0]
         if first["canvas_id"]:
-            where = f'canvas "{titles.get(first["canvas_id"], first["canvas_id"])}"'
+            title = titles.get(first["canvas_id"], first["canvas_id"])
+            where = f'canvas "{clean(title, TITLE_LIMIT)}"'
         else:
             where = "#" + channels.get(first["channel_id"], first["channel_id"] or "")
         parts.append(f"first referenced {clean(first['at'][:10])} in {clean(where)}")
@@ -210,8 +222,14 @@ def load(config: Config, path: Path):
 
 
 def waiting(log: dict[str, dict]) -> list[dict]:
-    """The sources the next build would mark new, oldest first."""
-    found = [entry for entry in log.values() if entry["state"] == references.NEW]
+    """The sources the next build would mark new, oldest first. A key the approvals file
+    doesn't take, such as a canvas ID too short to be real, is left out, so answering can't
+    write a line diffdata can't read back."""
+    found = [
+        entry
+        for entry in log.values()
+        if entry["state"] == references.NEW and approvals.KEY.fullmatch(entry["key"])
+    ]
     return sorted(found, key=lambda entry: (entry["first_seen"], entry["key"]))
 
 
@@ -268,7 +286,7 @@ def refuse(message: str) -> int:
 def run_review(config: Config, stdin=None, stdout=None, now: datetime | None = None) -> int:
     """Show the sources waiting for review, then record the answer. Returns the exit code."""
     stdin, stdout = stdin or sys.stdin, stdout or sys.stdout
-    if not (is_terminal(stdin) and is_terminal(stdout)):
+    if not in_terminal(stdin, stdout):
         return refuse(NOT_A_TERMINAL.format(step="review"))
     try:
         path = approvals.safe_file(config)
@@ -293,15 +311,16 @@ def run_review(config: Config, stdin=None, stdout=None, now: datetime | None = N
         if skipped is None:
             show(stdout, BAD_REVIEW_ANSWER)
             return 1
-        again, _, log, _ = load(config, path)
         keys = [entry["key"] for entry in items]
-        if again != seen or log is None or [entry["key"] for entry in waiting(log)] != keys:
-            raise ApprovalsError(CHANGED)
         decided = [
             (key, approvals.SKIPPED if name in skipped else approvals.APPROVED)
             for name, key in zip(names, keys, strict=True)
         ]
-        approvals.record(path, decided, answer, now or datetime.now(UTC))
+        with approvals.locked(path):  # the last check and the write, with nothing in between
+            again, _, log, _ = load(config, path)
+            if again != seen or log is None or [entry["key"] for entry in waiting(log)] != keys:
+                raise ApprovalsError(CHANGED)
+            approvals.record(path, decided, answer, now or datetime.now(UTC))
     except ApprovalsError as e:
         return refuse(str(e))
     approved = len(items) - len(skipped)
@@ -318,7 +337,7 @@ def run_review(config: Config, stdin=None, stdout=None, now: datetime | None = N
 def run_withdraw(config: Config, stdin=None, stdout=None, now: datetime | None = None) -> int:
     """Show what was approved at review, then record the withdrawals. Returns the exit code."""
     stdin, stdout = stdin or sys.stdin, stdout or sys.stdout
-    if not (is_terminal(stdin) and is_terminal(stdout)):
+    if not in_terminal(stdin, stdout):
         return refuse(NOT_A_TERMINAL.format(step="withdraw"))
     try:
         path = approvals.safe_file(config)
@@ -360,13 +379,14 @@ def run_withdraw(config: Config, stdin=None, stdout=None, now: datetime | None =
         if not picked:
             show(stdout, "Nothing was withdrawn.")
             return 0
-        if load(config, path)[0] != seen:
-            raise ApprovalsError(CHANGED)
         withdrawn = [
             (name, key) for name, key in zip(names, approved, strict=True) if name in picked
         ]
         decided = [(key, approvals.WITHDRAWN) for _, key in withdrawn]
-        approvals.record(path, decided, answer, now or datetime.now(UTC))
+        with approvals.locked(path):  # the last check and the write, with nothing in between
+            if load(config, path)[0] != seen:
+                raise ApprovalsError(CHANGED)
+            approvals.record(path, decided, answer, now or datetime.now(UTC))
     except ApprovalsError as e:
         return refuse(str(e))
     show(

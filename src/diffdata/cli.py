@@ -93,6 +93,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run_consent_step(args: argparse.Namespace) -> int:
+    # Before config.toml is read: its errors can quote its text and paths, and outside a
+    # terminal nothing but the refusal may be shown.
+    if not review.in_terminal(sys.stdin, sys.stdout):
+        return review.refuse(review.NOT_A_TERMINAL.format(step=args.step))
     try:
         config = load_config()
     except (ConfigError, UnsafeDataDirError) as e:

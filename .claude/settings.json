@@ -1,6 +1,14 @@
 {
   "permissions": {
     "deny": [
+      "Bash(*diffdata consent*)",
+      "Bash(*diffdata.exe consent*)",
+      "Bash(*consent.review*)",
+      "Bash(*consent import review*)",
+      "PowerShell(*diffdata consent*)",
+      "PowerShell(*diffdata.exe consent*)",
+      "PowerShell(*consent.review*)",
+      "PowerShell(*consent import review*)",
       "mcp__claude_ai_Slack__slack_send_*",
       "mcp__claude_ai_Slack__slack_schedule_*",
       "mcp__claude_ai_Slack__slack_create_*",
