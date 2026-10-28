@@ -282,6 +282,9 @@ def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event],
     stretch = None  # {first, at (its last edit), rev, editors (edits per editor)}
     last_edit: dict[str | None, str] = {}  # when each editor last edited
     entry: list[dict] = []  # the ops of the changelog entry being replayed
+    # Each suggestion's text just before this entry first removed or unmarked any of it:
+    # what an accept accepted, after any fixes made in earlier entries.
+    before: dict[str, dict[str, str]] = {}
 
     def first_seen(at: str | None) -> tuple[str, str]:
         """When we first collected something made at `at`, and the raw file it was in:
@@ -301,10 +304,10 @@ def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event],
         versions.append(Version(text, *first_seen(stretch["at"]), stretch["at"], actor, rev))
 
     def touches(edit: dict) -> set[str]:
-        """The suggestions one edit added to, removed from, or unmarked."""
+        """The suggestions one edit removed text from, or unmarked. An op that only names a
+        suggestion (a style op on it, say) can't end it."""
         removed = edit.get("removed") or {}
-        found = {*removed.get("ins", {}), *removed.get("marks", {}), *edit.get("unmarked", ())}
-        return found | ({edit["suggestion_id"]} if edit.get("suggestion_id") else set())
+        return {*removed.get("ins", {}), *removed.get("marks", {}), *edit.get("unmarked", ())}
 
     def judge() -> None:
         """Log the outcome of each suggestion whose last text went in this entry."""
@@ -314,6 +317,10 @@ def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event],
         for sid in touched - state.live():
             outcomes[sid] = (iso(entry[0]["ts_ms"]), entry[0]["actor"], entry[0]["rev"])
             outcomes[sid] += outcome(entry, sid, suggestions[sid]["actor"])
+            if outcomes[sid][3] == "accept" and sid in before:
+                # Accepted as it stood, with any typing fixed or marks narrowed since.
+                for part, text in before[sid].items():
+                    suggestions[sid][part] = text or suggestions[sid][part]
 
     for edit in edit_events(newest.json("changelog.json")):
         at = iso(edit["ts_ms"])
@@ -325,7 +332,7 @@ def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event],
         elif edit["source"] == "changelog":
             if entry and (edit["rev"], edit["ts_ms"]) != (entry[0]["rev"], entry[0]["ts_ms"]):
                 judge()
-                entry = []
+                entry, before = [], {}
             if stretch is not None and (
                 new_stretch(stretch, edit["actor"], at, last_edit.get(edit["actor"]))
                 or big_deletion(state, edit)
@@ -338,6 +345,11 @@ def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event],
             stretch["editors"][edit["actor"]] += 1
             last_edit[edit["actor"]] = at
             entry.append(edit)
+        if edit["kind"] in ("delete", "remove_suggested", "suggest_delete_unmark"):
+            for sid in state.ids_in(edit["start"], edit["end"]) & suggestions.keys():
+                before.setdefault(
+                    sid, {p: state.suggestion_text(sid, p) for p in ("insert", "delete")}
+                )
         state.apply(edit)
         part = {"suggest_insert": "insert", "suggest_delete_mark": "delete"}.get(edit["kind"])
         if part:
