@@ -54,7 +54,7 @@ def view(config):
 
 def store_lines(config):
     path = config.data_dir / "slack" / "store" / CHANNEL / "messages.jsonl"
-    return path.read_text(encoding="utf-8").splitlines()
+    return path.read_text(encoding="utf-8").removesuffix("\n").split("\n")
 
 
 def test_the_view_matches_the_expected_markdown(config, export_run):
@@ -116,6 +116,25 @@ def test_an_edited_message_keeps_both_versions(config, export_run, tmp_path):
     ]
     day = view(config)["2026-10-03.md"]
     assert "11:00 PT" in day and "11:30 PT" not in day and " · edited" in day
+
+
+def test_a_unicode_line_separator_in_a_message_doesnt_break_the_build(config, export_run, tmp_path):
+    # JSON written with ensure_ascii=False keeps U+2028 and U+2029 as they are, and Python's
+    # splitlines() splits at them. Text pasted from other apps can hold them.
+    original = (SLACK_FIXTURES / "read_channel.txt").read_text(encoding="utf-8")
+    text = "Meeting moved\u2028to 11:30 PT\u2029on Monday."
+    separated = tmp_path / "read_channel_separators.txt"  # a copy outside the fixtures
+    separated.write_text(
+        original.replace("Meeting moved to 11:30 PT on Monday.", text), encoding="utf-8"
+    )
+
+    export_run(channel_fixture=str(separated))
+    # The second run reads the store back before adding to it, and adds nothing.
+    assert "0 new or changed" in export_run(T0 + timedelta(days=1), str(separated))
+    versions = [json.loads(line) for line in store_lines(config)]
+    assert len(versions) == 8
+    assert [v["text"] for v in versions if v["ts"] == "1791021600.000500"] == [f"{text} <!here>"]
+    assert f"{text} @here" in view(config)["2026-10-03.md"]
 
 
 # Sam's thread reply, as the channel read shows it when it was also sent to the channel.
