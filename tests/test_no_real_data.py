@@ -84,6 +84,35 @@ def test_no_env_config_or_data_files_are_tracked():
     assert [p for p in tracked if forbidden(p)] == []
 
 
+def stray_env_files(folder: Path) -> list[str]:
+    """Name the .env files in `folder`, other than .env.example. Never opens them."""
+    return sorted(
+        path.name
+        for path in folder.iterdir()
+        if (path.name == ".env" or path.name.startswith(".env."))
+        and path.name != ".env.example"
+        and path.is_file()
+    )
+
+
+def test_no_env_file_in_the_repo_folder():
+    # .env lives in ~/.diffdata/, where tools working in the repo, such as Codex, can't read it.
+    stray = stray_env_files(ROOT)
+    assert stray == [], (
+        f"Move {', '.join(stray)} from {ROOT} to {Path.home() / '.diffdata'}, next to config.toml."
+    )
+
+
+def test_stray_env_files_finds_env_but_not_the_example(tmp_path):
+    for name in [".env", ".env.local", ".env.example", "env.txt"]:
+        (tmp_path / name).write_text("FAKE_TOKEN=\n", encoding="utf-8")
+    assert stray_env_files(tmp_path) == [".env", ".env.local"]
+    # A folder isn't a settings file: some people name a Python environment folder .env.
+    other = tmp_path / "other"
+    (other / ".env").mkdir(parents=True)
+    assert stray_env_files(other) == []
+
+
 def fixture_email_problems(folder: Path) -> list[str]:
     """List emails outside example.com/.org/.net, and text files too unreadable to check."""
     found = []

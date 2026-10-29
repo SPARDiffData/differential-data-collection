@@ -14,7 +14,7 @@ Most of the team is new to Git and builds by working with Claude. Explain what y
 
 1. **Never modify or delete a producer's original files or data**, locally or in any cloud service. We read, and we only ever change our own copies. Request read-only access scopes wherever a service offers them.
 2. **Real collected data never goes in a git commit.** That includes branches that never merge, "just for a test", and trimmed or anonymized samples. Local data lives in the `data_dir` from `config.toml`, which must be outside any git repository. Get it with `diffdata.common.paths.data_dir()`, which refuses a folder inside a repo. Tests use synthetic fixtures only (`tests/fixtures/`).
-3. **No secrets in the repo.** Tokens and keys live in `.env`, which is gitignored. `.env.example` holds names only, never values.
+3. **No secrets in the repo.** Tokens and keys live in `.env`, in `~/.diffdata/` next to `config.toml`, outside the repo folder. `.env.example` holds names only, never values.
 
 If a change would break one of these, or you aren't sure, stop and ask the user. If real data or a secret was already pushed, tell the user to alert Paul right away. The repo is public, so it's exposed even if the PR never merges, and a secret must be revoked.
 
@@ -67,7 +67,7 @@ src/diffdata/
 tests/              pytest; fixtures/ holds synthetic data only
 docs/requirements.md
 config.example.toml copy to ~/.diffdata/config.toml, outside the repo, and fill in
-.env.example        copy to .env (gitignored) and fill in
+.env.example        copy to ~/.diffdata/.env, outside the repo, and fill in
 .claude/commands/debrief.md        /debrief, an optional one-page summary of a PR or session
 .claude/commands/plan-issue.md     /plan-issue, an optional planning step before coding
 .claude/commands/review-pr.md      /review-pr, the independent PR review
