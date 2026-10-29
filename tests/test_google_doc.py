@@ -129,8 +129,8 @@ def test_changelog_gives_a_version_per_stretch_of_editing(tmp_path):
     counts = build(tmp_path)
     assert counts["docs"] == 1 and counts["history: changelog"] == 1
     versions = of_type(tmp_path, "version")
-    # A new session (A to B), then three hours idle. The export matches the replay, so it
-    # isn't counted as another version.
+    # A new editor (111, then 222), then three hours idle. The export matches the replay,
+    # so it isn't counted as another version.
     assert [v["native_id"] for v in versions] == ["rev-2", "rev-6", "rev-7"]
     assert {v["origin"] for v in versions} == {"native"}
     assert [v["actor"]["id"] for v in versions] == ["gaia:111", "gaia:222", "gaia:222"]
@@ -1024,3 +1024,25 @@ def test_a_suggested_deletion_over_another_ones_mark_is_a_warning(tmp_path):
         tmp_path, DOC, "f1", "2026-10-06T09:00:00Z", "browser-file", {"changelog.json": body}
     )
     assert build(tmp_path)["replay warnings"] == 1
+
+
+def test_accepting_a_long_suggested_deletion_keeps_the_old_text_in_a_version(tmp_path):
+    # A writes a paragraph, suggests deleting it, and accepts that a minute later. The
+    # marked text is still plain text, so the accept is a large deletion, like deleting it
+    # by hand: the version before it keeps the old paragraph.
+    paragraph = "An argument someone wrote and then thought better of. " * 3  # 162 characters
+    found = versions_of(
+        tmp_path,
+        typed(1, paragraph + "Rest.", 0, A, "A", 1),
+        entry(
+            {"ty": "msfd", "si": 1, "ei": len(paragraph), "sugid": "sug-1"},
+            minute(0.5),
+            A,
+            2,
+            "A",
+        ),
+        entry({"ty": "ds", "si": 1, "ei": len(paragraph)}, minute(1), A, 3, "A"),
+    )
+    assert [text for _, text in found] == [paragraph + "Rest.", "Rest."]
+    (accept,) = of_type(tmp_path, "accept")
+    assert accept["parent"] == "sug-1"

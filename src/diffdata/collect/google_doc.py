@@ -247,8 +247,11 @@ def new_stretch(stretch: dict, editor: str | None, at: str, their_last: str | No
 
 
 def big_deletion(state: DocState, edit: dict) -> bool:
-    """Whether an edit deletes LARGE_DELETION or more of the doc's plain text. Suggested
-    text doesn't count, so accepting a long suggestion isn't one."""
+    """Whether an edit deletes LARGE_DELETION or more of the doc's plain text. A suggested
+    insertion isn't plain text yet, so accepting one (Google deletes it and inserts it again)
+    isn't a large deletion. Text marked for deletion is still plain text, so accepting a
+    suggested deletion or replacement of LARGE_DELETION or more does close the version
+    first: the old text stays in a version, as when someone deletes it themselves."""
     if edit["kind"] != "delete":
         return False
     return state.plain_count(edit["start"], edit["end"]) >= LARGE_DELETION
