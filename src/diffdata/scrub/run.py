@@ -57,12 +57,16 @@ FLAGS = "flags.md"
 DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 SAFE_ID = re.compile(r"[A-Z0-9]+")
 CHANNEL_LINE = re.compile(r"^channel_id: (\S+)$", re.MULTILINE)
-# Every file a scrub makes in scrubbed/ and scrubbed-in-progress/, the folders it replaces,
-# including a temporary file a run cut short left. Anything else stops the run.
+# Every folder and file a scrub makes in scrubbed/ and scrubbed-in-progress/, the folders
+# it replaces, including a temporary file a run cut short left where it writes. Anything
+# else stops the run, except what Finder and File Explorer add to a folder someone opens.
+FOLDERS = re.compile(r"slack(?:/export(?:/[A-Z0-9]+)?)?|documents(?:/current)?")
 MADE = re.compile(
     r"manifest\.json|slack/export/[A-Z0-9]+/\d{4}-\d{2}-\d{2}\.md"
-    r"|documents/current/slack-canvas_[A-Z0-9]+\.md|(?:.+/)?\.writing-[^/]+"
+    r"|documents/current/slack-canvas_[A-Z0-9]+\.md"
+    r"|(?:(?:slack/export/[A-Z0-9]+|documents/current)/)?\.writing-[^/]+"
 )
+SYSTEM_FILES = {".DS_Store", "Thumbs.db", "desktop.ini"}
 FLAG_KINDS = {
     SHARED: "A name more than one person has, hidden as [name]",
     UNKNOWN_MENTION: "A mention of someone not in the list, hidden as @[name?]",
@@ -298,15 +302,24 @@ def refuse_links(data: Path, name: str) -> None:
 
 
 def refuse_others(data: Path, name: str) -> None:
-    """Stop if a folder the scrub replaces holds a file a scrub doesn't make: replacing the
-    folder would delete it."""
+    """Stop if a folder the scrub replaces holds a file or folder a scrub doesn't make:
+    replacing the folder would delete it."""
     folder = data / name
-    files = [path.relative_to(folder).as_posix() for path in folder.rglob("*") if path.is_file()]
-    if not all(MADE.fullmatch(file) for file in files):
+
+    def made(path: Path) -> bool:
+        where = path.relative_to(folder).as_posix()
+        if path.is_dir():
+            return FOLDERS.fullmatch(where) is not None
+        parent = path.parent.relative_to(folder).as_posix()
+        system = path.name in SYSTEM_FILES and (parent == "." or FOLDERS.fullmatch(parent))
+        return bool(system or MADE.fullmatch(where))
+
+    # Its name isn't given: someone else's file could be named after a person.
+    if not all(made(path) for path in folder.rglob("*")):
         raise ScrubError(
-            f"{name}/ in your data folder holds a file the scrub didn't make, so it stopped "
-            f"without changing anything. A scrub replaces all of {name}/, so move the file "
-            "out, and run again."
+            f"{name}/ in your data folder holds a file or folder the scrub didn't make, so it "
+            f"stopped without changing anything. A scrub replaces all of {name}/, so move it "
+            "out, and run again. Hidden files count too."
         )
 
 

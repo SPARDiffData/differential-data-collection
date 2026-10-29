@@ -6,7 +6,8 @@ The steps run in this order, each on the text the one before left:
   2. Slack user IDs become that person's [Person N], or [name?] if the people list
      doesn't have them
   3. @mentions are read whole, handle and all: a known name becomes its [Person N], and
-     anything else becomes @[name?], so a handle like @alex.newperson can't half survive
+     anything else becomes @[name?], so a handle like @alex.newperson, or a display name
+     like @Alex Newperson that only starts with a known name, can't half survive
   4. known people's names become their [Person N]: whole words, longest first ("Alex
      Example" before "Alex"), and never inside a placeholder already put in
 A name two people share becomes [name]. Later steps slot into the order: secrets first,
@@ -31,12 +32,17 @@ import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
 
-from diffdata.common.documents import EMAIL as DOCUMENT_EMAIL
 from diffdata.scrub.people import PLACEHOLDER, SLACK_ID, People, Person, nfc
 
-# documents.EMAIL, starting only where a word starts: the same matches, but a long run of
-# letters with no @, like a pasted image, is read once rather than once per letter.
-EMAIL = re.compile(r"(?<![\w.+-])" + DOCUMENT_EMAIL.pattern)
+# An email: before the @, the letters, digits and symbols an address can hold, or a part in
+# quotes; after it, a domain or an IP address in brackets, like [192.0.2.1]. Of the symbols,
+# / = ? and & are left out: they're rare in an address and build links, so an email in a
+# link's query takes only itself. It starts only where such a run starts, so a long run
+# with no @, like a pasted image, is read once rather than once per letter.
+LOCAL = r"[\w.!#$%'*+^`{|}~-]"
+EMAIL = re.compile(
+    rf'(?<!{LOCAL})(?:{LOCAL}+|"[^"\n]+")@(?:[\w-]+(?:\.[\w-]+)+|\[(?:IPv6:)?[0-9A-Fa-f.:]+\])'
+)
 SHARED = "shared name"
 UNKNOWN_ID = "unknown Slack ID"
 UNKNOWN_MENTION = "unknown mention"
@@ -165,15 +171,15 @@ class Scrubber:
 
     def mentions(self, text: str, flags: list[Flag]) -> str:
         def replace(match: re.Match) -> str:
-            words = re.split(r"([ \t]+)", match["label"])
-            for end in range(len(words), 0, -2):  # the longest known name it starts with
-                found = self.index.get(key("".join(words[:end])))
-                if found is not None:
-                    name = self.target(found, "".join(words[:end]), flags)
-                    return "@" + name + "".join(words[end:])
-            if key(words[0]) in NOT_PEOPLE | self.not_names:
+            label = match["label"]
+            found = self.index.get(key(label))
+            if found is not None:
+                return "@" + self.target(found, label, flags)
+            # Slack's own are one word, so any words after one are ordinary text.
+            if key(label.split()[0]) in NOT_PEOPLE or key(label) in self.not_names:
                 return match[0]
-            flags.append(Flag(UNKNOWN_MENTION, match["label"]))
+            # Anything else, even one that starts with a known name, isn't given to anyone.
+            flags.append(Flag(UNKNOWN_MENTION, label))
             return "@[name?]"
 
         return MENTION.sub(replace, text)

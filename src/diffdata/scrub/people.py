@@ -92,7 +92,15 @@ def read_people(path: Path) -> People:
             f"{PEOPLE_FILE} has a setting diffdata doesn't know at the top. It can hold "
             "not_names and [[person]] entries only."
         )
-    not_names = strings(raw.get("not_names", []), "not_names")
+    if "not_names" not in raw:
+        # An empty list, or one cut short, would otherwise give people new numbers and lose
+        # every nickname.
+        raise PeopleError(
+            f"{PEOPLE_FILE} has no not_names line, which every list diffdata writes has, so it "
+            "may have been emptied or cut short. Put back a whole copy, or delete the whole "
+            "private/ folder to start a new list on purpose."
+        )
+    not_names = strings(raw["not_names"], "not_names")
     entries = raw.get("person", [])
     if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
         raise PeopleError(f"Each person in {PEOPLE_FILE} must start with [[person]].")

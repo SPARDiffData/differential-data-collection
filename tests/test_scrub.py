@@ -333,14 +333,39 @@ def test_a_name_is_found_however_its_written():
         ("Ask @alex.newperson.", "Ask @[name?].", ["alex.newperson"]),  # holds a known name
         ("Ask @_newperson.", "Ask @[name?].", ["_newperson"]),
         ("cc:@newperson", "cc:@[name?]", ["newperson"]),
-        ("Thanks @Alex Example Today", "Thanks @[Person 1] Today", []),
+        ("Thanks @Alex Example, today", "Thanks @[Person 1], today", []),
         ("Thanks @alex.", "Thanks @[Person 1].", []),
-        ("@here and @Channel", "@here and @Channel", []),
+        # Only starts with a known name, so it isn't given to anyone.
+        ("Ask @Alex Newperson.", "Ask @[name?].", ["Alex Newperson"]),
+        ("Ask @Will Newperson.", "Ask @[name?].", ["Will Newperson"]),  # Will is in not_names
+        ("Ask @Will.", "Ask @Will.", []),
+        ("@here Meeting moved, @Channel", "@here Meeting moved, @Channel", []),
     ],
 )
 def test_a_mention_is_read_whole(written, scrubbed, flagged):
-    text, flags = Scrubber(People([Person("[Person 1]", [], ["Alex Example"])])).scrub(written)
+    people = People([Person("[Person 1]", [], ["Alex Example"])], ["Will"])
+    text, flags = Scrubber(people).scrub(written)
     assert text == scrubbed and [flag.text for flag in flags] == flagged
+
+
+@pytest.mark.parametrize(
+    "email", ["contact@[192.0.2.1]", "new.person'alias@example.com", '"new person"@example.com']
+)
+def test_every_shape_of_email_is_replaced_and_checked(email):
+    scrubber = Scrubber(People())
+    assert scrubber.scrub(f"Write to {email}, please.") == ("Write to [email], please.", [])
+    assert scrubber.leftovers(f"Write to {email}, please.") == ["an email"]
+
+
+def test_an_email_in_a_link_takes_only_itself():
+    text, _ = Scrubber(People()).scrub("https://example.org/join?user=new.person@example.com&x=1")
+    assert text == "https://example.org/join?user=[email]&x=1"
+
+
+def test_a_mention_hidden_in_a_link_isnt_taken_for_an_email():
+    scrubber = Scrubber(People())
+    text, _ = scrubber.scrub("https://blog.example.com/@newperson/post")
+    assert text == "https://blog.example.com/@[name?]/post" and scrubber.leftovers(text) == []
 
 
 @pytest.mark.parametrize(
@@ -386,7 +411,8 @@ def test_must_refuse_1_an_original_is_never_changed(config, export, tmp_path):
     # link, so the file it points to stays as it was.
     elsewhere = tmp_path / "elsewhere.toml"
     elsewhere.write_text(
-        '[[person]]\nplaceholder = "[Person 1]"\nslack_ids = ["U00000001"]\n', encoding="utf-8"
+        'not_names = []\n\n[[person]]\nplaceholder = "[Person 1]"\nslack_ids = ["U00000001"]\n',
+        encoding="utf-8",
     )
     linked = elsewhere.read_bytes()
     people_file(config).parent.mkdir()
@@ -418,18 +444,31 @@ def test_must_refuse_2_a_run_deletes_nothing_it_didnt_make(config, scrubbed):
 
 
 @pytest.mark.parametrize("folder", ["scrubbed", "scrubbed-in-progress"])
-@pytest.mark.parametrize("name", ["notes.md", "slack/export/C00000001/notes.md"])
+@pytest.mark.parametrize(
+    "name",
+    ["notes.md", "slack/export/C00000001/notes.md", "notes/.writing-draft", "notes/empty/"],
+)
 def test_must_refuse_2_a_folder_the_scrub_replaces_with_someone_elses_file_is_left_alone(
     config, scrubbed, folder, name
 ):
     theirs = config.data_dir / folder / name
-    theirs.parent.mkdir(parents=True, exist_ok=True)
-    theirs.write_text("keep", encoding="utf-8")
+    if name.endswith("/"):
+        theirs.mkdir(parents=True)
+    else:
+        theirs.parent.mkdir(parents=True, exist_ok=True)
+        theirs.write_text("keep", encoding="utf-8")
     before = copies(config)
-    with pytest.raises(ScrubError, match=f"{folder}/ in your data folder holds a file"):
+    with pytest.raises(ScrubError, match=f"{folder}/ in your data folder holds a file or folder"):
         scrub(config)
-    assert theirs.read_text(encoding="utf-8") == "keep"
+    assert theirs.is_dir() if name.endswith("/") else theirs.read_text(encoding="utf-8") == "keep"
     assert copies(config) == before
+
+
+def test_what_finder_and_file_explorer_add_doesnt_stop_a_run(config, scrubbed):
+    for name in (".DS_Store", "slack/export/C00000001/Thumbs.db", "documents/desktop.ini"):
+        (config.data_dir / "scrubbed" / name).write_text("", encoding="utf-8")
+    scrub(config)
+    assert not (config.data_dir / "scrubbed" / ".DS_Store").exists()
 
 
 def make_link(link: Path, target: Path, kind: str) -> None:
@@ -576,20 +615,24 @@ def test_must_refuse_9_a_failure_prints_no_real_values(
         assert "unexpected ValueError" in printed
 
 
+LIST = b"not_names = []\n\n"  # the start of every list diffdata writes
 BROKEN_LISTS = {
     "can't be read as TOML (at": b'not_names = ["Alex Example"\n',
     "isn't UTF-8": b'not_names = ["Alex \xe9"]\n',
     "a setting diffdata doesn't know": b'Alex = "Example"\n',
-    "same placeholder": b'[[person]]\nplaceholder = "[Person 1]"\n\n'
+    "emptied or cut short": b"",
+    "may have been emptied": b"# The people the scrub knows: Alex Example\n",
+    "same placeholder": LIST + b'[[person]]\nplaceholder = "[Person 1]"\n\n'
     b'[[person]]\nplaceholder = "[Person 1]"\n',
-    "same Slack ID": b'[[person]]\nplaceholder = "[Person 1]"\nslack_ids = ["U00000001"]\n\n'
-    b'[[person]]\nplaceholder = "[Person 2]"\nslack_ids = ["U00000001"]\n',
-    "must be a list of words": b'[[person]]\nplaceholder = "[Person 1]"\nnames = "Alex"\n',
+    "same Slack ID": LIST + b'[[person]]\nplaceholder = "[Person 1]"\nslack_ids = ["U00000001"]\n'
+    b'\n[[person]]\nplaceholder = "[Person 2]"\nslack_ids = ["U00000001"]\n',
+    "must be a list of words": LIST + b'[[person]]\nplaceholder = "[Person 1]"\nnames = "Alex"\n',
     "none of them empty": b'not_names = [" "]\n',
-    'a placeholder like "[Person 1]"': b'[[person]]\nplaceholder = "[Alex Example]"\n',
-    "a field diffdata doesn't know": b'[[person]]\nplaceholder = "[Person 1]"\nnick = ["Al"]\n',
-    "a Slack ID that isn't one": b'[[person]]\nplaceholder = "[Person 1]"\nslack_ids = ["Alex"]\n',
-    "must start with [[person]]": b'person = "Alex"\n',
+    'a placeholder like "[Person 1]"': LIST + b'[[person]]\nplaceholder = "[Alex Example]"\n',
+    "a field diffdata doesn't know": LIST + b'[[person]]\nplaceholder = "[Person 1]"\nnick = []\n',
+    "a Slack ID that isn't one": LIST + b'[[person]]\nplaceholder = "[Person 1]"\n'
+    b'slack_ids = ["Alex"]\n',
+    "must start with [[person]]": LIST + b'person = "Alex"\n',
 }
 
 
