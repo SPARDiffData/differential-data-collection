@@ -1,0 +1,13 @@
+=== THREAD PARENT MESSAGE ===
+From: Alex Example <alex@example.com> (U00000001)
+Time: 2026-10-06 09:00:00 CDT
+Message TS: 1791295200.000100
+The draft is in <https://docs.google.com/document/d/FAKE-DOC-0010/edit#heading=h.fake01|Draft plan>
+
+=== THREAD REPLIES (1 total) ===
+
+--- Reply 1 of 1 ---
+From: Sam Sample <sam@example.com> (U00000002)
+Time: 2026-10-06 09:30:00 CDT
+Message TS: 1791297000.000110
+Comments added: <https://docs.google.com/document/d/FAKE-DOC-0010/edit?usp=sharing>

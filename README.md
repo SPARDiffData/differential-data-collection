@@ -29,6 +29,7 @@ For the pilot there's no Slack app: Claude Code reads Slack for you through its 
 3. **Run it.** Type `/slack-export`. Claude reads each channel, searches it for late replies, and reads the threads. A hook saves each result unchanged to your data folder, so Claude never retypes it, and then `diffdata` builds:
    - `slack/export/<channel>/<date>.md`: one readable file per day (UTC), with thread replies under their post
    - `slack/store/<channel-id>/messages.jsonl`: every version of every message, for the later steps
+   - `references/references.md`: every doc, canvas, attachment and link the saved messages and canvases point to, once each, with where and when it was shared, and whether it's collected. Nothing in it is fetched, and attachments are never downloaded.
 
 Claude reports counts only. The raw results, including authors' emails, stay in your data folder until scrubbing (SCR-2).
 
@@ -56,7 +57,7 @@ By hand: `uv run diffdata discover slack build` rebuilds the export from what's 
 
 The first run after updating reads every canvas once, since their earlier reads have no size on record.
 
-Links in a canvas (Docs, images, other canvases) stay links: nothing fetches them. Canvas comments aren't collected yet (COL-3).
+Links in a canvas (Docs, images, other canvases) stay links: nothing fetches them, and they're listed in `references/references.md`. Canvas comments aren't collected yet (COL-3).
 
 ## Two hard rules
 

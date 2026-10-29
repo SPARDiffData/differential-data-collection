@@ -1,0 +1,11 @@
+{
+  "canvas_id": "F00000010",
+  "markdown_content": "# Example Plan Canvas\n\nOwner: <@U00000001><br>Questions in <#C00000001>.\n\nThe draft: [Draft plan](https://docs.google.com/document/d/FAKE-DOC-0010/edit)\n\nReading: https://example.org/paper?id=7\n\n![chart.png](https://example.slack.com/files/U00000001/F00000015/chart.png)\n",
+  "section_id_mapping": {
+    "temp:C:FAKE0000000000000000000000000021": "# Example Plan Canvas",
+    "temp:C:FAKE0000000000000000000000000022": "Owner: <@U00000001><br>Questions in <#C00000001>.",
+    "temp:C:FAKE0000000000000000000000000023": "The draft: [Draft plan](https://docs.google.com/document/d/FAKE-DOC-0010/edit)",
+    "temp:C:FAKE0000000000000000000000000024": "Reading: https://example.org/paper?id=7",
+    "temp:C:FAKE0000000000000000000000000025": "![chart.png](https://example.slack.com/files/U00000001/F00000015/chart.png)"
+  }
+}
