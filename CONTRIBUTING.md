@@ -31,7 +31,7 @@ If you think real data, a password or a token got into a commit or a PR, don't t
    cd differential-data-collection
    uv sync
    ```
-6. **Make your private settings files.** Make a folder called `.diffdata` in your home folder (`C:\Users\<you>\.diffdata` on Windows, `~/.diffdata` on a Mac). Copy `config.example.toml` into it as `config.toml`, and copy `.env.example` to `.env` in the repo folder, then fill them in. Keeping `config.toml` outside the repo means tools working in the repo, such as Codex, can't read it. Both copies stay on your computer and are never committed. Keep `data_dir` pointing outside the repo; the tool refuses a folder inside it.
+6. **Make your private settings files.** Make a folder called `.diffdata` in your home folder (`C:\Users\<you>\.diffdata` on Windows, `~/.diffdata` on a Mac). Copy `config.example.toml` into it as `config.toml`, and `.env.example` as `.env`, then fill them in. Keeping them outside the repo means tools working in the repo, such as Codex, can't read them. Both copies stay on your computer and are never committed. If you made a `.env` in the repo folder before, move it there: the tests fail while it's in the repo folder. Keep `data_dir` pointing outside the repo; the tool refuses a folder inside it.
 
 You can also open Claude Code in an empty folder and say: "Walk me through the one-time setup in CONTRIBUTING.md of SPARDiffData/differential-data-collection."
 
@@ -87,7 +87,7 @@ Whether it runs is agreed when the work starts: Claude says whether it's worth i
 
 Codex runs after `/review-pr`, once that review's must-fix items are fixed: on the same commit if there are none, otherwise on the fix commit. That way it doesn't spend a paid run reporting what's already being fixed, and it sees the fixes, which is where new bugs tend to hide.
 
-Codex runs on a separate worktree of the PR branch, so nobody's folder has to switch branches, and at most twice per PR. It never gets the data folder, `config.toml` or `.env`, because it sends what it reads to OpenAI. `.env` moves out of the repo folder, to `~/.diffdata/`, before it holds a real token (Issue #45). Teammates without Codex skip it.
+Codex runs on a separate worktree of the PR branch, so nobody's folder has to switch branches, and at most twice per PR. It never gets the data folder, `config.toml` or `.env`, because it sends what it reads to OpenAI. That's why `config.toml` and `.env` live in `~/.diffdata/`, outside the repo folder. Teammates without Codex skip it.
 
 ### How Claude runs the reviews on Paul's PRs
 
