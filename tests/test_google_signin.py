@@ -144,8 +144,18 @@ def test_the_sign_in_is_never_kept_inside_a_repo(tmp_path):
 
 
 def test_the_sign_in_is_never_kept_in_a_synced_folder(tmp_path):
+    # Also item 5: a cloud service would copy the token off this computer.
+    home = tmp_path / "OneDrive" / ".diffdata"
+    home.mkdir(parents=True)
+    (home / "google-client.json").write_text(json.dumps(CLIENT), "utf-8")
+    opened, google = browser(PICKED), FakeGoogle(granted())
     with pytest.raises(SignInError, match="synced by"):
-        access_token(tmp_path / "OneDrive" / ".diffdata")
+        sign_in(home, opener=google, browser=opened, timeout=10)
+    assert opened.opened == [] and google.requests == []
+    assert not (home / "google-token.json").exists()
+    # A saved sign-in there isn't used either.
+    with pytest.raises(SignInError, match="synced by"):
+        access_token(home)
 
 
 def test_a_missing_client_file_says_where_it_goes(tmp_path):
