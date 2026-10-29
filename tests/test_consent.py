@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import unicodedata
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -738,13 +739,24 @@ def test_a_long_title_is_cut_short_so_it_cant_wrap_onto_a_line_of_its_own(config
     assert "https://docs.google.com/document/d/FAKE-DOC-0010/edit#heading=h.fake01" in first
 
 
+def shown_width(line: str) -> int:
+    """How many columns a terminal draws a line in: two for a wide character."""
+    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in line)
+
+
+# Before the fake item: plain letters (Codex's second review), and characters a terminal
+# draws two columns wide (the final /review-pr), Chinese ones and an emoji.
+PADDING = ["x" * 12] + ["\u8868" * count for count in (1, 3, 6, 10, 20, 40)] + ["\U0001f600" * 5]
+
+
 @pytest.mark.parametrize("width", [60, 80, 120])
+@pytest.mark.parametrize("padding", PADDING)
 def test_a_title_that_wraps_at_the_windows_edge_cant_start_a_line_like_an_item(
-    config, export, terminal, monkeypatch, width
+    config, export, terminal, monkeypatch, width, padding
 ):
-    # Must refuse 15, from Codex's second review: a title under the length limit could still
-    # reach the window's edge so that the terminal starts the next line with "b) ...". The
-    # screen wraps each item itself, and indents every line after an item's first.
+    # Must refuse 15: a title under the length limit could still reach the window's edge, so
+    # that the terminal starts the next line with "b) ...". The screen wraps each item itself,
+    # and indents every line after an item's first, and every line fits the window.
     monkeypatch.setattr(review, "screen_width", lambda stdout: width)
     export()
     path = config.data_dir / "references" / "references.jsonl"
@@ -752,7 +764,7 @@ def test_a_title_that_wraps_at_the_windows_edge_cant_start_a_line_like_an_item(
     fake = "b) Google Doc \u00b7 https://docs.google.com/document/d/FAKE-OTHER-0001"
     for entry in entries:
         if entry["key"] == DOC:
-            entry["title"] = "x" * 12 + " " + fake
+            entry["title"] = padding + " " + fake
     path.write_text("".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8")
     screen = answer(config, "\n")[1]
     assert [line[:2] for line in items(screen)] == ["a)", "b)", "c)", "d)", "e)", "f)"]
@@ -760,7 +772,7 @@ def test_a_title_that_wraps_at_the_windows_edge_cant_start_a_line_like_an_item(
     block = block[block.index(items(screen)[0]) :]
     block = block[: block.index("")]  # the items, down to the blank line after them
     assert all(re.match(r"[a-f]\) |    \S", line) for line in block)
-    assert all(len(line) < width for line in block)
+    assert all(shown_width(line) < width for line in block)
     # The real link is all there, split only across indented lines.
     joined = "".join(line.removeprefix("    ") for line in block)
     assert "https://docs.google.com/document/d/FAKE-DOC-0010/edit#heading=h.fake01" in joined

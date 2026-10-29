@@ -29,6 +29,7 @@ If a change would break one of these, or you aren't sure, stop and ask the user.
 - Write PR descriptions a non-coder can follow, using the PR template.
 - Don't change `docs/requirements.md` unless the Issue asks. Requirement IDs never change once used.
 - Several sessions can work at once, each in its own folder (a git worktree) on its own branch. Only one session pushes to a branch. Only one `/slack-export` runs at a time, because every session on the machine shares the data folder.
+- Never run `diffdata consent review` or `withdraw`: a person types those in their own terminal. `.claude/settings.json` refuses any shell command whose text names them, so pass a commit message, PR text or comment that mentions them from a file (`git commit -F`, `gh pr comment --body-file`).
 
 ## Real data in a session
 

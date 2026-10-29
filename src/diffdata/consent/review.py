@@ -291,13 +291,19 @@ def show_item(stdout, name: str, text: str) -> None:
     """One item, wrapped here to the terminal's width rather than by the terminal, with every
     line after its first indented. Only an item's own first line starts at the left edge, so
     a crafted title or link can't wrap into a line that looks like another item (from Codex's
-    review). Long links are wrapped too."""
-    width = max(screen_width(stdout) - 1, 20)
+    review). Long links are wrapped too.
+
+    A terminal draws some characters two columns wide, such as Chinese or Japanese ones and
+    emoji, and textwrap counts each as one. So each character outside ASCII takes a column
+    off the line, but never more than half. A line of n characters, k of them wide, takes
+    n + k columns, which then always fits."""
+    columns = max(screen_width(stdout) - 1, 20)
+    item = f"{name}) {text}"
+    wide = sum(not ch.isascii() for ch in item)
+    width = max(columns - wide, columns // 2)
     show(
         stdout,
-        textwrap.fill(
-            f"{name}) {text}", width=width, subsequent_indent="    ", break_on_hyphens=False
-        ),
+        textwrap.fill(item, width=width, subsequent_indent="    ", break_on_hyphens=False),
     )
 
 
