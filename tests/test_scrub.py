@@ -339,6 +339,11 @@ def test_a_name_is_found_however_its_written():
         ("Ask @Alex Newperson.", "Ask @[name?].", ["Alex Newperson"]),
         ("Ask @Will Newperson.", "Ask @[name?].", ["Will Newperson"]),  # Will is in not_names
         ("Ask @Will.", "Ask @Will.", []),
+        ("See @Alex Example's doc", "See @[Person 1]'s doc", []),  # in the possessive
+        ("See @alex’s doc", "See @[Person 1]’s doc", []),
+        ("See @Jordan's doc", "See @[name?]'s doc", ["Jordan"]),
+        ("Ask @Alex Šample.", "Ask @[name?].", ["Alex Šample"]),  # a capital beyond A to Z
+        ("Ask @alex please", "Ask @[Person 1] please", []),
         ("@here Meeting moved, @Channel", "@here Meeting moved, @Channel", []),
     ],
 )
@@ -357,9 +362,12 @@ def test_every_shape_of_email_is_replaced_and_checked(email):
     assert scrubber.leftovers(f"Write to {email}, please.") == ["an email"]
 
 
-def test_an_email_in_a_link_takes_only_itself():
-    text, _ = Scrubber(People()).scrub("https://example.org/join?user=new.person@example.com&x=1")
-    assert text == "https://example.org/join?user=[email]&x=1"
+@pytest.mark.parametrize("at", ["@", "%40"])  # a link can spell the @ as %40
+def test_an_email_in_a_link_takes_only_itself(at):
+    scrubber = Scrubber(People())
+    link = f"https://example.org/join?user=new.person{at}example.com&x=1"
+    assert scrubber.scrub(link)[0] == "https://example.org/join?user=[email]&x=1"
+    assert scrubber.leftovers(link) == ["an email"]
 
 
 def test_a_mention_hidden_in_a_link_isnt_taken_for_an_email():

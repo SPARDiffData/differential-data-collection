@@ -40,8 +40,10 @@ from diffdata.scrub.people import PLACEHOLDER, SLACK_ID, People, Person, nfc
 # link's query takes only itself. It starts only where such a run starts, so a long run
 # with no @, like a pasted image, is read once rather than once per letter.
 LOCAL = r"[\w.!#$%'*+^`{|}~-]"
+# A link can spell the @ as %40.
 EMAIL = re.compile(
-    rf'(?<!{LOCAL})(?:{LOCAL}+|"[^"\n]+")@(?:[\w-]+(?:\.[\w-]+)+|\[(?:IPv6:)?[0-9A-Fa-f.:]+\])'
+    rf'(?<!{LOCAL})(?:{LOCAL}+|"[^"\n]+")(?:@|%40)'
+    r"(?:[\w-]+(?:\.[\w-]+)+|\[(?:IPv6:)?[0-9A-Fa-f.:]+\])"
 )
 SHARED = "shared name"
 UNKNOWN_ID = "unknown Slack ID"
@@ -51,11 +53,13 @@ KEPT = r"\[(?:Person [1-9][0-9]*|name\??|email)\]"
 # A name starts and ends at a letter's edge: "Alex's" and "alex_2" hold Alex; "Alexa" doesn't.
 BEFORE, AFTER = r"(?<![^\W\d_])", r"(?![^\W\d_])"
 # "@jordan", "@alex.newperson", "cc:@_jordan" or "@Jordan Smith": an @ that doesn't follow
-# a letter, a handle, and up to two more words in capitals, since a display name can have
-# spaces. Emails are gone by then.
+# a letter, a handle, and up to two more words, since a display name can have spaces. Only
+# words in capitals count, in any alphabet, which `Scrubber.mentions` checks. Emails are
+# gone by then.
 MENTION = re.compile(
-    r"(?<![\w@])@(?P<label>[^\W\d](?:[\w.'’-]*\w)?(?:[ \t]+[A-ZÀ-ÖØ-Þ](?:[\w.'’-]*\w)?){0,2})"
+    r"(?<![\w@])@(?P<label>[^\W\d](?:[\w.'’-]*\w)?(?:[ \t]+[^\W\d_](?:[\w.'’-]*\w)?){0,2})"
 )
+POSSESSIVE = re.compile(r"(?P<owner>.+)(?P<s>['’]s)")
 # Slack's own: <!here>, <!channel> and <!everyone> show as @here, @channel and @everyone.
 NOT_PEOPLE = {"here", "channel", "everyone"}
 APOSTROPHES = str.maketrans("’‘ʼ", "'''")
@@ -171,16 +175,25 @@ class Scrubber:
 
     def mentions(self, text: str, flags: list[Flag]) -> str:
         def replace(match: re.Match) -> str:
-            label = match["label"]
-            found = self.index.get(key(label))
+            # The words after the handle that start with a capital; the rest is ordinary text.
+            words = re.split(r"([ \t]+)", match["label"])
+            end = 1
+            while end < len(words) and words[end + 1][0].isupper():
+                end += 2
+            label, after = "".join(words[:end]), "".join(words[end:])
+            # "@Alex's doc" is Alex, and the 's stays.
+            owner, s = label, ""
+            if key(label) not in self.index and (possessive := POSSESSIVE.fullmatch(label)):
+                owner, s = possessive["owner"], possessive["s"]
+            found = self.index.get(key(owner))
             if found is not None:
-                return "@" + self.target(found, label, flags)
+                return "@" + self.target(found, owner, flags) + s + after
             # Slack's own are one word, so any words after one are ordinary text.
-            if key(label.split()[0]) in NOT_PEOPLE or key(label) in self.not_names:
+            if key(owner.split()[0]) in NOT_PEOPLE or key(owner) in self.not_names:
                 return match[0]
             # Anything else, even one that starts with a known name, isn't given to anyone.
-            flags.append(Flag(UNKNOWN_MENTION, label))
-            return "@[name?]"
+            flags.append(Flag(UNKNOWN_MENTION, owner))
+            return "@[name?]" + s + after
 
         return MENTION.sub(replace, text)
 
