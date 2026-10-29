@@ -79,7 +79,7 @@ Codex focus: Check this change against Issue #<issue>. Done when: <each "Done wh
 - **Copy the "Done when" items word for word, minus quotes, backticks and dollar signs.** A shortened brief once led Codex to a false alarm. And the line is passed to a shell inside double quotes, which would act on those characters: drop the quotes and backticks around names, and write a name with a dollar sign in words.
 - **Never put anything from `.env`, `config.toml` or the data folder in it.**
 
-Whoever runs Codex runs it on a separate worktree of the PR branch, so nobody's folder has to switch branches:
+Whoever runs Codex runs it after this review, once its must-fix items are fixed: on this commit if there are none, otherwise on the fix commit. It runs on a separate worktree of the PR branch, so nobody's folder has to switch branches:
 1. `git fetch origin`, then `git worktree add --detach <temporary folder> origin/<headRefName>`.
 2. From the Codex plugin's folder (under `~/.claude/plugins/`): `node scripts/codex-companion.mjs adversarial-review --wait --cwd <temporary folder> --base origin/main --scope branch "<the line, without 'Codex focus: '>"`.
 3. Post Codex's output on the PR word for word, then `git worktree remove <temporary folder>`.
