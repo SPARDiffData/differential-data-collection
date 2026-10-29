@@ -28,6 +28,7 @@ import hashlib
 import os
 import re
 import sys
+import textwrap
 import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
@@ -73,14 +74,14 @@ REVIEW_INTRO = """\
 {count} new canvas(es) and Google file(s) were found in your saved Slack data.
 
 What approving means:
-  - diffdata reads an approved item on every /slack-export from now on, and keeps every
-    version of it.
-  - Claude reads an approved canvas in full when it collects it. An approved Google file
-    waits for the Google Docs fetcher.
-  - Approve only what your team agreed to share. A doc others wrote may need their
-    agreement too (CON-5).
-  - A skipped item isn't asked about again. To withdraw an approval later, run:
-    uv run diffdata consent withdraw
+  - diffdata reads an approved item on every /slack-export from now on,
+    and keeps every version of it.
+  - Claude reads an approved canvas in full when it collects it. An approved
+    Google file waits for the Google Docs fetcher.
+  - Approve only what your team agreed to share. A doc others wrote may
+    need their agreement too (CON-5).
+  - A skipped item isn't asked about again. To withdraw an approval later,
+    run: uv run diffdata consent withdraw
 """
 REVIEW_ANSWERS = """
 Type one of these, then press Enter:
@@ -96,10 +97,10 @@ BAD_REVIEW_ANSWER = (
 WITHDRAW_INTRO = """\
 {count} item(s) were approved at review.
 
-Withdrawing one stops diffdata reading it from the next /slack-export. An export that's
-already open keeps its list until it ends. What was already collected stays in your data
-folder for now. A canvas listed in config.toml is withdrawn by removing it from
-slack_canvases there.
+Withdrawing one stops diffdata reading it from the next /slack-export. An
+export that's already open keeps its list until it ends. What was already
+collected stays in your data folder for now. A canvas listed in config.toml
+is withdrawn by removing it from slack_canvases there.
 """
 WITHDRAW_ANSWERS = """
 Type one of these, then press Enter:
@@ -278,6 +279,28 @@ def show(stdout, text: str) -> None:
     print(text, file=stdout)
 
 
+def screen_width(stdout) -> int:
+    """The terminal's width in characters, or 80 if it can't say."""
+    try:
+        return os.get_terminal_size(stdout.fileno()).columns
+    except (AttributeError, OSError, ValueError):
+        return 80
+
+
+def show_item(stdout, name: str, text: str) -> None:
+    """One item, wrapped here to the terminal's width rather than by the terminal, with every
+    line after its first indented. Only an item's own first line starts at the left edge, so
+    a crafted title or link can't wrap into a line that looks like another item (from Codex's
+    review). Long links are wrapped too."""
+    width = max(screen_width(stdout) - 1, 20)
+    show(
+        stdout,
+        textwrap.fill(
+            f"{name}) {text}", width=width, subsequent_indent="    ", break_on_hyphens=False
+        ),
+    )
+
+
 def refuse(message: str) -> int:
     print(f"diffdata: {message}", file=sys.stderr)
     return 1
@@ -301,7 +324,7 @@ def run_review(config: Config, stdin=None, stdout=None, now: datetime | None = N
         titles = canvas_titles(log)
         show(stdout, REVIEW_INTRO.format(count=len(items)))
         for name, entry in zip(names, items, strict=True):
-            show(stdout, f"{name}) {describe(entry, channels, titles)}")
+            show_item(stdout, name, describe(entry, channels, titles))
         show(stdout, REVIEW_ANSWERS)
         answer = ask(stdin, stdout)
         if not answer:
@@ -366,7 +389,7 @@ def run_withdraw(config: Config, stdin=None, stdout=None, now: datetime | None =
                 "places": {},
             }
             also = " · also listed in config.toml" if key in listed else ""
-            show(stdout, f"{name}) {describe(entry, channels, titles)}{also}")
+            show_item(stdout, name, describe(entry, channels, titles) + also)
         show(stdout, WITHDRAW_ANSWERS)
         answer = ask(stdin, stdout)
         if not answer:

@@ -76,8 +76,10 @@ def export(config, slack_run, slack_response):
 
 @pytest.fixture
 def terminal(monkeypatch):
-    """A person at a terminal. The tests of the check itself don't use this."""
+    """A person at a terminal, wide enough that each item fits on one line. The tests of the
+    check itself, and of wrapping, don't use this as it is."""
     monkeypatch.setattr(review, "is_terminal", lambda stream: True)
+    monkeypatch.setattr(review, "screen_width", lambda stdout: 1000)
 
 
 class Typed(io.StringIO):
@@ -145,12 +147,15 @@ def test_the_screen_says_what_approving_means_then_lists_one_line_per_item(
     assert code == 0
     for text in (
         "What approving means:",
-        "reads an approved item on every /slack-export from now on, and keeps every",
+        "reads an approved item on every /slack-export from now on,\n    and keeps every version",
         "Claude reads an approved canvas in full",
-        "Approve only what your team agreed to share. A doc others wrote may need their",
+        "Approve only what your team agreed to share. A doc others wrote may\n    need their",
         "A skipped item isn't asked about again.",
     ):
         assert text in screen
+    for name in ("REVIEW_INTRO", "REVIEW_ANSWERS", "WITHDRAW_INTRO", "WITHDRAW_ANSWERS"):
+        text = getattr(review, name).format(count=26)
+        assert max(len(line) for line in text.split("\n")) < 80  # fits an 80-column window
     lines = items(screen)
     assert [line[:2] for line in lines] == ["a)", "b)", "c)", "d)", "e)", "f)"]
     assert lines[0] == (
@@ -515,7 +520,7 @@ def test_a_withdrawn_canvas_isnt_read_from_the_next_run_or_asked_about_again(
     answer(config, "all\n")
     code, screen = answer(config, "e\n", "withdraw")
     assert code == 0
-    assert "What was already collected stays in your data" in screen
+    assert "collected stays in your data folder for now" in screen
     assert "Withdrawn: 1. diffdata stops reading them from the next /slack-export." in screen
     assert decisions(config)[TEAM_NOTES] == "withdrawn"
     begin(config, [f"example-channel={CHANNEL}"], now=LATER)
@@ -731,3 +736,31 @@ def test_a_long_title_is_cut_short_so_it_cant_wrap_onto_a_line_of_its_own(config
     assert f'"{"x" * 79}\u2026"' in first
     assert "FAKE-OTHER-0002" not in first
     assert "https://docs.google.com/document/d/FAKE-DOC-0010/edit#heading=h.fake01" in first
+
+
+@pytest.mark.parametrize("width", [60, 80, 120])
+def test_a_title_that_wraps_at_the_windows_edge_cant_start_a_line_like_an_item(
+    config, export, terminal, monkeypatch, width
+):
+    # Must refuse 15, from Codex's second review: a title under the length limit could still
+    # reach the window's edge so that the terminal starts the next line with "b) ...". The
+    # screen wraps each item itself, and indents every line after an item's first.
+    monkeypatch.setattr(review, "screen_width", lambda stdout: width)
+    export()
+    path = config.data_dir / "references" / "references.jsonl"
+    entries = list(log(config).values())
+    fake = "b) Google Doc \u00b7 https://docs.google.com/document/d/FAKE-OTHER-0001"
+    for entry in entries:
+        if entry["key"] == DOC:
+            entry["title"] = "x" * 12 + " " + fake
+    path.write_text("".join(json.dumps(e) + "\n" for e in entries), encoding="utf-8")
+    screen = answer(config, "\n")[1]
+    assert [line[:2] for line in items(screen)] == ["a)", "b)", "c)", "d)", "e)", "f)"]
+    block = screen.split("\n")
+    block = block[block.index(items(screen)[0]) :]
+    block = block[: block.index("")]  # the items, down to the blank line after them
+    assert all(re.match(r"[a-f]\) |    \S", line) for line in block)
+    assert all(len(line) < width for line in block)
+    # The real link is all there, split only across indented lines.
+    joined = "".join(line.removeprefix("    ") for line in block)
+    assert "https://docs.google.com/document/d/FAKE-DOC-0010/edit#heading=h.fake01" in joined
