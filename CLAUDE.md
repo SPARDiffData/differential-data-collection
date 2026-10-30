@@ -14,7 +14,7 @@ Most of the team is new to Git and builds by working with Claude. Explain what y
 
 1. **Never modify or delete a producer's original files or data**, locally or in any cloud service. We read, and we only ever change our own copies. Request read-only access scopes wherever a service offers them.
 2. **Real collected data never goes in a git commit.** That includes branches that never merge, "just for a test", and trimmed or anonymized samples. Local data lives in the `data_dir` from `config.toml`, which must be outside any git repository. Get it with `diffdata.common.paths.data_dir()`, which refuses a folder inside a repo. Tests use synthetic fixtures only (`tests/fixtures/`).
-3. **No secrets in the repo.** Tokens and keys live in `.env`, which is gitignored. `.env.example` holds names only, never values.
+3. **No secrets in the repo.** Tokens and keys live in `.env`, in `~/.diffdata/` next to `config.toml`, outside the repo folder. `.env.example` holds names only, never values.
 
 If a change would break one of these, or you aren't sure, stop and ask the user. If real data or a secret was already pushed, tell the user to alert Paul right away. The repo is public, so it's exposed even if the PR never merges, and a secret must be revoked.
 
@@ -58,19 +58,20 @@ These rules keep real data out of the repo and out of other companies' AI tools.
 
 ```
 src/diffdata/
-  cli.py            the `diffdata` command; `discover slack` and `consent` are built, the rest are stubs
+  cli.py            the `diffdata` command; `discover slack`, `consent` and `scrub` are built, the rest are stubs
   consent/ discover/ collect/ organize/ scrub/ store/    one package per stage
   consent/approvals.py   the approvals file next to config.toml (CON-1, CON-3): approved, skipped or withdrawn, per canvas or Google file; it only grows
   consent/review.py   `diffdata consent review` and `withdraw`: a person approves new items from the reference log, typed in a terminal; they refuse to run anywhere else, as in Claude's tools
   discover/slack_*.py   Slack export (DIS-1): inbox, parser, store and markdown view, and each channel's start point for incremental runs (slack_state.py)
   discover/references.py   the reference log (DIS-2, DIS-3): every source the saved messages and canvases point to, written at the end of the Slack build; it only grows
   collect/slack_canvas.py   Slack canvases (COL-2), read in /slack-export when a files search or a tab notice says they may have changed: saved reads become versions and clean copies
+  scrub/            `diffdata scrub` (SCR-2): scrubbed copies in <data>/scrubbed/, built all or nothing (run.py), with the people list in <data>/private/ (people.py) and the replacements and last check in text.py
   common/           shared pieces; paths.py holds the data folder guards, config.py reads config.toml
   common/documents.py   the shared document format (ORG-2): raw, versions, event log, clean copies
 tests/              pytest; fixtures/ holds synthetic data only
 docs/requirements.md
 config.example.toml copy to ~/.diffdata/config.toml, outside the repo, and fill in
-.env.example        copy to .env (gitignored) and fill in
+.env.example        copy to ~/.diffdata/.env, outside the repo, and fill in
 .claude/commands/debrief.md        /debrief, an optional one-page summary of a PR or session
 .claude/commands/plan-issue.md     /plan-issue, an optional planning step before coding
 .claude/commands/review-pr.md      /review-pr, the independent PR review
@@ -95,6 +96,6 @@ CI runs lint and tests on Windows, macOS and Linux for every PR.
 
 ## Reviews and versions
 
-Every PR gets reviewed before merge, starting with `/review-pr <number>` in its own context: the `pr-reviewer` agent, or a separate Claude session. On Paul's PRs, the session that wrote the code runs the reviews and posts them, adding Codex only for risky changes. When a task starts, if the user has Codex, say whether a Codex review is worth it under that rule, and let them confirm it along with the plan. Paul reviews teammates' PRs, and Claude never pushes to a teammate's branch. A human must also review anything touching consent, scrub or store. For a teammate's PR, that's Paul. For Paul's own: Paul approves the plan's must-refuse list before coding and checks it by hand before merge, Lachlan reads the code, and both AI reviews run. The commit Paul merges always gets a final `/review-pr`. The full workflow is in "Review policy" in [CONTRIBUTING.md](CONTRIBUTING.md).
+Every PR gets reviewed before merge, starting with `/review-pr <number>` in its own context: the `pr-reviewer` agent, or a separate Claude session. On Paul's PRs, the session that wrote the code runs the reviews and posts them, adding Codex only for risky changes, after Claude's review and once its must-fix items are fixed. When a task starts, if the user has Codex, say whether a Codex review is worth it under that rule, and let them confirm it along with the plan. Paul reviews teammates' PRs, and Claude never pushes to a teammate's branch. A human must also review anything touching consent, scrub or store. For a teammate's PR, that's Paul. For Paul's own: Paul approves the plan's must-refuse list before coding and checks it by hand before merge, Lachlan reads the code, and both AI reviews run. The commit Paul merges always gets a final `/review-pr`. The full workflow is in "Review policy" in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The version lives in `pyproject.toml` only (0.MINOR.PATCH, matching the phases in the requirements). Paul tags releases and keeps [CHANGELOG.md](CHANGELOG.md).

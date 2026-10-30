@@ -18,7 +18,7 @@ uv run diffdata --help
 uv run pytest
 ```
 
-To configure it, copy `config.example.toml` to `config.toml` in a `.diffdata` folder in your home folder (`C:\Users\<you>\.diffdata\config.toml` on Windows, `~/.diffdata/config.toml` on a Mac), and `.env.example` to `.env`, then fill them in. Both stay on your computer. Keeping `config.toml` outside the repo means tools working in the repo, such as Codex, can't read it.
+To configure it, copy `config.example.toml` to `config.toml` and `.env.example` to `.env`, both in a `.diffdata` folder in your home folder (`C:\Users\<you>\.diffdata\` on Windows, `~/.diffdata/` on a Mac), then fill them in. Both stay on your computer. Keeping them outside the repo means tools working in the repo, such as Codex, can't read them.
 
 ## Export a Slack channel (DIS-1)
 

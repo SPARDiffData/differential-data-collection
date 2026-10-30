@@ -680,3 +680,231 @@ def test_an_unknown_op_on_a_marked_deletion_or_by_id_alone_is_a_warning(tmp_path
         tmp_path, DOC, "f1", "2026-10-06T09:00:00Z", "browser-file", {"changelog.json": body}
     )
     assert build(tmp_path)["replay warnings"] == 2
+
+
+# Suggestion outcomes. Google has no op for them: what each test replays is what a real
+# test doc's changelog showed (Oct 2026), with made-up text and IDs.
+A, B = "111", "222"  # the doc's owner, and a second editor who suggests
+
+
+def at(second: int) -> str:
+    return f"2026-10-05T10:00:{second:02d}Z"
+
+
+def outcome_doc(tmp_path, *entries) -> None:
+    """A doc that starts as "One two\n", typed by A, then the given entries."""
+    body = changelog_of(entry({"ty": "is", "ibi": 1, "s": "One two\n"}, at(0), A, 1, "A"), *entries)
+    save_fetch(
+        tmp_path, DOC, "f1", "2026-10-06T09:00:00Z", "browser-file", {"changelog.json": body}
+    )
+    build(tmp_path)
+
+
+def several(*ops) -> dict:
+    return {"ty": "mlti", "mts": list(ops)}
+
+
+def test_an_accepted_insertion_is_an_accept_and_its_text_stays(tmp_path):
+    # B suggests " three". A accepts it: one entry deletes it, and inserts it again as
+    # plain text, with style ops around it.
+    outcome_doc(
+        tmp_path,
+        entry({"ty": "iss", "ibi": 8, "s": " three", "sugid": "sug-1"}, at(1), B, 2, "B"),
+        entry(
+            several(
+                {"ty": "ds", "si": 8, "ei": 13},
+                {"ty": "is", "ibi": 8, "s": " three"},
+                {"ty": "as", "st": "text", "si": 8, "ei": 13},
+            ),
+            at(2),
+            A,
+            3,
+            "A",
+        ),
+    )
+    (accept,) = of_type(tmp_path, "accept")
+    assert (accept["parent"], accept["kind"], accept["at"]) == ("sug-1", None, at(2))
+    assert accept["actor"]["id"] == "gaia:111"
+    (suggestion,) = of_type(tmp_path, "suggestion")
+    assert (suggestion["kind"], suggestion["text"]) == ("insert", " three")
+    assert of_type(tmp_path, "reject") == []
+    assert clean_copy(tmp_path) == "One two three\n"
+
+
+def test_an_accepted_deletion_is_an_accept_and_its_text_goes(tmp_path):
+    outcome_doc(
+        tmp_path,
+        entry({"ty": "msfd", "si": 4, "ei": 7, "sugid": "sug-1"}, at(1), B, 2, "B"),
+        entry({"ty": "ds", "si": 4, "ei": 7}, at(2), A, 3, "A"),
+    )
+    (accept,) = of_type(tmp_path, "accept")
+    assert accept["parent"] == "sug-1"
+    (suggestion,) = of_type(tmp_path, "suggestion")
+    assert (suggestion["kind"], suggestion["text"]) == ("delete", " two")
+    assert clean_copy(tmp_path) == "One\n"
+
+
+def test_a_suggestion_rejected_by_someone_else_or_withdrawn_by_its_author(tmp_path):
+    outcome_doc(
+        tmp_path,
+        # B suggests " three", and A rejects it.
+        entry({"ty": "iss", "ibi": 8, "s": " three", "sugid": "sug-1"}, at(1), B, 2, "B"),
+        entry({"ty": "dss", "si": 8, "ei": 13}, at(2), A, 3, "A"),
+        # B suggests replacing "two" with "2", then takes it back a letter at a time.
+        entry(
+            several(
+                {"ty": "msfd", "si": 5, "ei": 7, "sugid": "sug-2"},
+                {"ty": "iss", "ibi": 5, "s": "2", "sugid": "sug-2"},
+            ),
+            at(3),
+            B,
+            4,
+            "B",
+        ),
+        entry({"ty": "dss", "si": 5, "ei": 5}, at(4), B, 5, "B"),
+        entry({"ty": "usfd", "sugid": "sug-2", "si": 5, "ei": 7}, at(5), B, 6, "B"),
+    )
+    rejects = {r["parent"]: r for r in of_type(tmp_path, "reject")}
+    assert rejects["sug-1"]["kind"] is None and rejects["sug-1"]["actor"]["id"] == "gaia:111"
+    assert rejects["sug-2"]["kind"] == "withdrawn" and rejects["sug-2"]["at"] == at(5)
+    assert of_type(tmp_path, "accept") == []
+    # The withdrawn suggestion keeps the text it had, not what was left while it shrank.
+    texts = {s["native_id"]: (s["kind"], s["text"]) for s in of_type(tmp_path, "suggestion")}
+    assert texts == {"sug-1": ("insert", " three"), "sug-2": ("replace", "2")}
+    assert clean_copy(tmp_path) == "One two\n"
+
+
+def test_a_replacement_keeps_its_old_and_new_text_apart(tmp_path):
+    # Google gives both halves of a replacement one ID. Accepting it deletes the old text,
+    # and deletes and inserts the new text again.
+    outcome_doc(
+        tmp_path,
+        entry(
+            several(
+                {"ty": "msfd", "si": 5, "ei": 7, "sugid": "sug-1"},
+                {"ty": "iss", "ibi": 5, "s": "2", "sugid": "sug-1"},
+            ),
+            at(1),
+            B,
+            2,
+            "B",
+        ),
+        entry(
+            several(
+                {"ty": "ds", "si": 6, "ei": 8},
+                {"ty": "ds", "si": 5, "ei": 5},
+                {"ty": "is", "ibi": 5, "s": "2"},
+            ),
+            at(2),
+            A,
+            3,
+            "A",
+        ),
+    )
+    (suggestion,) = of_type(tmp_path, "suggestion")
+    assert (suggestion["kind"], suggestion["text"]) == ("replace", "2")
+    assert suggestion["anchor"]["quote"] == "two"
+    (accept,) = of_type(tmp_path, "accept")
+    assert accept["parent"] == "sug-1"
+    assert clean_copy(tmp_path) == "One 2\n"
+
+
+def test_a_suggestion_to_delete_another_suggestion_keeps_both_pending(tmp_path):
+    # B suggests " three", then A suggests deleting it. It's still only a suggestion, so
+    # the text stays out of the versions and the clean copy.
+    outcome_doc(
+        tmp_path,
+        entry({"ty": "iss", "ibi": 8, "s": " three", "sugid": "sug-1"}, at(1), B, 2, "B"),
+        entry({"ty": "msfd", "si": 8, "ei": 13, "sugid": "sug-2"}, at(2), A, 3, "A"),
+    )
+    texts = {s["native_id"]: (s["kind"], s["text"]) for s in of_type(tmp_path, "suggestion")}
+    assert texts == {"sug-1": ("insert", " three"), "sug-2": ("delete", " three")}
+    assert of_type(tmp_path, "accept") == of_type(tmp_path, "reject") == []
+    assert clean_copy(tmp_path) == "One two\n"
+
+
+def test_typing_into_a_suggestion_again_after_deleting_it_all_isnt_an_outcome(tmp_path):
+    # B types "x", deletes it, and types "y" in the same suggestion.
+    outcome_doc(
+        tmp_path,
+        entry({"ty": "iss", "ibi": 8, "s": " x", "sugid": "sug-1"}, at(1), B, 2, "B"),
+        entry({"ty": "dss", "si": 8, "ei": 9}, at(2), B, 3, "B"),
+        entry({"ty": "iss", "ibi": 8, "s": " y", "sugid": "sug-1"}, at(3), B, 4, "B"),
+    )
+    assert of_type(tmp_path, "reject") == []
+    (suggestion,) = of_type(tmp_path, "suggestion")
+    assert suggestion["text"] == " y"
+
+
+def test_taking_back_a_suggestion_to_delete_another_suggestion(tmp_path):
+    # B suggests " three", A suggests deleting it, then A takes that back.
+    outcome_doc(
+        tmp_path,
+        entry({"ty": "iss", "ibi": 8, "s": " three", "sugid": "sug-1"}, at(1), B, 2, "B"),
+        entry({"ty": "msfd", "si": 8, "ei": 13, "sugid": "sug-2"}, at(2), A, 3, "A"),
+        entry({"ty": "usfd", "si": 8, "ei": 13, "sugid": "sug-2"}, at(3), A, 4, "A"),
+    )
+    (reject,) = of_type(tmp_path, "reject")
+    assert (reject["parent"], reject["kind"]) == ("sug-2", "withdrawn")
+    # B's suggestion is still pending, so its text stays out.
+    assert {s["native_id"] for s in of_type(tmp_path, "suggestion")} == {"sug-1", "sug-2"}
+    assert clean_copy(tmp_path) == "One two\n"
+
+
+def test_an_accepted_suggestion_keeps_the_text_as_fixed_before_it_was_accepted(tmp_path):
+    # B suggests " Veery", fixes it to " Very" in a later entry, and A accepts it. B also
+    # suggests deleting " two", takes back the mark on " t", and A accepts that too.
+    outcome_doc(
+        tmp_path,
+        entry({"ty": "iss", "ibi": 8, "s": " Veery", "sugid": "sug-1"}, at(1), B, 2, "B"),
+        entry({"ty": "dss", "si": 10, "ei": 10}, at(2), B, 3, "B"),
+        entry(
+            several({"ty": "ds", "si": 8, "ei": 12}, {"ty": "is", "ibi": 8, "s": " Very"}),
+            at(3),
+            A,
+            4,
+            "A",
+        ),
+        entry({"ty": "msfd", "si": 4, "ei": 7, "sugid": "sug-2"}, at(4), B, 5, "B"),
+        entry({"ty": "usfd", "si": 4, "ei": 5, "sugid": "sug-2"}, at(5), B, 6, "B"),
+        entry({"ty": "ds", "si": 6, "ei": 7}, at(6), A, 7, "A"),
+    )
+    texts = {s["native_id"]: s["text"] for s in of_type(tmp_path, "suggestion")}
+    assert texts == {"sug-1": " Very", "sug-2": "wo"}
+    assert {a["parent"] for a in of_type(tmp_path, "accept")} == {"sug-1", "sug-2"}
+    assert of_type(tmp_path, "reject") == []
+    assert clean_copy(tmp_path) == "One t Very\n"
+
+
+def test_an_op_that_only_names_an_ended_suggestion_doesnt_change_its_outcome(tmp_path):
+    # A accepts B's " three". Later, an op names its ID with no text of its own: a style
+    # op like the `ras` seen on a real doc. The accept must stand.
+    outcome_doc(
+        tmp_path,
+        entry({"ty": "iss", "ibi": 8, "s": " three", "sugid": "sug-1"}, at(1), B, 2, "B"),
+        entry(
+            several({"ty": "ds", "si": 8, "ei": 13}, {"ty": "is", "ibi": 8, "s": " three"}),
+            at(2),
+            A,
+            3,
+            "A",
+        ),
+        entry({"ty": "ras", "si": 8, "ei": 13, "sugid": "sug-1"}, at(3), B, 4, "B"),
+    )
+    (accept,) = of_type(tmp_path, "accept")
+    assert (accept["parent"], accept["at"]) == ("sug-1", at(2))
+    assert of_type(tmp_path, "reject") == []
+
+
+def test_a_suggested_deletion_over_another_ones_mark_is_a_warning(tmp_path):
+    # B suggests deleting "two", then A suggests deleting "One two". B's mark is gone with
+    # no outcome. We don't know whether Google allows this, so it's counted.
+    body = changelog_of(
+        entry({"ty": "is", "ibi": 1, "s": "One two\n"}, at(0), A, 1, "A"),
+        entry({"ty": "msfd", "si": 5, "ei": 7, "sugid": "sug-1"}, at(1), B, 2, "B"),
+        entry({"ty": "msfd", "si": 1, "ei": 7, "sugid": "sug-2"}, at(2), A, 3, "A"),
+    )
+    save_fetch(
+        tmp_path, DOC, "f1", "2026-10-06T09:00:00Z", "browser-file", {"changelog.json": body}
+    )
+    assert build(tmp_path)["replay warnings"] == 1

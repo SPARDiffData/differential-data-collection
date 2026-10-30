@@ -128,14 +128,20 @@ GOOGLE_DOC = re.compile(
 )
 # https://drive.google.com/file/d/<id>/view. A folder (/drive/folders/) is an ordinary link.
 DRIVE_FILE = re.compile(r"https://drive\.google\.com/(?:u/\d+/)?file/d/([A-Za-z0-9_-]{10,})")
+# https://drive.google.com/open?id=<id>, the old shape, which can name a folder as well as a
+# file. It counts as a file, so it can be approved, and the fetcher (#52) refuses a folder.
+DRIVE_OPEN = re.compile(
+    r"https://drive\.google\.com/(?:u/\d+/)?open\?(?:[^#]*&)?id=([A-Za-z0-9_-]{10,})(?=[&#]|$)"
+)
 # Slack's markup, <address> or <address|text>, which also wraps mentions (<@U...>, <#C...>,
 # <!here>). Only these count as markup, so canvas text's own < and >, as in HTML (<br>) or
 # "a < b", can't hide a link between them. An address holds no spaces or line breaks. Canvas
 # text is markdown: [text](address), or ![text](address) for an image. An address can also
-# be written out, and punctuation at its end is the sentence's.
+# be written out, and punctuation at its end is the sentence's. A markdown or written-out
+# address can hold one level of parentheses, as Wikipedia's often do: .../Topic_(field).
 SLACK_LINK = re.compile(r"<((?:[A-Za-z][A-Za-z0-9+.-]*:|[@#!])[^<>|\s]*)(?:\|([^<>\r\n]*))?>")
-MARKDOWN_LINK = re.compile(r"!?\[([^\]\n]*)\]\(([^()\s]+)\)")
-BARE_LINK = re.compile(r"https?://[^\s<>()\[\]|\"'`]+")
+MARKDOWN_LINK = re.compile(r"!?\[([^\]\n]*)\]\(((?:[^()\s]|\([^()\s]*\))+)\)")
+BARE_LINK = re.compile(r"https?://(?:[^\s<>()\[\]|\"'`]|\([^\s<>()\[\]|\"'`]*\))+")
 WEB = ("http://", "https://")
 
 # What every source and every place in the log has, in the order written.
@@ -212,7 +218,7 @@ def source_of(address: str) -> tuple[str, str]:
         return f"slack-file:{match[1]}", ATTACHMENT
     if match := GOOGLE_DOC.match(address):
         return f"google:{match[2]}", GOOGLE_TYPES[match[1]]
-    if match := DRIVE_FILE.match(address):
+    if match := DRIVE_FILE.match(address) or DRIVE_OPEN.match(address):
         return f"google:{match[1]}", GOOGLE_FILE
     return "url:" + address.partition("#")[0], LINK
 
@@ -516,7 +522,9 @@ def load(path: Path) -> dict[str, dict] | None:
             log[entry["key"]] = entry | {
                 "places": {place["place"]: place for place in entry["places"]}
             }
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    # TypeError: a field of the wrong kind that readable() looks up before checking it,
+    # such as "type": [].
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError):
         return None
     return log
 
