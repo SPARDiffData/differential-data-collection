@@ -123,21 +123,91 @@ def slack_export_hooks():
     return {event: (matcher, step, on_failure) for event, matcher, step, on_failure in found}
 
 
-@pytest.mark.parametrize("event, step", [("PreToolUse", "check"), ("PostToolUse", "save")])
-def test_the_hooks_check_and_save_channel_thread_and_canvas_reads_and_the_search_only(event, step):
-    # CON-1: the read is checked before it runs, and the result is checked before it's saved.
+SAVED_READS = [
+    "slack_read_canvas",
+    "slack_read_channel",
+    "slack_read_thread",
+    "slack_search_public_and_private",
+]
+EVERY_SLACK_TOOL = sorted(SLACK_READ_TOOLS + SLACK_WRITE_TOOLS + FUTURE_SLACK_WRITE_TOOLS)
+
+
+@pytest.mark.parametrize(
+    "event, step, tools",
+    [("PreToolUse", "check", EVERY_SLACK_TOOL), ("PostToolUse", "save", SAVED_READS)],
+)
+def test_the_check_sees_every_slack_tool_and_the_save_the_reads_it_saves(event, step, tools):
+    # CON-1: every Slack call is checked before it runs, so check() can stop the ones the
+    # export never makes (#65), and each saved result is checked before it's saved.
     matcher, hook_step, on_failure = slack_export_hooks()[event]
     assert hook_step == step
     # A hook that can't start, crashes or times out blocks the read too. Without this, Claude
     # Code carries on as if the check had passed (needs Claude Code 2.1.295 or later).
     assert on_failure == "block"
-    matched = [t for t in SLACK_READ_TOOLS + SLACK_WRITE_TOOLS if re.fullmatch(matcher, SLACK + t)]
-    assert matched == [
-        "slack_read_canvas",
-        "slack_read_channel",
-        "slack_read_thread",
-        "slack_search_public_and_private",
-    ]
+    matched = [t for t in EVERY_SLACK_TOOL if re.fullmatch(matcher, SLACK + t)]
+    assert matched == tools
+
+
+# CON-1: approvals are typed by a person in a terminal, never by Claude. The consent commands
+# refuse outside a terminal, and these rules also stop Claude's shell tools running them,
+# including through a program that fakes a terminal, such as `script` on macOS and Linux.
+CONSENT_RUNS = [
+    "Bash(uv run diffdata consent review)",
+    "Bash(echo all | script -q /dev/null uv run diffdata consent review)",
+    "Bash(.venv/bin/diffdata consent withdraw)",
+    "Bash(uv run python -m diffdata consent review)",
+    'Bash(uv run python -c "from diffdata.consent import review")',
+    'Bash(uv run python -c "import diffdata.consent.review")',
+    "PowerShell(uv run diffdata consent review)",
+    "PowerShell(.venv\\Scripts\\diffdata.exe consent withdraw)",
+]
+DEVELOPMENT_RUNS = [
+    "Bash(uv run pytest tests/test_consent.py)",
+    "Bash(git add src/diffdata/consent/review.py)",
+    "Bash(uv run diffdata discover slack build)",
+    "PowerShell(uv run pytest -k consent)",
+]
+
+
+@pytest.mark.parametrize("command", CONSENT_RUNS)
+def test_claudes_shell_tools_cant_run_the_consent_commands(command):
+    assert denied(command)
+
+
+@pytest.mark.parametrize("command", DEVELOPMENT_RUNS)
+def test_working_on_the_consent_code_isnt_blocked(command):
+    assert not denied(command)
+
+
+# CON-1: an "approved" line in the approvals file, or a canvas listed in config.toml, opts an
+# item in, so Claude's file tools can't write either one. Edit rules also cover a shell
+# redirect into the file, but not PowerShell or a script that opens the file itself.
+OPT_IN_EDITS = ["Edit(~/.diffdata/approvals.jsonl)", "Edit(~/.diffdata/config.toml)"]
+DEVELOPMENT_EDITS = ["Edit(config.example.toml)", "Edit(src/diffdata/consent/approvals.py)"]
+
+
+@pytest.mark.parametrize("edit", OPT_IN_EDITS)
+def test_claudes_file_tools_cant_write_the_files_that_opt_items_in(edit):
+    assert denied(edit)
+
+
+@pytest.mark.parametrize("edit", DEVELOPMENT_EDITS)
+def test_editing_the_consent_code_and_the_example_config_isnt_blocked(edit):
+    assert not denied(edit)
+
+
+def test_no_deny_rule_names_a_path_claude_code_never_checks():
+    # Claude Code checks a file path against Edit and Read rules only. A Write(...) or
+    # NotebookEdit(...) rule would look like protection and block nothing.
+    assert not [r for r in deny_rules() if re.match(r"(Write|NotebookEdit|MultiEdit)\(", r)]
+
+
+def test_slack_export_never_runs_consent_review():
+    # CON-1: approvals are typed by a person in a terminal. The command pre-approves only its
+    # own export steps, and tells Claude never to run review.
+    assert not [tool for tool in frontmatter_line("allowed-tools") if "consent" in tool]
+    body = (ROOT / ".claude" / "commands" / "slack-export.md").read_text(encoding="utf-8")
+    assert "run `uv run diffdata consent review`. **Never run it yourself.**" in body
 
 
 def test_slack_export_reads_canvases_but_cant_write_them():

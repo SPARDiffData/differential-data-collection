@@ -29,6 +29,7 @@ If a change would break one of these, or you aren't sure, stop and ask the user.
 - Write PR descriptions a non-coder can follow, using the PR template.
 - Don't change `docs/requirements.md` unless the Issue asks. Requirement IDs never change once used.
 - Several sessions can work at once, each in its own folder (a git worktree) on its own branch. Only one session pushes to a branch. Only one `/slack-export` runs at a time, because every session on the machine shares the data folder.
+- Never run `diffdata consent review` or `withdraw`: a person types those in their own terminal. Never change `approvals.jsonl` or `config.toml` in `~/.diffdata/` either, by any route: what they hold is the user's opt-in. `.claude/settings.json` refuses Claude's file tools on those two files, and any shell command whose text names the consent commands, so pass a commit message, PR text or comment that mentions them from a file (`git commit -F`, `gh pr comment --body-file`).
 
 ## Real data in a session
 
@@ -57,8 +58,10 @@ These rules keep real data out of the repo and out of other companies' AI tools.
 
 ```
 src/diffdata/
-  cli.py            the `diffdata` command; `discover slack` and `scrub` are built, the rest are stubs
+  cli.py            the `diffdata` command; `discover slack`, `consent` and `scrub` are built, the rest are stubs
   consent/ discover/ collect/ organize/ scrub/ store/    one package per stage
+  consent/approvals.py   the approvals file next to config.toml (CON-1, CON-3): approved, skipped or withdrawn, per canvas or Google file; it only grows
+  consent/review.py   `diffdata consent review` and `withdraw`: a person approves new items from the reference log, typed in a terminal; they refuse to run anywhere else, as in Claude's tools
   discover/slack_*.py   Slack export (DIS-1): inbox, parser, store and markdown view, and each channel's start point for incremental runs (slack_state.py)
   discover/references.py   the reference log (DIS-2, DIS-3): every source the saved messages and canvases point to, written at the end of the Slack build; it only grows
   collect/slack_canvas.py   Slack canvases (COL-2), read in /slack-export when a files search or a tab notice says they may have changed: saved reads become versions and clean copies

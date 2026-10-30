@@ -342,7 +342,7 @@ def test_a_run_whose_canvases_werent_read_still_moves_the_start_point(
     reads = [channel(slack_response("read_channel.txt")), thread(slack_response("read_thread.txt"))]
     slack_run(config, T0, reads)
     report = build(config)
-    assert "This run saved reads for 0 of 1 listed canvas(es)." in report
+    assert "This run saved reads for 0 of 1 listed or approved canvas(es)." in report
     assert "1 of 1 channel(s) moved" in report
 
 
