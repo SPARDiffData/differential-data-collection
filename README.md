@@ -24,7 +24,7 @@ To configure it, copy `config.example.toml` to `config.toml` in a `.diffdata` fo
 
 For the pilot there's no Slack app: Claude Code reads Slack for you through its Slack connector, as you. Nothing writes to Slack. This repo's `.claude/settings.json` removes every Slack write tool from Claude while it works in this folder. During `/slack-export`, a hook also stops any read of a channel or canvas that the export run doesn't name, any search other than a files or message search of one of the run's channels, and any Slack read the export never makes, such as a file download, before it runs. The run takes its channels from `config.toml`, and its canvases from `config.toml` and your approvals. If that check can't run, the read is stopped too. The check stays on for the rest of that Claude session, so start a new session for each export, and for any other Slack work afterwards. This needs Claude Code 2.1.295 or later (`claude --version`).
 
-1. **Set up `config.toml`** in `~/.diffdata/`. List the channels to export under `slack_channels`; listing a channel is your opt-in. Set `slack_workspace_url` to your workspace's address. Keep `data_dir` outside the repo and outside OneDrive, Dropbox, Google Drive and iCloud: `diffdata` refuses those.
+1. **Set up `config.toml`** in `~/.diffdata/`. List the channels to export under `slack_channels`; listing a channel is your opt-in. Edit the file yourself, in a text editor: this repo's settings stop Claude from changing it. Set `slack_workspace_url` to your workspace's address. Keep `data_dir` outside the repo and outside OneDrive, Dropbox, Google Drive and iCloud: `diffdata` refuses those.
 2. **Try it.** Open Claude Code in the repo folder and type `/slack-export test`. It reads only the 5 newest messages of the first channel, and skips threads.
 3. **Run it.** Type `/slack-export`. Claude reads each channel, searches it for late replies, and reads the threads. A hook saves each result unchanged to your data folder, so Claude never retypes it, and then `diffdata` builds:
    - `slack/export/<channel>/<date>.md`: one readable file per day (UTC), with thread replies under their post
@@ -61,7 +61,11 @@ Links in a canvas (Docs, images, other canvases) stay links: nothing fetches the
 
 ## Approve new canvases and Google files (CON-1)
 
-The build lists every canvas and Google file your saved Slack data links to. Nothing new is collected until you approve it, **typed in your own terminal**. Claude isn't meant to do it for you: the command refuses to run anywhere but a terminal a person types in, and this repo's `.claude/settings.json` stops Claude's shell tools from running it. A program written on purpose to fake typing could still get past both, so `/slack-export` also tells Claude never to run it.
+The build lists every canvas and Google file your saved Slack data links to. Nothing new is collected until you approve it, **typed in your own terminal**. Claude is stopped from answering for you, and told never to touch the files that hold your choices:
+
+- The command refuses to run anywhere but a terminal a person types in, and this repo's `.claude/settings.json` stops Claude's shell tools from running it.
+- The same settings stop Claude's file tools from writing the approvals file or `config.toml`.
+- **These checks have limits.** A program written on purpose to fake typing could get past the first. A PowerShell command, or a script that opens the file itself, could still write either file. So `/slack-export` and the repo's instructions for Claude also tell it never to run the command or change those files.
 
 1. **When the build says items are waiting,** open PowerShell or Terminal in the repo folder and run `uv run diffdata consent review`. It explains what approving means, then shows a lettered list: each item's type, its real link, its title, and where and when it was first shared.
 2. **Answer** `all`, `none`, or `all but b, d` to skip some. Skipped items aren't asked about again. Pressing Enter alone records nothing, and the items wait for next time.

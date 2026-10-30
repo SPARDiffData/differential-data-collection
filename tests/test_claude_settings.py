@@ -179,6 +179,29 @@ def test_working_on_the_consent_code_isnt_blocked(command):
     assert not denied(command)
 
 
+# CON-1: an "approved" line in the approvals file, or a canvas listed in config.toml, opts an
+# item in, so Claude's file tools can't write either one. Edit rules also cover a shell
+# redirect into the file, but not PowerShell or a script that opens the file itself.
+OPT_IN_EDITS = ["Edit(~/.diffdata/approvals.jsonl)", "Edit(~/.diffdata/config.toml)"]
+DEVELOPMENT_EDITS = ["Edit(config.example.toml)", "Edit(src/diffdata/consent/approvals.py)"]
+
+
+@pytest.mark.parametrize("edit", OPT_IN_EDITS)
+def test_claudes_file_tools_cant_write_the_files_that_opt_items_in(edit):
+    assert denied(edit)
+
+
+@pytest.mark.parametrize("edit", DEVELOPMENT_EDITS)
+def test_editing_the_consent_code_and_the_example_config_isnt_blocked(edit):
+    assert not denied(edit)
+
+
+def test_no_deny_rule_names_a_path_claude_code_never_checks():
+    # Claude Code checks a file path against Edit and Read rules only. A Write(...) or
+    # NotebookEdit(...) rule would look like protection and block nothing.
+    assert not [r for r in deny_rules() if re.match(r"(Write|NotebookEdit|MultiEdit)\(", r)]
+
+
 def test_slack_export_never_runs_consent_review():
     # CON-1: approvals are typed by a person in a terminal. The command pre-approves only its
     # own export steps, and tells Claude never to run review.
