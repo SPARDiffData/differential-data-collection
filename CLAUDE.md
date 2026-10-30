@@ -57,11 +57,12 @@ These rules keep real data out of the repo and out of other companies' AI tools.
 
 ```
 src/diffdata/
-  cli.py            the `diffdata` command; `discover slack` is built, the rest are stubs
+  cli.py            the `diffdata` command; `discover slack` and `scrub` are built, the rest are stubs
   consent/ discover/ collect/ organize/ scrub/ store/    one package per stage
   discover/slack_*.py   Slack export (DIS-1): inbox, parser, store and markdown view, and each channel's start point for incremental runs (slack_state.py)
   discover/references.py   the reference log (DIS-2, DIS-3): every source the saved messages and canvases point to, written at the end of the Slack build; it only grows
   collect/slack_canvas.py   Slack canvases (COL-2), read in /slack-export when a files search or a tab notice says they may have changed: saved reads become versions and clean copies
+  scrub/            `diffdata scrub` (SCR-2): scrubbed copies in <data>/scrubbed/, built all or nothing (run.py), with the people list in <data>/private/ (people.py) and the replacements and last check in text.py
   common/           shared pieces; paths.py holds the data folder guards, config.py reads config.toml
   common/documents.py   the shared document format (ORG-2): raw, versions, event log, clean copies
 tests/              pytest; fixtures/ holds synthetic data only
