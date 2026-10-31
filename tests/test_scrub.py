@@ -678,7 +678,8 @@ def test_must_refuse_10_an_update_cut_short_leaves_the_old_list_whole(config, ex
     with pytest.raises(ScrubError):
         scrub(config)
     assert people_file(config).read_bytes() == before
-    assert [path.name for path in people_file(config).parent.iterdir()] == ["people.toml"]
+    private = sorted(path.name for path in people_file(config).parent.iterdir())
+    assert private == ["people-numbers.json", "people.toml"]
 
 
 def test_must_refuse_11_a_failure_partway_leaves_no_scrubbed_folder(config, scrubbed, monkeypatch):
@@ -708,3 +709,136 @@ def test_must_refuse_12_a_second_scrub_stops_while_the_lock_is_taken(config, scr
     with pytest.raises(ScrubError, match="delete private/scrub.lock"):
         scrub(config)
     assert lock.exists() and copies(config) == before
+
+
+# Edge cases from the reviews of PR #79 (Issue #85)
+
+
+@pytest.mark.parametrize(
+    "row, scrubbed",
+    [
+        # A table row typed without spaces, with a known name in both domains.
+        ("|alex@school.example.org|jdoe@school.example.org|", "|[email]|[email]|"),
+        ("alex@school.example.org+jdoe@school.example.org", "[email]+[email]"),
+        ("a@x.example.org|b@y.example.org|c@z.example.org", "[email]|[email]|[email]"),
+        ("alex+tag@school.example.org", "[email]"),  # a + inside one address
+    ],
+)
+def test_emails_joined_by_a_pipe_or_plus_are_each_replaced(row, scrubbed):
+    scrubber = Scrubber(People([Person("[Person 1]", [], ["Kim School"])]))
+    assert scrubber.scrub(row) == (scrubbed, [])
+
+
+def test_many_joins_with_no_email_are_read_quickly():
+    started = time.perf_counter()
+    assert Scrubber(People()).scrub("a+" * 50_000)[0] == "a+" * 50_000
+    assert time.perf_counter() - started < 5
+
+
+@pytest.mark.parametrize(
+    "written, scrubbed",
+    [
+        ("我和Alex明天开会", "我和[Person 1]明天开会"),
+        ("明日はAlexさんと会議", "明日は[Person 1]さんと会議"),
+        ("Alex는 내일 와요", "[Person 1]는 내일 와요"),
+        ("Alexander came", "Alexander came"),  # inside a longer Latin word, it isn't a name
+    ],
+)
+def test_a_latin_name_is_found_in_text_without_spaces(written, scrubbed):
+    scrubber = Scrubber(People([Person("[Person 1]", [], ["Alex Example"])]))
+    assert scrubber.scrub(written) == (scrubbed, [])
+    assert scrubber.leftovers(written) == (["a name"] if scrubbed != written else [])
+
+
+def test_a_name_in_a_script_without_spaces_is_found_only_on_its_own():
+    # Matching 李 inside other Chinese words would hide parts of them. PR 4's spaCy step
+    # reads names in free text.
+    scrubber = Scrubber(People([Person("[Person 1]", [], ["李"])]))
+    assert scrubber.scrub("李 replied.")[0] == "[Person 1] replied."
+    assert scrubber.scrub("我和李明天开会")[0] == "我和李明天开会"
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "Al\u200bex",  # a zero-width space
+        "Al\u00adex",  # a soft hyphen
+        "Al\u200dex",  # a zero-width joiner
+        "A\u200el\u200fex",  # direction marks
+        "Ａｌｅｘ",  # wide letters
+        "𝐀𝐥𝐞𝐱",  # styled letters, from a fancy-text tool
+    ],
+)
+def test_a_name_with_hidden_or_wide_letters_is_replaced_whole(written):
+    scrubber = Scrubber(People([Person("[Person 1]", [], ["Alex Example"])]))
+    assert scrubber.scrub(f"Thanks {written}!") == ("Thanks [Person 1]!", [])
+    assert scrubber.scrub(f"cc @{written} please") == ("cc @[Person 1] please", [])
+    assert scrubber.leftovers(f"Thanks {written}!") == ["a name"]
+    assert scrubber.leftovers(f"cc @{written} please") == ["a name"]
+
+
+def test_hidden_and_wide_letters_outside_a_name_are_kept():
+    scrubber = Scrubber(People([Person("[Person 1]", [], ["Alex Example"])]))
+    # A zero-width space between two words still sets them apart, and wide text that
+    # isn't a name stays as written.
+    written = "Alex\u200bExample says Ｈｉ, and Alex™ too."
+    assert (
+        scrubber.scrub(written)[0] == "[Person 1]\u200b[Person 1] says Ｈｉ, and [Person 1]™ too."
+    )
+
+
+def test_every_invisible_character_is_read_past():
+    invisible = [chr(c) for c in range(sys.maxunicode + 1) if unicodedata.category(chr(c)) == "Cf"]
+    scrubber = Scrubber(People([Person("[Person 1]", [], ["Alex Example"])]))
+    for character in invisible:
+        assert scrubber.scrub(f"Al{character}ex")[0] == "[Person 1]", hex(ord(character))
+
+
+def numbers_file(config) -> Path:
+    return config.data_dir / "private" / "people-numbers.json"
+
+
+def highest(config) -> int:
+    return max(int(p.placeholder[8:-1]) for p in read_people(people_file(config)).people)
+
+
+def test_a_people_list_that_lost_people_since_the_last_scrub_stops_the_scrub(config, scrubbed):
+    text = people_file(config).read_text(encoding="utf-8")
+    cut = text[: text.rindex("[[person]]")]  # the last person is gone, and not_names stays
+    people_file(config).write_text(cut, encoding="utf-8")
+    with pytest.raises(ScrubError, match="may have been cut short") as stop:
+        scrub(config)
+    assert not [value for value in REAL if value in str(stop.value)]
+    assert people_file(config).read_text(encoding="utf-8") == cut
+    assert not (config.data_dir / "scrubbed").exists()
+
+
+def test_someone_removed_on_purpose_keeps_their_entry_and_their_number(config, scrubbed):
+    people = read_people(people_file(config))
+    first, last = people.people[0], people.people[-1]
+    # The last person's Slack ID turns out to be the first person's second account.
+    first.slack_ids += last.slack_ids
+    last.slack_ids, last.names, last.nicknames = [], [], []
+    people_file(config).write_text(render(people), encoding="utf-8")
+    scrub(config)
+    after = read_people(people_file(config))
+    assert last.placeholder in [p.placeholder for p in after.people]
+    assert after.people[0].slack_ids == first.slack_ids
+    assert json.loads(numbers_file(config).read_text(encoding="utf-8")) == {
+        "highest": highest(config)
+    }
+
+
+def test_a_list_from_before_the_record_gets_one_on_the_next_scrub(config, scrubbed):
+    numbers_file(config).unlink()
+    scrub(config)
+    assert json.loads(numbers_file(config).read_text(encoding="utf-8")) == {
+        "highest": highest(config)
+    }
+
+
+def test_a_record_that_cant_be_read_stops_the_scrub(config, scrubbed):
+    numbers_file(config).write_text("not json", encoding="utf-8")
+    with pytest.raises(ScrubError, match="people-numbers.json can't be read"):
+        scrub(config)
+    assert not (config.data_dir / "scrubbed").exists()

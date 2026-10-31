@@ -14,8 +14,16 @@ A name two people share becomes [name]. Later steps slot into the order: secrets
 then meeting links and phone numbers before emails.
 
 Names are compared folded: in any case (WEISS for Weiß), without accents (Jose for José),
-with any spacing, and with a curly apostrophe the same as a straight one. The text is
-written in one Unicode form (NFC), so a name typed two ways is the same text.
+with any spacing, with a curly apostrophe the same as a straight one, and with wide or
+styled letters (Ａｌｅｘ, 𝐀𝐥𝐞𝐱) the same as plain ones. Characters that show as nothing,
+like a zero-width space or a soft hyphen, are read past inside a name, so "Alex" with a
+zero-width space inside is replaced whole. The text is written in one Unicode form (NFC),
+so a name typed two ways is the same text.
+
+A name ends where no letter touches it, but a Latin name ends at any letter that isn't
+Latin, so "Alex" is found in 我和Alex明天开会 or Alex는. A name in a script written without
+spaces isn't found inside other words: 李 in 李明天 is left as written, since matching
+there would hide parts of other words. PR 4's spaCy step reads names in free text.
 
 A person's names are each name and nickname whole, and each part of their Slack names,
 split at spaces, hyphens, dots and underscores: "Anne-Marie" gives "Anne", and "riley.fake"
@@ -40,11 +48,16 @@ from diffdata.scrub.people import PLACEHOLDER, SLACK_ID, People, Person, nfc
 # link's query takes only itself. It starts only where such a run starts, so a long run
 # with no @, like a pasted image, is read once rather than once per letter.
 LOCAL = r"[\w.!#$%'*+^`{|}~-]"
-# A link can spell the @ as %40.
+# A link can spell the @ as %40. Two emails with only a | or + between them, as in a table
+# row typed without spaces, are two: the second can also start right after the first one's
+# domain, when an @ follows within 64 characters, the most an address holds before its @.
 EMAIL = re.compile(
-    rf'(?<!{LOCAL})(?:{LOCAL}+|"[^"\n]+")(?:@|%40)'
+    rf"(?:(?<!{LOCAL})|(?<=[A-Za-z0-9\]][|+])(?={LOCAL}{{1,64}}(?:@|%40)))"
+    rf'(?:{LOCAL}+|"[^"\n]+")(?:@|%40)'
     r"(?:[\w-]+(?:\.[\w-]+)+|\[(?:IPv6:)?[0-9A-Fa-f.:]+\])"
 )
+# An address can start with a | or +, so a row's first | is read as part of it. It's kept.
+JOIN = re.compile(r"[|+]*")
 SHARED = "shared name"
 UNKNOWN_ID = "unknown Slack ID"
 UNKNOWN_MENTION = "unknown mention"
@@ -52,13 +65,32 @@ UNKNOWN_MENTION = "unknown mention"
 KEPT = r"\[(?:Person [1-9][0-9]*|name\??|email)\]"
 # A name starts and ends at a letter's edge: "Alex's" and "alex_2" hold Alex; "Alexa" doesn't.
 BEFORE, AFTER = r"(?<![^\W\d_])", r"(?![^\W\d_])"
+# The Latin letters folded text can hold. A Latin name's edge is any character but these.
+LATIN = (
+    r"a-z\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u02af\u1d00-\u1dbf\u1e00-\u1eff\u2c60-\u2c7f"
+    r"\ua720-\ua7ff\uab30-\uab6f"
+)
+LATIN_BEFORE, LATIN_AFTER = rf"(?<![{LATIN}])", rf"(?![{LATIN}])"
+# Characters that show as nothing: Unicode's format characters (Cf), like a zero-width
+# space, a soft hyphen or a direction mark. Text pasted from web pages or Word can hold them
+# inside a name. A test checks the list against Python's own Unicode data.
+INVISIBLE = (
+    r"\u00ad\u0600-\u0605\u061c\u06dd\u070f\u0890\u0891\u08e2\u180e\u200b-\u200f"
+    r"\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb\U000110bd\U000110cd"
+    r"\U00013430-\U0001343f\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0001"
+    r"\U000e0020-\U000e007f"
+)
+HIDDEN = re.compile(f"[{INVISIBLE}]+")
+# Wide letters from Chinese, Japanese and Korean keyboards (Ａ), narrow ones (ｱ) and styled
+# ones from fancy-text tools (𝐀) are compared as their plain letter. Other compatibility
+# forms keep their shape, so "Alex™" still ends at the ™.
+PLAIN_FORMS = ("<wide>", "<narrow>", "<font>")
 # "@jordan", "@alex.newperson", "cc:@_jordan" or "@Jordan Smith": an @ that doesn't follow
 # a letter, a handle, and up to two more words, since a display name can have spaces. Only
-# words in capitals count, in any alphabet, which `Scrubber.mentions` checks. Emails are
-# gone by then.
-MENTION = re.compile(
-    r"(?<![\w@])@(?P<label>[^\W\d](?:[\w.'’-]*\w)?(?:[ \t]+[^\W\d_](?:[\w.'’-]*\w)?){0,2})"
-)
+# words in capitals count, in any alphabet, which `Scrubber.mentions` checks. A handle reads
+# past invisible characters. Emails are gone by then.
+WORD = rf"(?:[\w.'’{INVISIBLE}-]*\w)?"
+MENTION = re.compile(rf"(?<![\w@])@(?P<label>[^\W\d]{WORD}(?:[ \t]+[^\W\d_]{WORD}){{0,2}})")
 POSSESSIVE = re.compile(r"(?P<owner>.+)(?P<s>['’]s)")
 # Slack's own: <!here>, <!channel> and <!everyone> show as @here, @channel and @everyone.
 NOT_PEOPLE = {"here", "channel", "everyone"}
@@ -77,10 +109,13 @@ class Flag:
 
 
 def fold_letter(letter: str) -> str:
-    """One character as names are compared: no accent, folded case, one apostrophe. It can
-    become none (a lone accent) or more than one (ß becomes ss)."""
+    """One character as names are compared: no accent, folded case, one apostrophe, and a
+    wide or styled letter as its plain one. It can become none (a lone accent) or more than
+    one (ß becomes ss)."""
     if letter.isascii():
         return letter.lower()
+    if unicodedata.decomposition(letter).startswith(PLAIN_FORMS):
+        letter = unicodedata.normalize("NFKC", letter)
     bare = "".join(c for c in unicodedata.normalize("NFD", letter) if not unicodedata.combining(c))
     return bare.casefold().translate(APOSTROPHES)
 
@@ -96,8 +131,8 @@ def folded(text: str) -> tuple[str, list[int]]:
 
 
 def key(text: str) -> str:
-    """How a name is compared: folded, with single spaces."""
-    return " ".join(folded(nfc(text))[0].split())
+    """How a name is compared: folded, with single spaces, and nothing invisible."""
+    return " ".join(HIDDEN.sub("", folded(nfc(text))[0]).split())
 
 
 def initial(part: str) -> bool:
@@ -142,8 +177,18 @@ class Scrubber:
             shared = tuple(sorted(owners[k], key=lambda p: int(PLACEHOLDER.fullmatch(p)[1])))
             self.shared.append(shared if len(shared) > 1 else ())
             self.targets.append("[name]" if len(shared) > 1 else shared[0])
-        groups = "|".join(f"(?P<n{i}>{spelled(k)})" for i, k in enumerate(keys))
-        names = [rf"{BEFORE}(?:{groups}){AFTER}"] if keys else []
+        # The names that start with a Latin letter share one check of the edge before them,
+        # and the rest share another, so a place inside a word is passed over at once rather
+        # than tried against every name. A name fits only the group its first letter is in.
+        names = []
+        for before, latin in ((LATIN_BEFORE, True), (BEFORE, False)):
+            group = [
+                f"(?P<n{i}>{spelled(k)}{after(k)})"
+                for i, k in enumerate(keys)
+                if bool(re.match(f"[{LATIN}]", k)) == latin
+            ]
+            if group:
+                names.append(f"{before}(?:{'|'.join(group)})")
         # Run on folded text, so it finds a name in any case, with or without accents.
         self.names = re.compile("|".join([f"(?P<kept>{KEPT})", *names]), re.IGNORECASE)
 
@@ -162,7 +207,7 @@ class Scrubber:
         return self.targets[found]
 
     def emails(self, text: str, flags: list[Flag]) -> str:
-        return EMAIL.sub("[email]", text)
+        return EMAIL.sub(lambda match: JOIN.match(match[0])[0] + "[email]", text)
 
     def slack_ids(self, text: str, flags: list[Flag]) -> str:
         def replace(match: re.Match) -> str:
@@ -230,5 +275,13 @@ def longest_first(text: str) -> tuple[int, str]:
 
 
 def spelled(name: str) -> str:
-    """A folded name as a pattern: its words, with any spacing between them."""
-    return r"\s+".join(map(re.escape, name.split()))
+    """A folded name as a pattern: its words, with any spacing between them, and anything
+    invisible between their letters."""
+    gap = f"[{INVISIBLE}]*"
+    return r"\s+".join(gap.join(map(re.escape, word)) for word in name.split())
+
+
+def after(name: str) -> str:
+    """The edge after a folded name: any character but a Latin letter, if it ends with one,
+    and otherwise any character but a letter."""
+    return LATIN_AFTER if re.search(f"[{LATIN}]$", name) else AFTER
