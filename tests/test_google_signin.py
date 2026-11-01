@@ -95,8 +95,10 @@ def test_signing_in_saves_the_token_beside_config_and_reports_counts_only(home, 
     assert (request.get_method(), request.host) == ("POST", "oauth2.googleapis.com")
     assert google.form()["code"] == "FAKE-CODE" and google.form()["code_verifier"]
     # The token is never shown (item 10), and neither are the picked docs' IDs.
-    shown = report + capsys.readouterr().out
+    printed = capsys.readouterr()
+    shown = report + printed.out + printed.err
     assert TOKEN not in shown and REFRESH not in shown and "FAKE-DOC-0001" not in shown
+    assert "FAKE-CODE" not in shown  # the local page doesn't log the request
 
 
 @pytest.mark.parametrize("scope", [READONLY, f"{SCOPE} {READONLY}", ""])
@@ -119,6 +121,14 @@ def test_a_cancelled_sign_in_saves_nothing(home):
     google = FakeGoogle(granted())
     with pytest.raises(SignInError, match="cancelled"):
         sign_in(home, opener=google, browser=browser({"error": "access_denied"}), timeout=10)
+    assert google.requests == [] and not (home / "google-token.json").exists()
+
+
+def test_a_sign_in_nobody_finishes_says_it_timed_out_and_saves_nothing(home):
+    # Someone who took too long, or closed the tab, isn't told it looks like an attack.
+    google = FakeGoogle(granted())
+    with pytest.raises(SignInError, match="timed out"):
+        sign_in(home, opener=google, browser=lambda link: None, timeout=0.2)
     assert google.requests == [] and not (home / "google-token.json").exists()
 
 

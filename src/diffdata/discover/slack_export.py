@@ -261,7 +261,9 @@ def read_inbox(channel_dir: Path, channel_id: str, workspace: str) -> tuple[list
 def read_store(path: Path) -> list[dict]:
     if not path.is_file():
         return []
-    lines = path.read_text(encoding="utf-8").splitlines()
+    # Only \n ends a line: splitlines() would also split a message at a character such as
+    # U+2028, which JSON written with ensure_ascii=False keeps as it is.
+    lines = path.read_text(encoding="utf-8").split("\n")
     return [json.loads(line) for line in lines if line.strip()]
 
 

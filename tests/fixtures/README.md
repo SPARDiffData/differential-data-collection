@@ -23,4 +23,8 @@ Made-up Slack connector results, for the DIS-1 export tests:
 - `expected/` holds the markdown view the export should build from them, one file per day. If you change the view on purpose, update these files and check the difference by eye.
 - `references_channel.txt`, `references_thread.txt` and `references_canvas.json` are a channel read, its thread and a canvas read that point to every kind of source the reference log knows: a canvas, Slack files and attachments, Google Docs, Sheets, Slides and Drive files, a Drive folder, ordinary links, a Slack message link, an email link and a canvas-tab notice. `references_expected.md` is the `references.md` the build should write from them. Its IDs start at `F00000010` so they don't clash with the files above.
 
+## `scrub/`
+
+- `read_channel_people.txt` is one more channel read for `#example-channel`, in the same layout as `slack/read_channel.txt`, with the people the scrub tests need: a second Alex, someone only ever mentioned, a name with an initial, an accented name typed two ways (the author's name composed, the one in the text decomposed: an `e` and a separate accent), an unknown `@mention`, an unknown Slack ID, and a first name an outsider shares.
+
 To learn the layout, run a live read and look at it on your own computer, then write the fixture by hand. Never paste a real result into this folder, even for a moment.

@@ -1,8 +1,8 @@
 """The `diffdata` command.
 
-`discover slack` is built (DIS-1), and `collect google-docs sign-in` (COL-4). The other
-subcommands are stubs that name the requirement IDs (docs/requirements.md) their feature
-Issues will build.
+`discover slack` (DIS-1), `collect google-docs sign-in` (COL-4) and `scrub` (SCR-2) are built.
+The other subcommands are stubs that name the requirement IDs (docs/requirements.md) their
+feature Issues will build.
 """
 
 import argparse
@@ -13,15 +13,19 @@ from diffdata.collect import google_signin
 from diffdata.common.config import ConfigError, load_config
 from diffdata.common.paths import UnsafeDataDirError
 from diffdata.discover import slack_export, slack_inbox
+from diffdata.scrub import run as scrub_run
 
 # subcommand -> (help text, requirement IDs it will implement)
 COMMANDS = {
     "discover": ("Find Slack messages and the sources they reference.", "DIS-1, DIS-2, DIS-3"),
     "collect": ("Fetch each referenced source we can access.", "COL-1, COL-2, COL-4, COL-7"),
-    "scrub": ("Redact secrets and personal information.", "SCR-1, SCR-2"),
+    "scrub": (
+        "Make scrubbed copies, with people, Slack IDs and emails replaced.",
+        "SCR-1, SCR-2",
+    ),
     "push": ("Add scrubbed artifacts to central storage.", "STO-1, STO-2, STO-3"),
 }
-STUBS = ("scrub", "push")
+STUBS = ("push",)
 
 SLACK_STEPS = {
     "channels": "List the opted-in channels from config.toml, and which file it read.",
@@ -85,6 +89,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_slack_step(args)
     if args.command == "collect":
         return run_google_docs_step(args)
+    if args.command == "scrub":
+        return run_scrub()
 
     _, requirement_ids = COMMANDS[args.command]
     print(
@@ -125,6 +131,24 @@ def run_google_docs_step(args: argparse.Namespace) -> int:
         report = google_signin.sign_in()
     except google_signin.SignInError as e:
         print(f"diffdata: {e}", file=sys.stderr)
+        return 1
+    print(report)
+    return 0
+
+
+def run_scrub() -> int:
+    try:
+        report = scrub_run.scrub(load_config())
+    except (ConfigError, UnsafeDataDirError, scrub_run.ScrubError) as e:
+        print(f"diffdata scrub: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        # Its message or a traceback could quote collected text, so only its type is shown.
+        print(
+            f"diffdata scrub: stopped on an unexpected {type(e).__name__}, before making any "
+            "copies.",
+            file=sys.stderr,
+        )
         return 1
     print(report)
     return 0

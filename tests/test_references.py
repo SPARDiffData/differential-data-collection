@@ -25,6 +25,7 @@ DOC = "google:FAKE-DOC-0010"
 SHEET = "google:FAKE-SHEET-0010"
 SLIDES = "google:FAKE-SLIDES-0010"
 PAPER = "url:https://example.org/paper?id=7"
+TOPIC = "url:https://example.org/wiki/Topic_(field)"
 SHEET_LINK = "<https://docs.google.com/spreadsheets/d/FAKE-SHEET-0010/edit#gid=0|Budget sheet>"
 PAPER_LINE = "Reading: https://example.org/paper?id=7\\n\\n"  # as the canvas fixture's JSON has it
 EVERY_SOURCE = {
@@ -138,6 +139,15 @@ def states(config) -> dict[str, str]:
             "<https://drive.google.com/file/d/FAKE-FILE-0010/view?usp=sharing>",
             ("google:FAKE-FILE-0010", "google-file"),
         ),
+        # The old shape, which can also name a folder: the fetcher (#52) refuses one.
+        (
+            "<https://drive.google.com/open?id=FAKE-FILE-0011&amp;usp=sharing>",
+            ("google:FAKE-FILE-0011", "google-file"),
+        ),
+        (
+            "<https://drive.google.com/open?usp=sharing&amp;id=FAKE-FILE-0011>",
+            ("google:FAKE-FILE-0011", "google-file"),
+        ),
         # A folder: approving it wouldn't be approving its files.
         (
             "<https://drive.google.com/drive/folders/FAKE-FOLDER-0010>",
@@ -162,6 +172,11 @@ def states(config) -> dict[str, str]:
             (DOC, "google-doc"),
         ),  # canvas text
         ("Reading: https://example.org/paper?id=7.", (PAPER, "link")),  # written out
+        # An address can hold one level of parentheses, but a link in parentheses ends
+        # before the closing one.
+        ("[Topic](https://example.org/wiki/Topic_(field))", (TOPIC, "link")),
+        ("See https://example.org/wiki/Topic_(field).", (TOPIC, "link")),
+        ("(see https://example.org/paper?id=7)", (PAPER, "link")),
     ],
 )
 def test_each_kind_of_link_is_found_and_typed(text, expected):
@@ -331,7 +346,7 @@ def test_a_title_with_a_unicode_line_separator_doesnt_break_the_log(config, expo
             tmp_path, "references_canvas.json", "![chart.png]", "![chart\\u2028one\\u2029.png]"
         )
     )
-    assert log(config)["slack-file:F00000015"]["title"] == "chart one .png"
+    assert log(config)["slack-file:F00000015"]["title"] == "chart\u2028one\u2029.png"
     report = build(config)
     assert "Couldn't read the reference log" not in report and "0 added this build" in report
 
@@ -474,6 +489,7 @@ def test_a_log_diffdata_cant_read_isnt_overwritten(config, export, damage):
         (False, "state", ["new"]),
         (False, "title", {"text": "Draft plan"}),
         (False, "unreachable", 404),
+        (False, "type", []),  # looked up before it's checked to be text
     ],
 )
 def test_a_log_line_with_a_damaged_field_isnt_overwritten(config, export, in_place, field, value):

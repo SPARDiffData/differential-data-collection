@@ -31,7 +31,7 @@ If you think real data, a password or a token got into a commit or a PR, don't t
    cd differential-data-collection
    uv sync
    ```
-6. **Make your private settings files.** Make a folder called `.diffdata` in your home folder (`C:\Users\<you>\.diffdata` on Windows, `~/.diffdata` on a Mac). Copy `config.example.toml` into it as `config.toml`, and copy `.env.example` to `.env` in the repo folder, then fill them in. Keeping `config.toml` outside the repo means tools working in the repo, such as Codex, can't read it. Both copies stay on your computer and are never committed. Keep `data_dir` pointing outside the repo; the tool refuses a folder inside it.
+6. **Make your private settings files.** Make a folder called `.diffdata` in your home folder (`C:\Users\<you>\.diffdata` on Windows, `~/.diffdata` on a Mac). Copy `config.example.toml` into it as `config.toml`, and `.env.example` as `.env`, then fill them in. Keeping them outside the repo means tools working in the repo, such as Codex, can't read them. Both copies stay on your computer and are never committed. If you made a `.env` in the repo folder before, move it there: the tests fail while it's in the repo folder. Keep `data_dir` pointing outside the repo; the tool refuses a folder inside it.
 
 You can also open Claude Code in an empty folder and say: "Walk me through the one-time setup in CONTRIBUTING.md of SPARDiffData/differential-data-collection."
 
@@ -85,16 +85,19 @@ Codex, OpenAI's coding agent, gives a second AI review, from a different company
 
 Whether it runs is agreed when the work starts: Claude says whether it's worth it, and Paul confirms along with the plan.
 
-Codex runs on a separate worktree of the PR branch, so nobody's folder has to switch branches, and at most twice per PR. It never gets the data folder, `config.toml` or `.env`, because it sends what it reads to OpenAI. `.env` moves out of the repo folder, to `~/.diffdata/`, before it holds a real token (Issue #45). Teammates without Codex skip it.
+Codex runs after `/review-pr`, once that review's must-fix items are fixed: on the same commit if there are none, otherwise on the fix commit. That way it doesn't spend a paid run reporting what's already being fixed, and it sees the fixes, which is where new bugs tend to hide.
+
+Codex runs on a separate worktree of the PR branch, so nobody's folder has to switch branches, and at most twice per PR. It never gets the data folder, `config.toml` or `.env`, because it sends what it reads to OpenAI. That's why `config.toml` and `.env` live in `~/.diffdata/`, outside the repo folder. Teammates without Codex skip it.
 
 ### How Claude runs the reviews on Paul's PRs
 
 Since 2026-10-16, the Claude session that wrote the code runs the reviews itself, so Paul doesn't carry results between sessions:
 
-1. Once the PR is open and CI passes, it runs the `pr-reviewer` agent, and Codex if it was agreed, on the same commit. It posts both reviews on the PR word for word, leaving out the agent's notes after the review: its Codex focus line and its list of denied tool calls.
-2. It fixes the must-fix items, Codex's high findings, and small items inside the PR's own lines. Everything else goes into one follow-up Issue for the PR. One "Review fixes" comment lists what was fixed, what was backlogged, and what wasn't changed and why.
-3. It runs `/review-pr` once more on the fix commit. Codex runs at most twice per PR. If must-fix items are still open after that, it stops and asks Paul. The commit Paul merges always gets a final `/review-pr`, even when fixes land after the last round: the limit is on fix rounds and on Codex, not on checking what gets merged.
-4. It gives Paul one line: the verdict, what was fixed and backlogged, and what needs him. Paul does the human checks the PR needs (see [Human review for consent, scrub and store](#human-review-for-consent-scrub-and-store)), then merges.
+1. Once the PR is open and CI passes, it runs the `pr-reviewer` agent. It posts the review on the PR word for word, leaving out the agent's notes after the review: its Codex focus line and its list of denied tool calls.
+2. If Codex was agreed and the review has nothing under Must fix, Codex runs next, on the same commit, with that focus line. Its output is posted word for word too.
+3. It fixes the must-fix items, Codex's high findings, and small items inside the PR's own lines. Everything else goes into one follow-up Issue for the PR. After each round of fixes, a "Review fixes" comment lists what was fixed, what was backlogged, and what wasn't changed and why.
+4. It runs `/review-pr` once more on the fix commit. If Codex was agreed and hasn't run yet, because the first review had must-fix items, Codex runs on the fix commit at the same time. Codex's findings from that run, and the re-review's nice-to-haves, are handled as in step 3, with their own "Review fixes" comment. If the re-review itself still has must-fix items, it stops and asks Paul instead of fixing them. Codex runs at most twice per PR. The commit Paul merges always gets a final `/review-pr`, even when fixes land after the last round: the limit is on fix rounds and on Codex, not on checking what gets merged.
+5. It gives Paul one line: the verdict, what was fixed and backlogged, and what needs him. Paul does the human checks the PR needs (see [Human review for consent, scrub and store](#human-review-for-consent-scrub-and-store)), then merges.
 
 ### Human review for consent, scrub and store
 

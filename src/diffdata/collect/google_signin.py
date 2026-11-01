@@ -164,7 +164,11 @@ def wait_for_answer(server: http.server.HTTPServer, timeout: float) -> dict:
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(b"<h3>diffdata: signed in. You can close this tab.</h3>")
+            # Said before the answer is checked, so it doesn't claim the sign-in worked.
+            self.wfile.write(
+                b"<h3>diffdata got Google's answer. You can close this tab and check the "
+                b"terminal.</h3>"
+            )
 
         def log_message(self, *args):
             pass  # the request line holds the code, so it's never printed
@@ -199,10 +203,12 @@ def sign_in(
         answer = wait_for_answer(server, timeout)
     finally:
         server.server_close()
+    if not answer:  # the tab was closed, or it took longer than WAIT
+        raise SignInError(f"No answer from the sign-in page: it timed out. {SIGN_IN_AGAIN}")
     if answer.get("state") != state:
         raise SignInError("The sign-in page's answer didn't match this sign-in, so it was refused.")
     if "code" not in answer:
-        raise SignInError(f"The sign-in was cancelled or timed out. {SIGN_IN_AGAIN}")
+        raise SignInError(f"The sign-in was cancelled. {SIGN_IN_AGAIN}")
     token = ask_for_token(
         opener,
         {
