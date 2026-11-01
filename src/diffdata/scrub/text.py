@@ -69,9 +69,12 @@ KEPT = r"\[(?:Person [1-9][0-9]*|name\??|email)\]"
 # A name starts and ends at a letter's edge: "Alex's" and "alex_2" hold Alex; "Alexa" doesn't.
 BEFORE, AFTER = r"(?<![^\W\d_])", r"(?![^\W\d_])"
 # The Latin letters folded text can hold. A Latin name's edge is any character but these.
+# Their blocks hold a few symbols too, like U+A789, which looks like a colon. Those are left
+# out, so a name next to one still ends there. A test checks that each of these is a letter.
 LATIN = (
     r"a-z\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u02af\u1d00-\u1dbf\u1e00-\u1eff\u2c60-\u2c7f"
-    r"\ua720-\ua7ff\uab30-\uab6f"
+    r"\ua722-\ua788\ua78b-\ua7ca\ua7d0\ua7d1\ua7d3\ua7d5-\ua7d9\ua7f2-\ua7ff\uab30-\uab5a"
+    r"\uab5c-\uab69"
 )
 LATIN_BEFORE, LATIN_AFTER = rf"(?<![{LATIN}])", rf"(?![{LATIN}])"
 # Characters that show as nothing: Unicode's format characters (Cf), like a zero-width

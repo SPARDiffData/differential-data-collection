@@ -14,9 +14,11 @@ A person can be added by hand too, with a placeholder no one else has.
 
 private/people-numbers.json keeps every number a scrub has given, and numbers only. A list
 missing one may have been cut short or edited by mistake, so the scrub stops: those people
-would come back with new numbers, and without their nicknames. Someone removed on purpose
-keeps their [[person]] entry with just its placeholder, so their number is never given to
-anyone else.
+would come back with new numbers, and without their nicknames. To merge two entries for one
+person, as when they have two Slack accounts, the Slack IDs and names move onto one, and the
+other keeps its [[person]] entry with just its placeholder, so its number is never given to
+anyone else. Anyone whose Slack ID is still in the saved data can't be removed: the next
+scrub would add them back.
 
 Python reads TOML but can't write it, so `render()` writes this one simple shape itself.
 """
@@ -51,8 +53,9 @@ HEADER = """\
 # and at the top:
 #   not_names = ["..."]  words that are names here but ordinary words too, like "Will".
 #                        They're left as written everywhere.
-# Never change or reuse a placeholder. To remove someone, keep their [[person]] entry with
-# just its placeholder: a scrub stops if a number it gave is missing.
+# Never change, reuse or delete a placeholder: a scrub stops if a number it gave is missing.
+# To merge two entries for one person, as when they have two Slack accounts, move the Slack
+# IDs and names onto one, and keep the other [[person]] entry with just its placeholder.
 # Comments you add are lost when a scrub adds someone.
 # To start a new list, delete the whole private/ folder: everyone gets a new number."""
 
@@ -115,8 +118,8 @@ def check_whole(people: People, given: set[int]) -> None:
         raise PeopleError(
             f"{PEOPLE_FILE} has lost [Person {lost[0]}]{more}, given by an earlier scrub, so "
             "it may have been cut short or edited by mistake. Put back a whole copy. If you "
-            "removed someone on purpose, keep their [[person]] entry with just its "
-            "placeholder, so their number is never given to anyone else. To start a new list "
+            "merged two entries for one person, keep the other [[person]] entry with just its "
+            "placeholder, so its number is never given to anyone else. To start a new list "
             "on purpose, delete the whole private/ folder."
         )
 

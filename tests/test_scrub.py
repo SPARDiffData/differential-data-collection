@@ -21,7 +21,7 @@ from diffdata.discover.slack_export import build
 from diffdata.scrub import run as scrub_run
 from diffdata.scrub.people import People, Person, read_people, render
 from diffdata.scrub.run import ScrubError, scrub
-from diffdata.scrub.text import Scrubber
+from diffdata.scrub.text import LATIN, Scrubber
 
 CHANNEL = "C00000001"
 PARENT = "1790864040.000100"
@@ -759,6 +759,16 @@ def test_a_latin_name_is_found_in_text_without_spaces(written, scrubbed):
     assert scrubber.leftovers(written) == (["a name"] if scrubbed != written else [])
 
 
+def test_a_latin_name_ends_at_any_character_that_isnt_a_latin_letter():
+    # So a Latin name's edge is never narrower than any letter's, as it was before.
+    latin = re.compile(f"[{LATIN}]")
+    assert all(chr(c).isalpha() for c in range(sys.maxunicode + 1) if latin.match(chr(c)))
+    scrubber = Scrubber(People([Person("[Person 1]", [], ["Alex Example"])]))
+    # U+A789 looks like a colon, and some tools put it where a colon isn't allowed.
+    assert scrubber.scrub("Alex\ua789 notes") == ("[Person 1]\ua789 notes", [])
+    assert scrubber.leftovers("Alex\ua789 notes") == ["a name"]
+
+
 def test_a_name_in_a_script_without_spaces_is_found_only_on_its_own():
     # Matching 李 inside other Chinese words would hide parts of them. PR 4's spaCy step
     # reads names in free text.
@@ -863,7 +873,7 @@ def test_a_person_deleted_from_the_middle_of_the_list_stops_the_scrub(config, sc
     assert not (config.data_dir / "scrubbed").exists()
 
 
-def test_someone_removed_on_purpose_keeps_their_entry_and_their_number(config, scrubbed):
+def test_two_entries_merged_on_purpose_keep_both_numbers(config, scrubbed):
     people = read_people(people_file(config))
     first, last = people.people[0], people.people[-1]
     # The last person's Slack ID turns out to be the first person's second account.
