@@ -31,7 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from diffdata.common.config import user_config_file
@@ -186,8 +186,10 @@ def sign_in(
     browser: Callable[[str], object] = webbrowser.open,
     timeout: float = WAIT,
     now: Callable[[], float] = time.time,
+    listed: Iterable[str] = (),
 ) -> str:
-    """Sign in through Google's Picker and save the token. Returns a report with counts only."""
+    """Sign in through Google's Picker and save the token. Returns a report with counts only:
+    how many docs were picked, and how many of those `listed` names."""
     home = signin_home(home)
     client = load_client(home)
     verifier = secrets.token_urlsafe(64)
@@ -223,7 +225,11 @@ def sign_in(
     check_scope(token)
     path = save_token(home, token, client, now())
     picked = [i for i in answer.get("picked_file_ids", "").split(",") if i]
-    return f"Signed in. Docs picked: {len(picked)}. The sign-in is saved in {path}."
+    on_list = len(set(picked) & set(listed))
+    return (
+        f"Signed in. Docs picked: {len(picked)}, {on_list} of them listed in google_docs. "
+        f"The sign-in is saved in {path}."
+    )
 
 
 def access_token(

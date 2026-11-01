@@ -86,8 +86,9 @@ def test_the_sign_in_link_asks_for_drive_file_only_and_opens_the_picker():
 
 def test_signing_in_saves_the_token_beside_config_and_reports_counts_only(home, capsys):
     google = FakeGoogle(granted())
-    report = sign_in(home, opener=google, browser=browser(PICKED), timeout=10)
-    assert report.startswith("Signed in. Docs picked: 2.")
+    listed = ["FAKE-DOC-0001", "FAKE-DOC-0009"]
+    report = sign_in(home, opener=google, browser=browser(PICKED), timeout=10, listed=listed)
+    assert report.startswith("Signed in. Docs picked: 2, 1 of them listed in google_docs.")
     saved = json.loads((home / "google-token.json").read_text("utf-8"))
     assert (saved["access_token"], saved["scope"]) == (TOKEN, SCOPE)
     # One request in all: the code swapped for a token, at Google's sign-in server.
@@ -212,10 +213,14 @@ def test_not_signed_in_yet_says_how(home):
         access_token(home)
 
 
-def test_the_command_reports_a_refusal_without_a_traceback(monkeypatch, capsys):
-    def refuse():
+def test_the_command_reports_a_refusal_without_a_traceback(
+    monkeypatch, capsys, tmp_path, no_real_config
+):
+    def refuse(listed):
         raise SignInError("No google-client.json in FAKE-HOME.")
 
+    no_real_config.parent.mkdir(parents=True, exist_ok=True)
+    no_real_config.write_text(f'[local]\ndata_dir = "{tmp_path.as_posix()}"\n', "utf-8")
     monkeypatch.setattr(google_signin, "sign_in", refuse)
     assert cli.main(["collect", "google-docs", "sign-in"]) == 1
     assert capsys.readouterr().err == "diffdata: No google-client.json in FAKE-HOME.\n"

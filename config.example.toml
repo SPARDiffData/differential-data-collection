@@ -11,6 +11,9 @@ slack_channels = ["example-channel"]  # channel names, without the '#'
 slack_workspace_url = "https://example.slack.com"  # your workspace's address, for message links
 slack_canvases = []                   # canvas IDs ("F...") or canvas links; read when they may have changed
 canvas_refresh_days = 7               # read each listed canvas at least this often, changed or not
+# A Google Doc is fetched only if it's listed here and you picked it at sign-in
+# (uv run diffdata collect google-docs sign-in). Remove it and collection stops on the next run.
+google_docs = []                      # Google Doc IDs or links
 folders = []                          # fixed places to check, e.g. ["~/Documents/transcripts"]
 
 [local]
