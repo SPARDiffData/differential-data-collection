@@ -95,9 +95,11 @@ PLAIN_FORMS = ("<wide>", "<narrow>", "<font>")
 # "@jordan", "@alex.newperson", "cc:@_jordan" or "@Jordan Smith": an @ that doesn't follow
 # a letter, a handle, and up to two more words, since a display name can have spaces. Only
 # words in capitals count, in any alphabet, which `Scrubber.mentions` checks. A handle reads
-# past invisible characters. Emails are gone by then.
+# past invisible characters, inside a word and by the space between two. Emails are gone by
+# then.
 WORD = rf"(?:[\w.'’{INVISIBLE}-]*\w)?"
-MENTION = re.compile(rf"(?<![\w@])@(?P<label>[^\W\d]{WORD}(?:[ \t]+[^\W\d_]{WORD}){{0,2}})")
+GAP = rf"[{INVISIBLE}]*[ \t]+[{INVISIBLE}]*"
+MENTION = re.compile(rf"(?<![\w@])@(?P<label>[^\W\d]{WORD}(?:{GAP}[^\W\d_]{WORD}){{0,2}})")
 POSSESSIVE = re.compile(r"(?P<owner>.+)(?P<s>['’]s)")
 # Slack's own: <!here>, <!channel> and <!everyone> show as @here, @channel and @everyone.
 NOT_PEOPLE = {"here", "channel", "everyone"}
@@ -232,7 +234,7 @@ class Scrubber:
             # The words after the handle that start with a capital; the rest is ordinary text.
             words = re.split(r"([ \t]+)", match["label"])
             end = 1
-            while end < len(words) and words[end + 1][0].isupper():
+            while end < len(words) and HIDDEN.sub("", words[end + 1])[0].isupper():
                 end += 2
             label, after = "".join(words[:end]), "".join(words[end:])
             # "@Alex's doc" is Alex, and the 's stays.
@@ -285,9 +287,9 @@ def longest_first(text: str) -> tuple[int, str]:
 
 def spelled(name: str) -> str:
     """A folded name as a pattern: its words, with any spacing between them, and anything
-    invisible between their letters."""
+    invisible between their letters or by that spacing."""
     gap = f"[{INVISIBLE}]*"
-    return r"\s+".join(gap.join(map(re.escape, word)) for word in name.split())
+    return rf"{gap}\s+{gap}".join(gap.join(map(re.escape, word)) for word in name.split())
 
 
 def after(name: str) -> str:

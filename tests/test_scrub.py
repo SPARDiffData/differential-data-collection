@@ -801,6 +801,26 @@ def test_a_name_with_hidden_or_wide_letters_is_replaced_whole(written):
     assert scrubber.leftovers(f"cc @{written} please") == ["a name"]
 
 
+@pytest.mark.parametrize(
+    "gap",
+    [
+        "\u200b ",  # a zero-width space before the space
+        " \u200e",  # a direction mark after it
+        "\u00ad ",  # a soft hyphen
+        "\u200b \u200b",  # on both sides
+        "\ufe0f\t\u2060",  # a tab, between a variation selector and a word joiner
+    ],
+)
+def test_a_two_word_nickname_with_hidden_characters_by_its_space_is_replaced_whole(gap):
+    # A nickname is matched only whole, so nothing else would catch its words.
+    scrubber = Scrubber(People([Person("[Person 1]", [], ["Alex Example"], ["Big Al"])]))
+    written = f"Big{gap}Al"
+    assert scrubber.scrub(f"Thanks {written}!") == ("Thanks [Person 1]!", [])
+    assert scrubber.scrub(f"cc @{written} please") == ("cc @[Person 1] please", [])
+    assert scrubber.leftovers(f"Thanks {written}!") == ["a name"]
+    assert scrubber.leftovers(f"cc @{written} please") == ["a name"]
+
+
 def test_hidden_and_wide_letters_outside_a_name_are_kept():
     scrubber = Scrubber(People([Person("[Person 1]", [], ["Alex Example"])]))
     # A zero-width space between two words still sets them apart, and wide text that
