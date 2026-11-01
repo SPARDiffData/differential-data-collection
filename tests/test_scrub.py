@@ -741,6 +741,7 @@ def test_emails_joined_by_symbols_are_each_replaced(row, scrubbed):
 def test_many_joins_with_no_email_are_read_quickly():
     started = time.perf_counter()
     assert Scrubber(People()).scrub("a+" * 50_000)[0] == "a+" * 50_000
+    assert Scrubber(People()).scrub("x+%40" * 20_000)[0] == "x+%40" * 20_000
     assert time.perf_counter() - started < 5
 
 
@@ -884,6 +885,32 @@ def test_two_entries_merged_on_purpose_keep_both_numbers(config, scrubbed):
     after = read_people(people_file(config))
     assert last.placeholder in [p.placeholder for p in after.people]
     assert after.people[0].slack_ids == first.slack_ids
+    assert json.loads(numbers_file(config).read_text(encoding="utf-8")) == {
+        "numbers": numbers(config)
+    }
+
+
+def test_a_scrub_cut_short_while_saving_the_list_doesnt_stop_the_next(
+    config, scrubbed, monkeypatch
+):
+    # The last person is gone from the list and the record, so the scrub adds them back with
+    # a new number. Saving the list then fails. The record is written after the list, so it
+    # can't hold a number the list doesn't have, and the next scrub runs.
+    text = people_file(config).read_text(encoding="utf-8")
+    people_file(config).write_text(text[: text.rindex("[[person]]")], encoding="utf-8")
+    numbers_file(config).write_text(json.dumps({"numbers": numbers(config)}), encoding="utf-8")
+    write_file = scrub_run.write_file
+
+    def fail_on_the_list(path: Path, text: str) -> None:
+        if path.name == "people.toml":
+            raise OSError("invented: the disk is full")
+        write_file(path, text)
+
+    monkeypatch.setattr(scrub_run, "write_file", fail_on_the_list)
+    with pytest.raises(ScrubError):
+        scrub(config)
+    monkeypatch.undo()
+    scrub(config)
     assert json.loads(numbers_file(config).read_text(encoding="utf-8")) == {
         "numbers": numbers(config)
     }

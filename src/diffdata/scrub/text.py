@@ -51,11 +51,11 @@ LOCAL = r"[\w.!#$%'*+^`{|}~-]"
 SYMBOL = r"[.!#$%'*+^`{|}~-]"
 # A link can spell the @ as %40. Two emails with only symbols between them, as in a table
 # row typed without spaces (a|b) or with bold ones (*a*|*b*), are two: the second can also
-# start after the first symbol that follows the first one's domain, when an @ follows within
-# 64 characters, the most an address holds before its @.
+# start after the first symbol that follows the first one's domain, and run up to 64
+# characters, the most an address holds before its @. The 64 keeps a long run with many
+# such starts, like x+%40x+%40..., quick to read.
 EMAIL = re.compile(
-    rf"(?:(?<!{LOCAL})|(?<=[\w\]]{SYMBOL})(?={LOCAL}{{1,64}}(?:@|%40)))"
-    rf'(?:{LOCAL}+|"[^"\n]+")(?:@|%40)'
+    rf'(?:(?<!{LOCAL})(?:{LOCAL}+|"[^"\n]+")|(?<=[\w\]]{SYMBOL}){LOCAL}{{1,64}})(?:@|%40)'
     r"(?:[\w-]+(?:\.[\w-]+)+|\[(?:IPv6:)?[0-9A-Fa-f.:]+\])"
 )
 # An address can start with symbols, so the ones between two emails are read as part of the
