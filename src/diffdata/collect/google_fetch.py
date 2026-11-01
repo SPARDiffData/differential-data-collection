@@ -18,10 +18,13 @@ What this refuses (from the plan's must-refuse list on #52):
   7   showing doc content: the report gives counts, and a doc's place in the list
   8   a doc the login can't open: its reason is saved (COL-7), and the run carries on
   9   listing or searching the Drive: there's no such request here
-  10  the token going anywhere but Google, by a link or a redirect
+  10  the token going anywhere but www.googleapis.com and docs.google.com, by a link or
+      a redirect. A revision's export redirects to a signed link on
+      *.googleusercontent.com, which is followed without the token
   11  a folder, or anything that isn't a Google Doc: refused from its metadata alone
 """
 
+import http.client
 import json
 import time
 import urllib.error
@@ -54,12 +57,17 @@ COMMENT_FIELDS = (
     f"nextPageToken,comments(id,createdTime,author({PERSON}),content,quotedFileContent,"
     f"replies(id,createdTime,author({PERSON}),content,action))"
 )
-# Google's rate limits and passing errors, which are worth another try.
-RETRY = (429, 502, 503, 504)
+# Google's rate limits and passing errors, which are worth another try. Drive can also
+# answer 403 for a rate limit, which its error body says.
+RETRY = (429, 500, 502, 503, 504)
+RATE_LIMITED = b"ateLimitExceeded"  # rateLimitExceeded and userRateLimitExceeded
 ATTEMPTS = 4
 CHUNK = 2000
 NO_ACCESS, NOT_FOUND = "no access", "not found"
 NOT_A_DOC, A_FOLDER = "not a Google Doc", "a folder"
+NEW, UNCHANGED, NO_CHANGELOG = "new", "unchanged", "no whole changelog"
+# Where a revision's export redirects to, on a signed link. Never sent the token.
+SIGNED_HOST = ".googleusercontent.com"
 
 
 class FetchError(Exception):
@@ -71,12 +79,19 @@ class FetchError(Exception):
 
 
 class SameHostRedirects(urllib.request.HTTPRedirectHandler):
-    """urllib sends a request's headers on to wherever a redirect points, token included,
-    so a redirect is followed only to a host the token may go to."""
+    """urllib sends a request's headers on to wherever a redirect points, token included.
+    So a redirect is followed with the token only to a host the token may go to, without it
+    to Google's signed download host, and not at all anywhere else."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        check_host(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        parts = urllib.parse.urlparse(newurl)
+        signed = parts.scheme == "https" and (parts.hostname or "").endswith(SIGNED_HOST)
+        if not signed:
+            check_host(newurl)
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if signed and new is not None:
+            new.remove_header("Authorization")
+        return new
 
 
 OPENER = urllib.request.build_opener(SameHostRedirects).open
@@ -110,11 +125,12 @@ class Google:
                 with self.opener(request, timeout=120) as response:
                     return response.read().decode("utf-8-sig")
             except urllib.error.HTTPError as e:
-                if e.code in RETRY and attempt < ATTEMPTS - 1:
+                limited = e.code == 403 and RATE_LIMITED in e.read()
+                if (e.code in RETRY or limited) and attempt < ATTEMPTS - 1:
                     self.pause(2**attempt)
                     continue
                 raise FetchError(f"Google answered HTTP {e.code}.", e.code) from None
-            except (urllib.error.URLError, OSError, ValueError) as e:
+            except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as e:
                 raise FetchError(f"Couldn't reach Google ({type(e).__name__}).") from None
         raise FetchError("Google kept asking to wait.")
 
@@ -182,11 +198,11 @@ def whole_changelog(google: Google, doc_id: str, last: int) -> str | None:
 
 
 def last_history(folder: Path) -> str | None:
-    """Drive's modified time when this doc's history was last saved, or None if it wasn't."""
+    """Drive's modified time when this doc's whole changelog was last saved, or None if it
+    never was. A fetch without one doesn't count, so a changelog that failed is tried again:
+    suggestions come only from the changelog, so a finished doc would otherwise lose them."""
     fetches, _, _ = read_fetches(folder)
-    with_history: list[Fetch] = [
-        f for f in fetches if {"changelog.json", "export.txt"} & set(f.files)
-    ]
+    with_history: list[Fetch] = [f for f in fetches if "changelog.json" in f.files]
     for fetch in reversed(with_history):
         try:
             modified = (fetch.json("metadata.json") or {}).get("modifiedTime")
@@ -258,21 +274,26 @@ def fetch_doc(google: Google, data: Path, doc_id: str, now: datetime) -> str:
         files["export.txt"] = google.get(f"{DRIVE}/files/{doc_id}/export", mimeType="text/plain")
         numbers = [int(r["id"]) for r in revisions if str(r.get("id", "")).isdigit()]
         changelog = whole_changelog(google, doc_id, max(numbers, default=1))
-        if changelog is not None:
-            files["changelog.json"] = changelog
-        else:
+        if changelog is None:
             files |= revision_texts(google, revisions)
+            save_fetch(data, doc_id, fetch_id, at, ROUTE, files)
+            return NO_CHANGELOG
+        files["changelog.json"] = changelog
     save_fetch(data, doc_id, fetch_id, at, ROUTE, files)
-    return "new" if changed else "unchanged"
+    return NEW if changed else UNCHANGED
 
 
 def revision_texts(google: Google, revisions: list[dict]) -> dict[str, str]:
-    """Each revision's text, the reader's history when there's no whole changelog."""
+    """Each revision's text that can be had, the reader's history when there's no whole
+    changelog. One that fails doesn't stop the fetch: the export and comments are still saved."""
     found = {}
     for revision in revisions:
         link = (revision.get("exportLinks") or {}).get("text/plain")
         if link and str(revision.get("id", "")).isalnum():
-            found[f"revision-{revision['id']}.txt"] = google.get(link)
+            try:
+                found[f"revision-{revision['id']}.txt"] = google.get(link)
+            except FetchError:
+                continue
     return found
 
 
@@ -301,20 +322,27 @@ def collect(
             outcomes["failed"] += 1
             problems.append(f"Entry {number}: {e} Nothing was saved for it. Run this again.")
             continue
-        except (GoogleDocError, DocumentError):
+        except (GoogleDocError, DocumentError, OSError):
+            # An OSError's message can hold a path, and so the doc's ID, so it isn't shown.
             outcomes["failed"] += 1
             problems.append(f"Entry {number}: it couldn't be saved.")
             continue
         outcomes[outcome] += 1
-        if outcome not in ("new", "unchanged"):
+        if outcome == NO_CHANGELOG:
+            problems.append(
+                f"Entry {number}: {outcome}, so it has no suggestions yet. Its text and comments "
+                "were saved, and the changelog is tried again on the next run."
+            )
+        elif outcome not in (NEW, UNCHANGED):
             problems.append(
                 f"Entry {number}: {outcome}. If it's yours to share, pick it at sign-in."
             )
+    done = (NEW, UNCHANGED, NO_CHANGELOG, "failed")
     report = [
-        f"{len(config.google_docs)} listed doc(s): {outcomes['new']} with new history, "
-        f"{outcomes['unchanged']} unchanged, {outcomes['failed']} failed, "
-        f"{sum(n for k, n in outcomes.items() if k not in ('new', 'unchanged', 'failed'))} "
-        "couldn't be read.",
+        f"{len(config.google_docs)} listed doc(s): {outcomes[NEW]} with new history, "
+        f"{outcomes[UNCHANGED]} unchanged, {outcomes[NO_CHANGELOG]} without a whole changelog, "
+        f"{outcomes['failed']} failed, "
+        f"{sum(n for k, n in outcomes.items() if k not in done)} couldn't be read.",
         *problems,
     ]
     return "\n".join([*report, build_report(config)])

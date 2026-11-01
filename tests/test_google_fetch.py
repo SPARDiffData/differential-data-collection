@@ -1,6 +1,7 @@
 """Fetching the listed Google Docs: what's asked for, what's saved, and what's refused. A fake
 Google that answers every request and records it; no network. Every value is made up."""
 
+import http.client
 import io
 import json
 import urllib.error
@@ -37,6 +38,16 @@ def changelog(last: int = 2, skip: int | None = None) -> str:
     return ")]}'\n" + json.dumps({"chunkedSnapshot": [], "changelog": entries})
 
 
+def slice_of(text: str, query: dict) -> str:
+    """The revisions a changelog request asks for, as Google answers it."""
+    if not text.startswith(")]}'"):
+        return text
+    found = json.loads(text.removeprefix(")]}'\n"))
+    wanted = range(int(query["start"]), int(query["end"]) + 1)
+    found["changelog"] = [e for e in found["changelog"] if e[3] in wanted]
+    return ")]}'\n" + json.dumps(found)
+
+
 class FakeGoogle:
     """Answers like Drive and Docs from `docs`, by doc ID. Records every request. A doc's
     `fail` maps part of a URL to the HTTP status to answer it with."""
@@ -68,7 +79,10 @@ class FakeGoogle:
         self.requests.append(request)
         for part, statuses in self.fail.items():
             if part in url and statuses:
-                raise urllib.error.HTTPError(url, statuses.pop(0), "no", {}, io.BytesIO(b"body"))
+                status, body = statuses.pop(0), b"body"
+                if isinstance(status, tuple):
+                    status, body = status
+                raise urllib.error.HTTPError(url, status, "no", {}, io.BytesIO(body))
         parts = urllib.parse.urlparse(url)
         query = dict(urllib.parse.parse_qsl(parts.query))
         doc_id = parts.path.split("/")[4 if "/drive/" in parts.path else 3]
@@ -76,7 +90,7 @@ class FakeGoogle:
         if doc is None:
             raise urllib.error.HTTPError(url, 404, "no", {}, io.BytesIO(b"body"))
         if "/revisions/load" in parts.path:
-            return io.BytesIO(doc["changelog"].encode("utf-8"))
+            return io.BytesIO(slice_of(doc["changelog"], query).encode("utf-8"))
         if parts.path.endswith("/comments"):
             pages = doc.get("comment_pages")
             if pages:
@@ -133,7 +147,7 @@ def test_a_full_run_saves_the_raw_files_and_builds_the_doc(tmp_path):
     assert "1 listed doc(s): 1 with new history" in report and "Built 1 doc(s)" in report
     folder = document_dir(tmp_path, "google-doc", DOC)
     assert (folder / "events.jsonl").is_file() and (folder / "comments.md").is_file()
-    assert (documents_dir(tmp_path) / "current").glob(f"*{DOC}.md")
+    assert list((documents_dir(tmp_path) / "current").glob(f"*{DOC}.md"))
 
 
 def test_an_unchanged_doc_gets_only_its_metadata_and_comments(tmp_path):
@@ -172,6 +186,74 @@ def test_a_rate_limit_is_tried_again(tmp_path):
     google.fail["/export"] = [429, 503]
     run(tmp_path, google)
     assert "export.txt" in fetches(tmp_path)[0].files
+
+
+def test_a_rate_limit_drive_answers_as_403_isnt_no_access(tmp_path):
+    google = fake()
+    google.fail[f"files/{DOC}"] = [(403, b'{"error": {"reason": "userRateLimitExceeded"}}')]
+    report = run(tmp_path, google)
+    assert "changelog.json" in fetches(tmp_path)[0].files
+    assert "1 with new history" in report
+
+
+def test_a_changelog_too_big_for_one_request_is_joined_from_chunks(tmp_path, monkeypatch):
+    # The one changelog saved that Google didn't send whole, so it's checked by replaying it.
+    monkeypatch.setattr(google_fetch, "CHUNK", 2)
+    google = fake()
+    google.docs[DOC] |= {"changelog": changelog(5), "revisions": [{"id": "5"}]}
+    google.fail["start=1&end=5"] = [400]
+    run(tmp_path, google)
+    (fetch,) = fetches(tmp_path)
+    joined = json.loads(fetch.files["changelog.json"].read_text("utf-8"))
+    assert [entry[3] for entry in joined["changelog"]] == [1, 2, 3, 4, 5]
+    counts = google_doc.build(tmp_path)
+    assert counts["replay warnings"] == 0 and counts["failed"] == 0
+    (clean,) = (documents_dir(tmp_path) / "current").glob(f"*{DOC}.md")
+    assert TEXT[:5] in clean.read_text("utf-8")
+
+
+def test_a_changelog_that_failed_is_tried_again_though_the_doc_hasnt_changed(tmp_path):
+    google = fake()
+    google.fail["/revisions/load"] = [403]
+    report = run(tmp_path, google)
+    assert "changelog.json" not in fetches(tmp_path)[0].files
+    assert "no whole changelog, so it has no suggestions yet" in report
+    report = run(tmp_path, google, now=LATER)
+    assert "changelog.json" in fetches(tmp_path)[-1].files
+    assert "1 with new history" in report
+
+
+def test_a_full_disk_on_one_doc_leaves_the_next_doc_and_the_build_going(tmp_path, monkeypatch):
+    google = fake()
+    google.docs[OTHER] = google.doc()
+    saving = google_fetch.save_fetch
+
+    def full_disk(data, doc_id, *args):
+        if doc_id == DOC:
+            raise OSError(f"No space left, saving {data / doc_id}")
+        return saving(data, doc_id, *args)
+
+    monkeypatch.setattr(google_fetch, "save_fetch", full_disk)
+    report = run(tmp_path, google, DOC, OTHER)
+    assert "Entry 1: it couldn't be saved." in report and DOC not in report
+    assert "changelog.json" in fetches(tmp_path, OTHER)[0].files
+    assert "Built 1 doc(s)" in report
+
+
+def test_a_connection_cut_mid_answer_fails_that_doc_only(tmp_path):
+    google = fake()
+    google.docs[OTHER] = google.doc()
+
+    def cut(request, timeout=None):
+        if f"{DOC}/export" in request.full_url:
+            raise http.client.IncompleteRead(b"partial")
+        return google(request, timeout)
+
+    report = google_fetch.collect(
+        config_for(tmp_path, DOC, OTHER), opener=cut, token=TOKEN, pause=lambda _: None, now=WHEN
+    )
+    assert "Entry 1: Couldn't reach Google (IncompleteRead)." in report
+    assert "changelog.json" in fetches(tmp_path, OTHER)[0].files
 
 
 def test_must_refuse_1_a_picked_doc_that_isnt_listed_gets_no_request(tmp_path):
@@ -216,8 +298,8 @@ def test_must_refuse_6_a_changelog_that_fails_halfway_leaves_no_changelog(tmp_pa
     google.docs[DOC]["revisions"] = [
         {"id": "2", "exportLinks": {"text/plain": link}, "modifiedTime": "2026-10-09T09:00:00Z"}
     ]
-    google.fail["start=1&end=2"] = [500]
-    google.fail["start=2&end=2"] = [500]
+    google.fail["start=1&end=2"] = [400]
+    google.fail["start=2&end=2"] = [400]
     original = FakeGoogle.__call__
 
     def with_export(self, request, timeout=None):
@@ -249,7 +331,7 @@ def test_must_refuse_6_a_changelog_with_revisions_missing_isnt_saved(tmp_path, p
 def test_must_refuse_7_output_never_shows_a_doc_even_when_one_fails(tmp_path, capsys):
     google = fake()
     google.docs[OTHER] = google.doc()
-    google.fail[f"{OTHER}/comments"] = [500]
+    google.fail[f"{OTHER}/comments"] = [400]
     report = run(tmp_path, google, DOC, OTHER, UNLISTED)
     printed = capsys.readouterr()
     shown = report + printed.out + printed.err
@@ -292,7 +374,7 @@ def test_must_refuse_9_only_the_listed_ids_are_ever_asked_for(tmp_path):
 
 def test_must_refuse_10_the_token_never_shows_even_in_a_failing_run(tmp_path, capsys):
     google = fake()
-    google.fail["/comments"] = [500]
+    google.fail["/comments"] = [400]
     report = run(tmp_path, google)
     printed = capsys.readouterr()
     assert TOKEN not in report + printed.out + printed.err
@@ -304,8 +386,11 @@ def test_must_refuse_10_a_link_to_another_host_is_refused_before_its_sent(tmp_pa
     google.docs[DOC]["revisions"] = [{"id": "2", "exportLinks": {"text/plain": link}}]
     google.docs[DOC]["changelog"] = "not json"
     report = run(tmp_path, google)
-    assert "Entry 1:" in report and "somewhere other than Google" in report
     assert not any("example.org" in url for url in google.urls())
+    # That revision's text is left out. What was fetched is still saved, and the run says so.
+    (fetch,) = fetches(tmp_path)
+    assert "export.txt" in fetch.files and "revision-2.txt" not in fetch.files
+    assert "no whole changelog" in report
 
 
 @pytest.mark.parametrize(
@@ -315,6 +400,8 @@ def test_must_refuse_10_a_link_to_another_host_is_refused_before_its_sent(tmp_pa
         "http://www.googleapis.com/x",
         "https://www.googleapis.com.example.org/x",
         "https://evil@example.org/x",
+        "http://doc-00.googleusercontent.com/x",
+        "https://googleusercontent.com.example.org/x",
     ],
 )
 def test_must_refuse_10_a_redirect_to_another_host_is_refused(url):
@@ -322,6 +409,16 @@ def test_must_refuse_10_a_redirect_to_another_host_is_refused(url):
     request = urllib.request.Request("https://www.googleapis.com/drive/v3/files/x")
     with pytest.raises(FetchError, match="somewhere other than Google"):
         handler.redirect_request(request, None, 302, "Found", {}, url)
+
+
+def test_a_revision_exports_signed_link_is_followed_without_the_token():
+    handler = google_fetch.SameHostRedirects()
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    request = urllib.request.Request("https://docs.google.com/feeds/x", headers=headers)
+    url = "https://doc-00-0a-docstext.googleusercontent.com/export/y?sig=FAKE"
+    followed = handler.redirect_request(request, None, 307, "Found", {}, url)
+    assert followed.full_url == url
+    assert not followed.has_header("Authorization")
 
 
 def test_a_redirect_within_google_keeps_going():
@@ -362,7 +459,7 @@ def test_a_sign_in_google_no_longer_accepts_stops_the_run(tmp_path):
 
 def test_a_failure_partway_saves_nothing_for_that_doc(tmp_path):
     google = fake()
-    google.fail["/export"] = [500]
+    google.fail["/export"] = [500] * google_fetch.ATTEMPTS
     report = run(tmp_path, google)
     assert fetches(tmp_path) == []
     assert "Entry 1: Google answered HTTP 500. Nothing was saved for it." in report
