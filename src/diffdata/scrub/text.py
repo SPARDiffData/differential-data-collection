@@ -234,7 +234,8 @@ class Scrubber:
             # The words after the handle that start with a capital; the rest is ordinary text.
             words = re.split(r"([ \t]+)", match["label"])
             end = 1
-            while end < len(words) and HIDDEN.sub("", words[end + 1])[0].isupper():
+            # A Hangul filler is a letter that shows as nothing, so a word can be all hidden.
+            while end < len(words) and HIDDEN.sub("", words[end + 1])[:1].isupper():
                 end += 2
             label, after = "".join(words[:end]), "".join(words[end:])
             # "@Alex's doc" is Alex, and the 's stays.

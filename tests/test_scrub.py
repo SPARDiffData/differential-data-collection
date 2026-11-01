@@ -821,6 +821,21 @@ def test_a_two_word_nickname_with_hidden_characters_by_its_space_is_replaced_who
     assert scrubber.leftovers(f"cc @{written} please") == ["a name"]
 
 
+@pytest.mark.parametrize(
+    "written, scrubbed",
+    [
+        ("cc @Alex \u3164 please", "cc @[Person 1] \u3164 please"),
+        ("@\u3164 \u3164", "@[name?] \u3164"),  # a display name that looks blank
+        ("@Alex\t\u3164", "@[Person 1]\t\u3164"),
+    ],
+)
+def test_a_hangul_filler_after_a_mention_doesnt_stop_the_scrub(written, scrubbed):
+    # A Hangul filler is a letter that shows as nothing, so the word after a mention's space
+    # can be all hidden. It isn't a word in capitals, so the mention ends before it.
+    scrubber = Scrubber(People([Person("[Person 1]", [], ["Alex Example"])]))
+    assert scrubber.scrub(written)[0] == scrubbed
+
+
 def test_hidden_and_wide_letters_outside_a_name_are_kept():
     scrubber = Scrubber(People([Person("[Person 1]", [], ["Alex Example"])]))
     # A zero-width space between two words still sets them apart, and wide text that
