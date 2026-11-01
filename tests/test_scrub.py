@@ -722,9 +722,18 @@ def test_must_refuse_12_a_second_scrub_stops_while_the_lock_is_taken(config, scr
         ("alex@school.example.org+jdoe@school.example.org", "[email]+[email]"),
         ("a@x.example.org|b@y.example.org|c@z.example.org", "[email]|[email]|[email]"),
         ("alex+tag@school.example.org", "[email]"),  # a + inside one address
+        # Other symbols an address can hold: bold emails in a table, braces, a tilde.
+        (
+            "|*alex@school.example.org*|*jdoe@school.example.org*|",
+            "|*[email]*|*[email]*|",
+        ),
+        ("alex@school.example.org}{jdoe@school.example.org", "[email]}{[email]"),
+        ("alex@school.example.org~jdoe@school.example.org", "[email]~[email]"),
+        ("alex@school.example-org-*jdoe@school.example.org", "[email]*[email]"),
+        ("'alex@school.example.org'", "'[email]'"),
     ],
 )
-def test_emails_joined_by_a_pipe_or_plus_are_each_replaced(row, scrubbed):
+def test_emails_joined_by_symbols_are_each_replaced(row, scrubbed):
     scrubber = Scrubber(People([Person("[Person 1]", [], ["Kim School"])]))
     assert scrubber.scrub(row) == (scrubbed, [])
 
@@ -765,6 +774,10 @@ def test_a_name_in_a_script_without_spaces_is_found_only_on_its_own():
         "Al\u00adex",  # a soft hyphen
         "Al\u200dex",  # a zero-width joiner
         "A\u200el\u200fex",  # direction marks
+        "Al\ufe0fex",  # a variation selector
+        "Al\U000e0100ex",  # a variation selector from the supplement
+        "Al\u034fex",  # a combining grapheme joiner
+        "Al\u3164ex",  # a Hangul filler
         "Ａｌｅｘ",  # wide letters
         "𝐀𝐥𝐞𝐱",  # styled letters, from a fancy-text tool
     ],
@@ -787,19 +800,43 @@ def test_hidden_and_wide_letters_outside_a_name_are_kept():
     )
 
 
+# Unicode's default ignorable characters that aren't format characters, from its
+# DerivedCoreProperties.txt, which Python's Unicode data doesn't include.
+IGNORABLE = [
+    0x034F,
+    0x115F,
+    0x1160,
+    0x17B4,
+    0x17B5,
+    *range(0x180B, 0x1810),
+    0x2065,
+    0x3164,
+    *range(0xFE00, 0xFE10),
+    0xFFA0,
+    *range(0xFFF0, 0xFFF9),
+    *range(0xE0000, 0xE1000),
+]
+
+
 def test_every_invisible_character_is_read_past():
-    invisible = [chr(c) for c in range(sys.maxunicode + 1) if unicodedata.category(chr(c)) == "Cf"]
+    formats = [c for c in range(sys.maxunicode + 1) if unicodedata.category(chr(c)) == "Cf"]
     scrubber = Scrubber(People([Person("[Person 1]", [], ["Alex Example"])]))
-    for character in invisible:
+    for character in map(chr, [*formats, *IGNORABLE]):
         assert scrubber.scrub(f"Al{character}ex")[0] == "[Person 1]", hex(ord(character))
+
+
+def test_a_blank_slack_name_made_of_hangul_fillers_matches_nothing():
+    # People use Hangul fillers for a name that looks empty. Read past, it has no letters.
+    scrubber = Scrubber(People([Person("[Person 1]", [], ["\u3164", "Alex \u3164\u3164"])]))
+    assert scrubber.scrub("Hi there, Alex.") == ("Hi there, [Person 1].", [])
 
 
 def numbers_file(config) -> Path:
     return config.data_dir / "private" / "people-numbers.json"
 
 
-def highest(config) -> int:
-    return max(int(p.placeholder[8:-1]) for p in read_people(people_file(config)).people)
+def numbers(config) -> list[int]:
+    return sorted(int(p.placeholder[8:-1]) for p in read_people(people_file(config)).people)
 
 
 def test_a_people_list_that_lost_people_since_the_last_scrub_stops_the_scrub(config, scrubbed):
@@ -810,6 +847,19 @@ def test_a_people_list_that_lost_people_since_the_last_scrub_stops_the_scrub(con
         scrub(config)
     assert not [value for value in REAL if value in str(stop.value)]
     assert people_file(config).read_text(encoding="utf-8") == cut
+    assert not (config.data_dir / "scrubbed").exists()
+
+
+def test_a_person_deleted_from_the_middle_of_the_list_stops_the_scrub(config, scrubbed):
+    text = people_file(config).read_text(encoding="utf-8")
+    first = text.index("\n[[person]]")  # an entry, not the header's comment about them
+    second = text.index("\n[[person]]", first + 1)
+    edited = text[:first] + text[second:]  # a bad edit took the first person
+    people_file(config).write_text(edited, encoding="utf-8")
+    with pytest.raises(ScrubError, match=r"has lost \[Person 1\], given by") as stop:
+        scrub(config)
+    assert not [value for value in REAL if value in str(stop.value)]
+    assert people_file(config).read_text(encoding="utf-8") == edited
     assert not (config.data_dir / "scrubbed").exists()
 
 
@@ -825,7 +875,7 @@ def test_someone_removed_on_purpose_keeps_their_entry_and_their_number(config, s
     assert last.placeholder in [p.placeholder for p in after.people]
     assert after.people[0].slack_ids == first.slack_ids
     assert json.loads(numbers_file(config).read_text(encoding="utf-8")) == {
-        "highest": highest(config)
+        "numbers": numbers(config)
     }
 
 
@@ -833,12 +883,15 @@ def test_a_list_from_before_the_record_gets_one_on_the_next_scrub(config, scrubb
     numbers_file(config).unlink()
     scrub(config)
     assert json.loads(numbers_file(config).read_text(encoding="utf-8")) == {
-        "highest": highest(config)
+        "numbers": numbers(config)
     }
 
 
-def test_a_record_that_cant_be_read_stops_the_scrub(config, scrubbed):
-    numbers_file(config).write_text("not json", encoding="utf-8")
+@pytest.mark.parametrize(
+    "record", ["not json", '{"highest": 3}', '{"numbers": [1, "2"]}', '{"numbers": [true]}']
+)
+def test_a_record_that_cant_be_read_stops_the_scrub(config, scrubbed, record):
+    numbers_file(config).write_text(record, encoding="utf-8")
     with pytest.raises(ScrubError, match="people-numbers.json can't be read"):
         scrub(config)
     assert not (config.data_dir / "scrubbed").exists()

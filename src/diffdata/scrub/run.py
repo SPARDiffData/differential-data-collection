@@ -6,7 +6,7 @@ Under the data folder:
   scrubbed/documents/current/slack-canvas_<canvas ID>.md
   scrubbed/manifest.json   each copy with its hash and checks, and the copies held back
   private/people.toml      who's who (people.py), never in a scrubbed copy
-  private/people-numbers.json  the highest [Person N] given, to catch a list cut short
+  private/people-numbers.json  every [Person N] given, to catch someone lost from the list
   private/flags.md         what was hidden without knowing who it is, as written
   private/scrub.lock       while a scrub runs, so two can't run at once
 
@@ -46,7 +46,7 @@ from diffdata.scrub.people import (
     PeopleError,
     add_seen,
     check_whole,
-    highest,
+    numbers,
     read_given,
     read_people,
     render,
@@ -182,10 +182,10 @@ def make_copies(config: Config, earlier: bool) -> str:
     new = add_seen(people, seen_in_slack(data))
     if render(people) != before or not people_file.is_file():
         write_file(people_file, render(people))
-    # After the list, so a run cut short between the two never leaves a number the list
-    # doesn't reach.
-    if highest(people) != given or not numbers_file.is_file():
-        write_file(numbers_file, json.dumps({"highest": highest(people)}) + "\n")
+    # After the list, so a run cut short between the two never records a number the list
+    # doesn't have.
+    if set(numbers(people)) != given or not numbers_file.is_file():
+        write_file(numbers_file, json.dumps({"numbers": numbers(people)}) + "\n")
 
     scrubber = Scrubber(people)
     building = data / IN_PROGRESS

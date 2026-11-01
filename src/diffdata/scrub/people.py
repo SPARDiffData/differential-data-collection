@@ -12,10 +12,11 @@ The list is meant to be edited by hand:
              as written everywhere.
 A person can be added by hand too, with a placeholder no one else has.
 
-private/people-numbers.json keeps the highest number any scrub has given. A list that no
-longer reaches it may have lost its last people, so the scrub stops: they would come back
-with new numbers, and without their nicknames. Someone removed on purpose keeps their
-[[person]] entry with just its placeholder, so their number is never given to anyone else.
+private/people-numbers.json keeps every number a scrub has given, and numbers only. A list
+missing one may have been cut short or edited by mistake, so the scrub stops: those people
+would come back with new numbers, and without their nicknames. Someone removed on purpose
+keeps their [[person]] entry with just its placeholder, so their number is never given to
+anyone else.
 
 Python reads TOML but can't write it, so `render()` writes this one simple shape itself.
 """
@@ -50,7 +51,9 @@ HEADER = """\
 # and at the top:
 #   not_names = ["..."]  words that are names here but ordinary words too, like "Will".
 #                        They're left as written everywhere.
-# Never change or reuse a placeholder. Comments you add are lost when a scrub adds someone.
+# Never change or reuse a placeholder. To remove someone, keep their [[person]] entry with
+# just its placeholder: a scrub stops if a number it gave is missing.
+# Comments you add are lost when a scrub adds someone.
 # To start a new list, delete the whole private/ folder: everyone gets a new number."""
 
 
@@ -81,36 +84,40 @@ def number(person: Person) -> int:
     return int(PLACEHOLDER.fullmatch(person.placeholder)[1])
 
 
-def highest(people: People) -> int:
-    return max(map(number, people.people), default=0)
+def numbers(people: People) -> list[int]:
+    return sorted(map(number, people.people))
 
 
-def read_given(path: Path) -> int:
-    """The highest number any scrub has given, from NUMBERS_FILE: 0 if there's none yet, as
+def read_given(path: Path) -> set[int]:
+    """Every number a scrub has given, from NUMBERS_FILE: none if there's no file yet, as
     before the first scrub or with a list from before the file existed."""
     if not path.exists():
-        return 0
+        return set()
     try:
-        given = json.loads(path.read_bytes().decode("utf-8"))["highest"]
+        given = json.loads(path.read_bytes().decode("utf-8"))["numbers"]
     except (UnicodeDecodeError, ValueError, KeyError, TypeError):
         given = None
-    if not isinstance(given, int) or isinstance(given, bool) or given < 0:
+    if not isinstance(given, list) or not all(
+        isinstance(n, int) and not isinstance(n, bool) and n > 0 for n in given
+    ):
         raise PeopleError(
             f"{NUMBERS_FILE} can't be read. If {PEOPLE_FILE} is whole, delete "
             f"{NUMBERS_FILE} and the next scrub makes a new one."
         )
-    return given
+    return set(given)
 
 
-def check_whole(people: People, given: int) -> None:
-    """Stop if the list no longer reaches the highest number a scrub has given."""
-    if highest(people) < given:
+def check_whole(people: People, given: set[int]) -> None:
+    """Stop if the list has lost a number a scrub has given."""
+    lost = sorted(given - set(numbers(people)))
+    if lost:
+        more = f" and {len(lost) - 1} more" if len(lost) > 1 else ""
         raise PeopleError(
-            f"{PEOPLE_FILE} has no [Person {given}], the highest number an earlier scrub "
-            "gave, so it may have been cut short. Put back a whole copy. If you removed "
-            "someone on purpose, keep their [[person]] entry with just its placeholder, so "
-            "their number is never given to anyone else. To start a new list on purpose, "
-            "delete the whole private/ folder."
+            f"{PEOPLE_FILE} has lost [Person {lost[0]}]{more}, given by an earlier scrub, so "
+            "it may have been cut short or edited by mistake. Put back a whole copy. If you "
+            "removed someone on purpose, keep their [[person]] entry with just its "
+            "placeholder, so their number is never given to anyone else. To start a new list "
+            "on purpose, delete the whole private/ folder."
         )
 
 

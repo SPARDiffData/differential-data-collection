@@ -16,9 +16,9 @@ then meeting links and phone numbers before emails.
 Names are compared folded: in any case (WEISS for Weiß), without accents (Jose for José),
 with any spacing, with a curly apostrophe the same as a straight one, and with wide or
 styled letters (Ａｌｅｘ, 𝐀𝐥𝐞𝐱) the same as plain ones. Characters that show as nothing,
-like a zero-width space or a soft hyphen, are read past inside a name, so "Alex" with a
-zero-width space inside is replaced whole. The text is written in one Unicode form (NFC),
-so a name typed two ways is the same text.
+like a zero-width space, a soft hyphen or a variation selector, are read past inside a
+name, so "Alex" with a zero-width space inside is replaced whole. The text is written in
+one Unicode form (NFC), so a name typed two ways is the same text.
 
 A name ends where no letter touches it, but a Latin name ends at any letter that isn't
 Latin, so "Alex" is found in 我和Alex明天开会 or Alex는. A name in a script written without
@@ -48,16 +48,19 @@ from diffdata.scrub.people import PLACEHOLDER, SLACK_ID, People, Person, nfc
 # link's query takes only itself. It starts only where such a run starts, so a long run
 # with no @, like a pasted image, is read once rather than once per letter.
 LOCAL = r"[\w.!#$%'*+^`{|}~-]"
-# A link can spell the @ as %40. Two emails with only a | or + between them, as in a table
-# row typed without spaces, are two: the second can also start right after the first one's
-# domain, when an @ follows within 64 characters, the most an address holds before its @.
+SYMBOL = r"[.!#$%'*+^`{|}~-]"
+# A link can spell the @ as %40. Two emails with only symbols between them, as in a table
+# row typed without spaces (a|b) or with bold ones (*a*|*b*), are two: the second can also
+# start after the first symbol that follows the first one's domain, when an @ follows within
+# 64 characters, the most an address holds before its @.
 EMAIL = re.compile(
-    rf"(?:(?<!{LOCAL})|(?<=[A-Za-z0-9\]][|+])(?={LOCAL}{{1,64}}(?:@|%40)))"
+    rf"(?:(?<!{LOCAL})|(?<=[\w\]]{SYMBOL})(?={LOCAL}{{1,64}}(?:@|%40)))"
     rf'(?:{LOCAL}+|"[^"\n]+")(?:@|%40)'
     r"(?:[\w-]+(?:\.[\w-]+)+|\[(?:IPv6:)?[0-9A-Fa-f.:]+\])"
 )
-# An address can start with a | or +, so a row's first | is read as part of it. It's kept.
-JOIN = re.compile(r"[|+]*")
+# An address can start with symbols, so the ones between two emails are read as part of the
+# second. They're kept, so a row keeps its | and *.
+JOIN = re.compile(f"{SYMBOL}*")
 SHARED = "shared name"
 UNKNOWN_ID = "unknown Slack ID"
 UNKNOWN_MENTION = "unknown mention"
@@ -72,13 +75,14 @@ LATIN = (
 )
 LATIN_BEFORE, LATIN_AFTER = rf"(?<![{LATIN}])", rf"(?![{LATIN}])"
 # Characters that show as nothing: Unicode's format characters (Cf), like a zero-width
-# space, a soft hyphen or a direction mark. Text pasted from web pages or Word can hold them
-# inside a name. A test checks the list against Python's own Unicode data.
+# space, a soft hyphen or a direction mark, and the rest of what it calls default ignorable,
+# like a variation selector or a Hangul filler. Text pasted from web pages or Word can hold
+# them inside a name. A test checks the list against Python's own Unicode data.
 INVISIBLE = (
-    r"\u00ad\u0600-\u0605\u061c\u06dd\u070f\u0890\u0891\u08e2\u180e\u200b-\u200f"
-    r"\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb\U000110bd\U000110cd"
-    r"\U00013430-\U0001343f\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0001"
-    r"\U000e0020-\U000e007f"
+    r"\u00ad\u034f\u0600-\u0605\u061c\u06dd\u070f\u0890\u0891\u08e2\u115f\u1160\u17b4\u17b5"
+    r"\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0"
+    r"\ufff0-\ufffb\U000110bd\U000110cd\U00013430-\U0001343f\U0001bca0-\U0001bca3"
+    r"\U0001d173-\U0001d17a\U000e0000-\U000e0fff"
 )
 HIDDEN = re.compile(f"[{INVISIBLE}]+")
 # Wide letters from Chinese, Japanese and Korean keyboards (Ａ), narrow ones (ｱ) and styled
@@ -137,7 +141,7 @@ def key(text: str) -> str:
 
 def initial(part: str) -> bool:
     """One letter of an alphabet with capitals, like "J." or "J"."""
-    letters = [c for c in part if c.isalpha()]
+    letters = [c for c in HIDDEN.sub("", part) if c.isalpha()]
     return len(letters) == 1 and letters[0].lower() != letters[0].upper()
 
 
@@ -149,7 +153,9 @@ def variants(person: Person) -> set[str]:
         for part in re.split(r"[\s._-]+", name)
     }
     found = {*person.names, *person.nicknames} | {part for part in parts if not initial(part)}
-    return {variant for variant in found if any(c.isalpha() for c in variant)}
+    # A Hangul filler is a letter that shows as nothing, so a "blank" Slack name made of
+    # them has no letter once compared, and would otherwise match everywhere.
+    return {variant for variant in found if any(c.isalpha() for c in key(variant))}
 
 
 class Scrubber:
