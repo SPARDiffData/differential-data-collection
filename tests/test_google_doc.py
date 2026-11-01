@@ -1046,3 +1046,55 @@ def test_accepting_a_long_suggested_deletion_keeps_the_old_text_in_a_version(tmp
     assert [text for _, text in found] == [paragraph + "Rest.", "Rest."]
     (accept,) = of_type(tmp_path, "accept")
     assert accept["parent"] == "sug-1"
+
+
+def test_a_long_deletion_inside_an_entry_cuts_the_version_before_the_entry(tmp_path):
+    # One entry adds "!" and deletes the paragraph, and it's the doc's last edit. The long
+    # deletion isn't the entry's first op, but the entry stays whole: the version before it
+    # has neither change, and the latest text is what the doc says now.
+    paragraph = "An argument someone wrote and then thought better of. " * 3  # 162 characters
+    text = paragraph + "Rest."
+    found = versions_of(
+        tmp_path,
+        typed(1, text, 0, A, "A", 1),
+        entry(
+            several(
+                {"ty": "is", "ibi": len(text) + 1, "s": "!"},
+                {"ty": "ds", "si": 1, "ei": len(paragraph)},
+            ),
+            minute(1),
+            A,
+            2,
+            "A",
+        ),
+    )
+    assert [t for _, t in found] == [text, "Rest.!"]
+    assert clean_copy(tmp_path) == "Rest.!"
+    assert [v["native_id"] for v in of_type(tmp_path, "version")] == ["rev-1", "rev-2"]
+
+
+def test_a_paragraph_deleted_in_pieces_in_one_entry_counts_as_one_deletion(tmp_path):
+    # Accepting several suggestions at once could look like this: no one deletion reaches
+    # the limit, but the entry's do together.
+    text = "x" * 60 + "y" * 60 + "Rest."
+    found = versions_of(
+        tmp_path,
+        typed(1, text, 0, A, "A", 1),
+        entry(
+            several({"ty": "ds", "si": 61, "ei": 120}, {"ty": "ds", "si": 1, "ei": 60}),
+            minute(1),
+            A,
+            2,
+            "A",
+        ),
+    )
+    assert [t for _, t in found] == [text, "Rest."]
+
+
+def test_small_deletions_in_separate_entries_dont_add_up(tmp_path):
+    # Like a held Backspace, if Google records it this way: a limit of the per-entry rule.
+    deletions = [
+        entry({"ty": "ds", "si": 1, "ei": 30}, minute(0.1 * n), A, n + 1, "A") for n in range(1, 5)
+    ]
+    found = versions_of(tmp_path, typed(1, "x" * 150, 0, A, "A", 1), *deletions)
+    assert [t for _, t in found] == ["x" * 30]
