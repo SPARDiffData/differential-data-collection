@@ -151,6 +151,8 @@ def test_the_check_sees_every_slack_tool_and_the_save_the_reads_it_saves(event, 
 # CON-1: approvals are typed by a person in a terminal, never by Claude. The consent commands
 # refuse outside a terminal, and these rules also stop Claude's shell tools running them,
 # including through a program that fakes a terminal, such as `script` on macOS and Linux.
+# They also stop a one-line command importing the code, since approvals.record() has no
+# terminal check of its own. A script file Claude wrote first still gets past them.
 CONSENT_RUNS = [
     "Bash(uv run diffdata consent review)",
     "Bash(echo all | script -q /dev/null uv run diffdata consent review)",
@@ -158,12 +160,18 @@ CONSENT_RUNS = [
     "Bash(uv run python -m diffdata consent review)",
     'Bash(uv run python -c "from diffdata.consent import review")',
     'Bash(uv run python -c "import diffdata.consent.review")',
+    'Bash(uv run python -c "from diffdata.consent import approvals")',
+    'Bash(uv run python -c "from diffdata.consent.approvals import record")',
+    'Bash(uv run python -c "import diffdata.consent.approvals")',
     "PowerShell(uv run diffdata consent review)",
     "PowerShell(.venv\\Scripts\\diffdata.exe consent withdraw)",
+    'PowerShell(uv run python -c "from diffdata.consent import approvals")',
+    'PowerShell(uv run python -c "from diffdata.consent.approvals import record")',
 ]
 DEVELOPMENT_RUNS = [
     "Bash(uv run pytest tests/test_consent.py)",
     "Bash(git add src/diffdata/consent/review.py)",
+    "Bash(git add src/diffdata/consent/approvals.py)",
     "Bash(uv run diffdata discover slack build)",
     "PowerShell(uv run pytest -k consent)",
 ]

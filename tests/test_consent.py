@@ -277,6 +277,22 @@ def test_review_and_withdraw_refuse_when_they_arent_in_a_terminal(config, export
     assert approvals_file(config).read_bytes() == before
 
 
+@pytest.mark.parametrize("step", ["review", "withdraw"])
+@pytest.mark.parametrize("real", ["input", "output"])
+def test_a_terminal_on_one_side_only_isnt_enough(config, export, monkeypatch, capsys, step, real):
+    # Must refuse 1: input and output must both be a terminal. One alone can mean a program is
+    # typing the answer, or that nobody can read the list.
+    export()
+    approvals.record(approvals_file(config), [(TAB, "approved")], "all", T0)
+    before = approvals_file(config).read_bytes()
+    monkeypatch.setattr(review, "is_terminal", lambda s: isinstance(s, Typed) == (real == "input"))
+    code, screen = answer(config, "all\n", step)
+    assert code == 1 and screen == ""
+    err = capsys.readouterr().err
+    assert f"diffdata consent {step} only runs in a terminal you type in" in err
+    assert approvals_file(config).read_bytes() == before
+
+
 def test_the_null_device_isnt_a_terminal():
     # On Windows, isatty() is true for NUL, where Claude Code's tools point a command's input.
     with open(os.devnull) as null:
@@ -344,6 +360,26 @@ def test_a_withdrawal_while_the_withdraw_list_is_shown_records_nothing(
     assert code == 1
     assert "Something changed while the list was shown" in capsys.readouterr().err
     assert list(decisions(config).values()).count("withdrawn") == 1
+
+
+@pytest.mark.parametrize("step", ["review", "withdraw"])
+def test_a_config_change_while_the_list_is_shown_records_nothing(
+    config, export, terminal, capsys, step
+):
+    # Must refuse 3: a canvas listed or unlisted changes the list, and the run keeps the
+    # settings it loaded at the start, so only the file on disk can show the change.
+    export()
+    if step == "withdraw":
+        answer(config, "all\n")
+    before = decisions(config)
+
+    def edit_the_config():
+        config.path.write_text("# synthetic: edited while the list is shown\n")
+
+    code, _ = answer(config, "all\n", step, meanwhile=edit_the_config)
+    assert code == 1
+    assert "Something changed while the list was shown" in capsys.readouterr().err
+    assert decisions(config) == before
 
 
 @pytest.mark.parametrize("step", ["review", "withdraw"])
@@ -671,6 +707,38 @@ def test_with_an_unreadable_approvals_file_the_export_reads_config_canvases_only
     built = build(config)
     assert "Couldn't read the approvals file next to config.toml" in built
     assert "waiting for review" not in built
+
+
+def damage_the_reference_log(config):
+    path = config.data_dir / "references" / "references.jsonl"
+    assert path.exists()
+    path.write_text("not JSON\n", encoding="utf-8")
+
+
+def test_review_refuses_a_reference_log_diffdata_cant_read(config, export, terminal, capsys):
+    # "Nothing is waiting" would hide what's new, so it refuses instead.
+    export()
+    damage_the_reference_log(config)
+    code, screen = answer(config, "all\n")
+    assert code == 1 and screen == ""
+    err = capsys.readouterr().err
+    assert "Couldn't read the reference log" in err
+    assert not any(private in err for private in PRIVATE)
+    assert not approvals_file(config).exists()
+
+
+def test_withdraw_works_when_diffdata_cant_read_the_reference_log(config, export, terminal):
+    # CON-3: a damaged log must not stop someone withdrawing, which only ever collects less.
+    # The log only describes the items, so they show by ID.
+    export()
+    answer(config, "all\n")
+    damage_the_reference_log(config)
+    code, screen = answer(config, "all\n", "withdraw")
+    assert code == 0
+    assert "Withdrawn: 6." in screen
+    assert len(items(screen)) == 6
+    assert TAB.removeprefix("slack-file:") in screen
+    assert set(decisions(config).values()) == {"withdrawn"}
 
 
 def test_the_latest_decision_wins(tmp_path):
