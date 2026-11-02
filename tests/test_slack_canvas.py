@@ -268,7 +268,7 @@ def test_the_report_counts_the_listed_canvases_this_run_saved(
             slack_hook, canvas_read().replace(CANVAS, canvas), canvas=canvas, call=f"toolu_c{i}"
         )
         assert save(config, payload, now=T0) == 0
-    assert f"This run saved reads for {read} of 2 listed canvas(es)." in build(config)
+    assert f"This run saved reads for {read} of 2 listed or approved canvas(es)." in build(config)
 
 
 def test_a_canvas_with_an_unreadable_read_is_left_as_it_was(config, export_run):
@@ -571,14 +571,14 @@ def due_run(config, slack_response, slack_hook):
 def test_an_unchanged_canvas_is_skipped(due_run):
     due, built = due_run(T0, {CANVAS: "12.3 KB"})
     assert due == (
-        "1 of 1 listed canvas(es) to read.\n"
+        "1 of 1 listed or approved canvas(es) to read.\n"
         "Why (a canvas can have more than one reason): 1 never read.\n"
         f"Canvases to read: {CANVAS}"
     )
-    assert "This run saved reads for 1 of 1 due canvas(es), 1 listed." in built
+    assert "This run saved reads for 1 of 1 due canvas(es), 1 listed or approved." in built
     due, built = due_run(T0 + timedelta(hours=1), {CANVAS: "12.3 KB"})
-    assert due == "0 of 1 listed canvas(es) to read.\nNo canvases to read."
-    assert "This run saved reads for 0 of 0 due canvas(es), 1 listed." in built
+    assert due == "0 of 1 listed or approved canvas(es) to read.\nNo canvases to read."
+    assert "This run saved reads for 0 of 0 due canvas(es), 1 listed or approved." in built
 
 
 def test_canvases_due_keeps_its_list_in_the_run(config, due_run):
@@ -691,7 +691,7 @@ def test_a_full_run_reads_every_listed_canvas(config, due_run, slack_hook, slack
     assert save(config, search, now=when + timedelta(minutes=1)) == 0
     due = canvases_due(config, now=when + timedelta(minutes=2))
     assert due == (
-        "1 of 1 listed canvas(es) to read.\n"
+        "1 of 1 listed or approved canvas(es) to read.\n"
         "Why (a canvas can have more than one reason): 1 full run.\n"
         f"Canvases to read: {CANVAS}"
     )

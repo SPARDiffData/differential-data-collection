@@ -10,6 +10,9 @@
 slack_channels = ["example-channel"]  # channel names, without the '#'
 slack_workspace_url = "https://example.slack.com"  # your workspace's address, for message links
 slack_canvases = []                   # canvas IDs ("F...") or canvas links; read when they may have changed
+# Canvases and Google files found in your Slack data are approved or skipped in your own
+# terminal with `uv run diffdata consent review`, and withdrawn with
+# `uv run diffdata consent withdraw`. Those decisions go in approvals.jsonl, next to this file.
 canvas_refresh_days = 7               # read each listed canvas at least this often, changed or not
 folders = []                          # fixed places to check, e.g. ["~/Documents/transcripts"]
 
