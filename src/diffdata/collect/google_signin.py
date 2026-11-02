@@ -145,11 +145,15 @@ def save_token(home: Path, token: dict, client: dict, now: float) -> Path:
     }
     home.mkdir(parents=True, exist_ok=True)
     handle, temporary = tempfile.mkstemp(dir=home, prefix=".saving-")
-    with os.fdopen(handle, "w", encoding="utf-8") as f:
-        json.dump(saved, f)
-    os.chmod(temporary, 0o600)
     path = home / TOKEN_FILE
-    os.replace(temporary, path)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as f:
+            json.dump(saved, f)
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)  # it holds the token
+        raise
     return path
 
 
@@ -210,7 +214,7 @@ def sign_in(
     if answer.get("state") != state:
         raise SignInError("The sign-in page's answer didn't match this sign-in, so it was refused.")
     if "code" not in answer:
-        raise SignInError(f"The sign-in was cancelled. {SIGN_IN_AGAIN}")
+        raise SignInError(f"The sign-in didn't finish. {SIGN_IN_AGAIN}")
     token = ask_for_token(
         opener,
         {
@@ -247,6 +251,13 @@ def access_token(
         saved = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
         raise SignInError(f"{path} can't be read. {SIGN_IN_AGAIN}") from e
+    usable = (
+        isinstance(saved, dict)
+        and isinstance(saved.get("access_token"), str)
+        and isinstance(saved.get("expires_at", 0), int | float)
+    )
+    if not usable:
+        raise SignInError(f"{path} can't be read. {SIGN_IN_AGAIN}")
     check_scope(saved)
     if now() < saved.get("expires_at", 0):
         return saved["access_token"]
