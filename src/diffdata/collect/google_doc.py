@@ -24,12 +24,13 @@ sent ({"comments": [...], "nextPageToken": ...}) or just the list. A list Drive 
 several pages is saved one page a file: comments.json, then comments-2.json and so on.
 What the reader makes of them:
 - Versions, best first. The newest changelog gives the full history: it's replayed, and
-  each stretch of editing becomes a version (a new one when the editor or the editing
-  session changes, or after IDLE without edits). Else each revision-<id>.txt is a
-  version. With a changelog, a revision made after the newest changelog was fetched is
-  kept too. An export.txt is our own snapshot (COL-9). One fetched no later than the
-  newest changelog is dropped, since the changelog already covers it, and so is one whose
-  text matches the version before it apart from line endings.
+  each stretch of editing becomes a version (see `new_stretch` for when one starts, and
+  LARGE_DELETION for a cut before a big deletion), and a cut is always between changelog
+  entries. Else each revision-<id>.txt is a version. With a changelog, a revision made
+  after the newest changelog was fetched is kept too. An export.txt is our own snapshot
+  (COL-9). One fetched no later than the newest changelog is dropped, since the changelog
+  already covers it, and so is one whose text matches the version before it apart from
+  line endings.
 - Comments, replies, resolves and reopens, from comments.json. Every fetch shows them
   again; the shared format keeps each one once. Drive writes an @-mention as the person's
   email ("+sam@example.com"), though they typed a name, so it becomes MENTION_SHOWN.
@@ -67,8 +68,21 @@ from diffdata.common.documents import (
 SOURCE = "google-doc"
 DOC_URL = "https://docs.google.com/document/d/{id}"
 ROUTES = ("google-login", "shared-account", "connector", "browser-file")
-# A stretch of editing ends when nobody has edited for this long.
+# A stretch of editing ends when nobody has edited for this long,
 IDLE = timedelta(minutes=30)
+# or when it has gone on this long, so an idea isn't lost inside one long sitting,
+MAX_STRETCH = timedelta(hours=2)
+# or when someone starts editing who hasn't edited for this long. People writing together
+# take turns every few seconds, and that's one stretch, not one per turn.
+CO_WRITING = timedelta(minutes=5)
+# A changelog entry that deletes this much plain text in all (UTF-16 units) closes the
+# version before it, so text someone wrote and then replaced still shows up in a version.
+# It's added up per entry, and versions are only ever cut between entries. A suggested
+# insertion isn't plain text yet, so accepting one (Google deletes it and inserts it again)
+# doesn't count. Text marked for deletion is still plain text, so accepting a suggested
+# deletion or replacement does, and the old text stays in a version. Many small deletions in
+# separate entries, like a held Backspace, don't add up.
+LARGE_DELETION = 100
 # Google puts this in front of the changelog's JSON so a browser won't run it as a script.
 XSSI_PREFIX = ")]}'"
 REPLY_TYPES = {"resolve": "resolve", "reopen": "reopen"}
@@ -226,6 +240,18 @@ def comment_events(fetch: Fetch) -> list[Event]:
     return events
 
 
+def new_stretch(stretch: dict, editor: str | None, at: str, their_last: str | None) -> bool:
+    """Whether an edit at `at` starts a new stretch of editing: after a pause of IDLE, once
+    the stretch has gone on for MAX_STRETCH, or when someone starts editing who isn't in it
+    and hasn't edited for CO_WRITING. Editing sessions don't count: one person with the
+    doc open in two windows has two sessions, and switching between them isn't news."""
+    now = exact(at)
+    if now - exact(stretch["at"]) > IDLE or now - exact(stretch["first"]) > MAX_STRETCH:
+        return True
+    joining = editor not in stretch["editors"]
+    return joining and (their_last is None or now - exact(their_last) > CO_WRITING)
+
+
 def outcome(entry: list[dict], sid: str, author: str | None) -> tuple[str, str | None]:
     """How a suggestion whose last text went in one changelog entry ended: ("accept",
     None), ("reject", None), or ("reject", "withdrawn") when its own author took it back.
@@ -251,8 +277,12 @@ def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event],
     replay gave."""
     newest = fetches[-1]
     state, versions, suggestions, outcomes = DocState(), [], {}, {}
-    stretch = None  # {session, at (its last edit), editor, rev}
+    stretch = None  # {first, at (its last edit), rev, editors (edits per editor)}
+    last_edit: dict[str | None, str] = {}  # when each editor last edited
     entry: list[dict] = []  # the ops of the changelog entry being replayed
+    # For that entry: how much plain text it has deleted so far, and if it could reach
+    # LARGE_DELETION, the text and the stretch as they stood before it.
+    deleted, big = 0, None
     # Each suggestion's text just before this entry first removed or unmarked any of it:
     # what an accept accepted, after any fixes made in earlier entries.
     before: dict[str, dict[str, str]] = {}
@@ -264,13 +294,17 @@ def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event],
         fetch = next((f for f in fetches if made and exact(f.fetched_at) >= made), newest)
         return fetch.fetched_at, fetch.raw("changelog.json")
 
-    def close() -> None:
-        text = state.base_text()
+    def close(text: str | None = None, closing: dict | None = None) -> None:
+        """Add a version for a stretch: by default the current one, with the text as it is."""
+        text = state.base_text() if text is None else text
+        closing = closing or stretch
         if not versions and not text:
             return  # the empty doc before anyone typed isn't a version
-        actor = Actor(stretch["editor"]) if stretch["editor"] else None
-        rev = f"rev-{stretch['rev']}"
-        versions.append(Version(text, *first_seen(stretch["at"]), stretch["at"], actor, rev))
+        # Several people writing together: the one who made the most edits.
+        editor = next(iter(closing["editors"].most_common(1)), (None, 0))[0]
+        actor = Actor(editor) if editor else None
+        rev = f"rev-{closing['rev']}"
+        versions.append(Version(text, *first_seen(closing["at"]), closing["at"], actor, rev))
 
     def touches(edit: dict) -> set[str]:
         """The suggestions one edit removed text from, or unmarked. An op that only names a
@@ -291,28 +325,53 @@ def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event],
                 for part, text in before[sid].items():
                     suggestions[sid][part] = text or suggestions[sid][part]
 
-    for edit in edit_events(newest.json("changelog.json")):
+    def end_entry() -> None:
+        """Finish a changelog entry. If it deleted LARGE_DELETION or more of plain text, the
+        version closes as it stood before the entry, and a new stretch starts with the entry."""
+        nonlocal stretch
+        judge()
+        if big is not None and deleted >= LARGE_DELETION:
+            close(*big)
+            editors = Counter({entry[0]["actor"]: len(entry)})
+            stretch = {**stretch, "first": iso(entry[0]["ts_ms"]), "editors": editors}
+
+    edits = edit_events(newest.json("changelog.json"))
+    # The most each entry can delete, from its ops' ranges. Only an entry that could reach
+    # LARGE_DELETION keeps a copy of the text before it, so most entries cost nothing extra.
+    spans: Counter = Counter()
+    for edit in edits:
+        if edit["kind"] == "delete" and isinstance(edit["start"], int):
+            if isinstance(edit["end"], int):
+                spans[edit["rev"], edit["ts_ms"]] += max(edit["end"] - edit["start"] + 1, 0)
+
+    for edit in edits:
         at = iso(edit["ts_ms"])
         if edit["source"] == "snapshot" and stretch is None:
             # The doc as it stood when the changelog starts: a version of its own, by nobody
             # we know, even if no edits follow. Google doesn't say when the snapshot was
             # taken, so its time is the first edit's, a bound rather than an edit time.
-            stretch = {"session": None, "at": at, "editor": None, "rev": edit["rev"]}
+            stretch = {"first": at, "at": at, "rev": edit["rev"], "editors": Counter()}
         elif edit["source"] == "changelog":
             if entry and (edit["rev"], edit["ts_ms"]) != (entry[0]["rev"], entry[0]["ts_ms"]):
-                judge()
+                end_entry()
                 entry, before = [], {}
-            # Google leaves the session out of some entries, so a missing one isn't a new
-            # session. A new editor, a new session or a pause starts a new stretch.
-            session = edit["session"] or (stretch or {}).get("session")
-            if stretch is not None and (
-                edit["actor"] != stretch["editor"]
-                or session != stretch["session"]
-                or exact(at) - exact(stretch["at"]) > IDLE
+            if stretch is not None and new_stretch(
+                stretch, edit["actor"], at, last_edit.get(edit["actor"])
             ):
                 close()
-            stretch = {"session": session, "at": at, "editor": edit["actor"], "rev": edit["rev"]}
+                stretch = None
+            if not entry:
+                big, deleted = None, 0
+                if stretch is not None and spans[edit["rev"], edit["ts_ms"]] >= LARGE_DELETION:
+                    big = (state.base_text(), {**stretch, "editors": Counter(stretch["editors"])})
+            if stretch is None:
+                stretch = {"first": at, "editors": Counter()}
+            stretch.update(at=at, rev=edit["rev"])
+            stretch["editors"][edit["actor"]] += 1
+            last_edit[edit["actor"]] = at
             entry.append(edit)
+            if edit["kind"] == "delete":
+                deleted += state.plain_count(edit["start"], edit["end"])
         if edit["kind"] in ("delete", "remove_suggested", "suggest_delete_unmark"):
             for sid in state.ids_in(edit["start"], edit["end"]) & suggestions.keys():
                 before.setdefault(
@@ -337,7 +396,7 @@ def changelog_history(fetches: list[Fetch]) -> tuple[list[Version], list[Event],
             else:
                 found[part] = edit.get("text") or edit.get("marked_text") or found[part]
     if entry:
-        judge()
+        end_entry()
     for sid in state.live() & suggestions.keys():
         # Still pending at the end: its text now, after any fixes or marks taken back.
         for part in ("insert", "delete"):

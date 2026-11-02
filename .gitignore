@@ -227,6 +227,7 @@ data/
 output/
 exports/
 config.toml
+approvals.jsonl
 *.local.toml
 .env.*
 !.env.example
