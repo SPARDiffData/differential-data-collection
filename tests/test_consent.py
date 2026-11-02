@@ -363,6 +363,47 @@ def test_a_withdrawal_while_the_withdraw_list_is_shown_records_nothing(
 
 
 @pytest.mark.parametrize("step", ["review", "withdraw"])
+def test_a_new_title_on_the_same_items_while_the_list_is_shown_records_nothing(
+    config, export, terminal, capsys, step
+):
+    # Must refuse 3: the items are the same, but the person read something else.
+    export()
+    if step == "withdraw":
+        answer(config, "all\n")
+    before = decisions(config)
+    path = config.data_dir / "references" / "references.jsonl"
+
+    def retitle():
+        text = path.read_text(encoding="utf-8")
+        assert "Team notes" in text
+        path.write_text(text.replace("Team notes", "Renamed notes"), encoding="utf-8")
+
+    code, _ = answer(config, "all\n", step, meanwhile=retitle)
+    assert code == 1
+    assert "Something changed while the list was shown" in capsys.readouterr().err
+    assert decisions(config) == before
+
+
+def test_an_item_leaving_the_list_while_it_is_shown_records_nothing(
+    config, export, terminal, capsys
+):
+    # Must refuse 3: a saved read takes an item off the list, with the log, the approvals and
+    # config.toml all as they were, so the letters may now mean something else.
+    export()
+    canvas = TAB.removeprefix("slack-file:")
+    raw = config.data_dir / "documents" / "slack-canvas" / canvas / "raw" / "FAKE-RUN"
+
+    def a_read_is_saved():
+        raw.mkdir(parents=True)
+        (raw / "read.json").write_text("{}")
+
+    code, _ = answer(config, "all\n", meanwhile=a_read_is_saved)
+    assert code == 1
+    assert "Something changed while the list was shown" in capsys.readouterr().err
+    assert not approvals_file(config).exists()
+
+
+@pytest.mark.parametrize("step", ["review", "withdraw"])
 def test_a_config_change_while_the_list_is_shown_records_nothing(
     config, export, terminal, capsys, step
 ):
@@ -663,6 +704,24 @@ def test_the_approvals_file_is_checked_after_following_a_shortcut(
     linked = moved(config, tmp_path, shortcut)
     assert answer(config, "all\n", settings=linked)[0] == 1
     assert not (tmp_path / "repo" / "settings" / "approvals.jsonl").exists()
+
+
+def test_the_approvals_file_is_refused_when_a_shortcut_in_a_repo_leads_out_of_it(
+    config, export, terminal, tmp_path
+):
+    # The same check the other way round: the file would land outside, but a tool working in
+    # the repo can reach it through the shortcut.
+    export()
+    (tmp_path / "repo" / ".git").mkdir(parents=True)
+    (tmp_path / "outside").mkdir()
+    shortcut = tmp_path / "repo" / "linked"
+    try:
+        shortcut.symlink_to(tmp_path / "outside", target_is_directory=True)
+    except OSError:
+        pytest.skip("this system doesn't let tests make symlinks")
+    linked = moved(config, tmp_path, shortcut)
+    assert answer(config, "all\n", settings=linked)[0] == 1
+    assert not (tmp_path / "outside" / "approvals.jsonl").exists()
 
 
 # An approvals file diffdata can't read
