@@ -1,13 +1,15 @@
 """The `diffdata` command.
 
-`discover slack` (DIS-1) and `scrub` (SCR-2) are built. The other subcommands are stubs
-that name the requirement IDs (docs/requirements.md) their feature Issues will build.
+`discover slack` (DIS-1), `collect google-docs sign-in` (COL-4) and `scrub` (SCR-2) are built.
+The other subcommands are stubs that name the requirement IDs (docs/requirements.md) their
+feature Issues will build.
 """
 
 import argparse
 import sys
 
 from diffdata import __version__
+from diffdata.collect import google_signin
 from diffdata.common.config import ConfigError, load_config
 from diffdata.common.paths import UnsafeDataDirError
 from diffdata.discover import slack_export, slack_inbox
@@ -23,7 +25,7 @@ COMMANDS = {
     ),
     "push": ("Add scrubbed artifacts to central storage.", "STO-1, STO-2, STO-3"),
 }
-STUBS = ("collect", "push")
+STUBS = ("push",)
 
 SLACK_STEPS = {
     "channels": "List the opted-in channels from config.toml, and which file it read.",
@@ -47,7 +49,21 @@ def build_parser() -> argparse.ArgumentParser:
         command = subcommands.add_parser(name, help=help_text, description=help_text)
         if name == "discover":
             add_discover_sources(command)
+        if name == "collect":
+            add_collect_sources(command)
     return parser
+
+
+def add_collect_sources(collect: argparse.ArgumentParser) -> None:
+    sources = collect.add_subparsers(dest="source", metavar="<source>", required=True)
+    docs_help = "Google Docs, with the producer's own Google login (COL-4)."
+    docs = sources.add_parser("google-docs", help=docs_help, description=docs_help)
+    steps = docs.add_subparsers(dest="step", metavar="<step>", required=True)
+    sign_in_help = (
+        "Sign in with your Google account and pick the docs to share, in Google's own "
+        "picker. Run it again to pick more."
+    )
+    steps.add_parser("sign-in", help=sign_in_help, description=sign_in_help)
 
 
 def add_discover_sources(discover: argparse.ArgumentParser) -> None:
@@ -71,6 +87,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "discover":
         return run_slack_step(args)
+    if args.command == "collect":
+        return run_google_docs_step(args)
     if args.command == "scrub":
         return run_scrub()
 
@@ -102,6 +120,16 @@ def run_slack_step(args: argparse.Namespace) -> int:
         else:
             report = slack_export.build(config)
     except (ConfigError, UnsafeDataDirError, slack_inbox.SlackExportError) as e:
+        print(f"diffdata: {e}", file=sys.stderr)
+        return 1
+    print(report)
+    return 0
+
+
+def run_google_docs_step(args: argparse.Namespace) -> int:
+    try:
+        report = google_signin.sign_in()
+    except google_signin.SignInError as e:
         print(f"diffdata: {e}", file=sys.stderr)
         return 1
     print(report)
