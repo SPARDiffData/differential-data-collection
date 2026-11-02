@@ -196,6 +196,37 @@ def test_a_rate_limit_drive_answers_as_403_isnt_no_access(tmp_path):
     assert "1 with new history" in report
 
 
+def test_a_rate_limit_that_never_lifts_fails_the_doc_and_isnt_no_access(tmp_path):
+    google = fake()
+    limited = (403, b'{"error": {"reason": "rateLimitExceeded"}}')
+    google.fail[f"files/{DOC}"] = [limited] * google_fetch.ATTEMPTS
+    report = run(tmp_path, google)
+    assert "Entry 1: Google kept asking to wait." in report
+    assert "0 couldn't be read" in report
+    assert not (document_dir(tmp_path, "google-doc", DOC) / "raw").exists()
+
+
+def test_a_connection_cut_while_reading_a_403_fails_that_doc_only(tmp_path):
+    google = fake()
+    google.docs[OTHER] = google.doc()
+
+    class CutBody(io.BytesIO):
+        def read(self, *args):
+            raise http.client.IncompleteRead(b"partial")
+
+    def cut(request, timeout=None):
+        if request.full_url.split("?")[0].endswith(DOC):
+            raise urllib.error.HTTPError(request.full_url, 403, "no", {}, CutBody())
+        return google(request, timeout)
+
+    report = google_fetch.collect(
+        config_for(tmp_path, DOC, OTHER), opener=cut, token=TOKEN, pause=lambda _: None, now=WHEN
+    )
+    assert "Entry 1: Google kept asking to wait." in report
+    assert fetches(tmp_path) == []
+    assert "changelog.json" in fetches(tmp_path, OTHER)[0].files
+
+
 def test_a_changelog_too_big_for_one_request_is_joined_from_chunks(tmp_path, monkeypatch):
     # The one changelog saved that Google didn't send whole, so it's checked by replaying it.
     monkeypatch.setattr(google_fetch, "CHUNK", 2)
@@ -221,6 +252,29 @@ def test_a_changelog_that_failed_is_tried_again_though_the_doc_hasnt_changed(tmp
     report = run(tmp_path, google, now=LATER)
     assert "changelog.json" in fetches(tmp_path)[-1].files
     assert "1 with new history" in report
+
+
+def test_a_changelog_that_keeps_failing_doesnt_grow_raw_until_the_doc_changes(tmp_path):
+    google = fake()
+    google.docs[DOC]["revisions"] = [
+        {
+            "id": "2",
+            "exportLinks": {"text/plain": f"https://docs.google.com/document/d/{DOC}/export"},
+        }
+    ]
+    google.fail["/revisions/load"] = [403] * 3
+    run(tmp_path, google)
+    first = fetches(tmp_path)[0]
+    assert {"export.txt", "revisions.json", "revision-2.txt"} <= set(first.files)
+
+    report = run(tmp_path, google, now=LATER)
+    assert set(fetches(tmp_path)[-1].files) == {"metadata.json", "comments.json"}
+    assert "no whole changelog, so it has no suggestions yet" in report
+
+    google.docs[DOC]["modifiedTime"] = "2026-10-11T12:00:00.000Z"
+    run(tmp_path, google, now=datetime(2026, 10, 12, 9, 0, tzinfo=UTC))
+    assert "export.txt" in fetches(tmp_path)[-1].files
+    assert "changelog.json" not in fetches(tmp_path)[-1].files
 
 
 def test_a_full_disk_on_one_doc_leaves_the_next_doc_and_the_build_going(tmp_path, monkeypatch):

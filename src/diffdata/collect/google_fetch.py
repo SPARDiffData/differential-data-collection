@@ -106,6 +106,15 @@ def check_host(url: str) -> None:
         )
 
 
+def rate_limited(error: urllib.error.HTTPError) -> bool:
+    """Whether a 403 is Drive's rate limit, which only its body says. A body that can't be read
+    counts as one: a connection cut there says nothing about whether the doc can be opened."""
+    try:
+        return error.code == 403 and RATE_LIMITED in error.read()
+    except (http.client.HTTPException, OSError, ValueError):
+        return True
+
+
 class Google:
     """Read-only requests with the sign-in's token. Each one is a GET to an allowed host."""
 
@@ -125,10 +134,12 @@ class Google:
                 with self.opener(request, timeout=120) as response:
                     return response.read().decode("utf-8-sig")
             except urllib.error.HTTPError as e:
-                limited = e.code == 403 and RATE_LIMITED in e.read()
+                limited = rate_limited(e)
                 if (e.code in RETRY or limited) and attempt < ATTEMPTS - 1:
                     self.pause(2**attempt)
                     continue
+                if limited:  # no status, so a doc isn't saved as "no access" for this
+                    break
                 raise FetchError(f"Google answered HTTP {e.code}.", e.code) from None
             except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as e:
                 raise FetchError(f"Couldn't reach Google ({type(e).__name__}).") from None
@@ -197,13 +208,14 @@ def whole_changelog(google: Google, doc_id: str, last: int) -> str | None:
     return json.dumps(merged, ensure_ascii=False) if complete(merged, last) else None
 
 
-def last_history(folder: Path) -> str | None:
-    """Drive's modified time when this doc's whole changelog was last saved, or None if it
-    never was. A fetch without one doesn't count, so a changelog that failed is tried again:
-    suggestions come only from the changelog, so a finished doc would otherwise lose them."""
+def last_saved(folder: Path, name: str) -> str | None:
+    """Drive's modified time when this doc's file `name` was last saved, or None if it never
+    was. With "changelog.json", a fetch without one doesn't count, so a changelog that failed
+    is tried again: suggestions come only from the changelog, so a finished doc would
+    otherwise lose them."""
     fetches, _, _ = read_fetches(folder)
-    with_history: list[Fetch] = [f for f in fetches if "changelog.json" in f.files]
-    for fetch in reversed(with_history):
+    with_file: list[Fetch] = [f for f in fetches if name in f.files]
+    for fetch in reversed(with_file):
         try:
             modified = (fetch.json("metadata.json") or {}).get("modifiedTime")
         except (OSError, UnicodeDecodeError, ValueError, AttributeError):
@@ -264,21 +276,24 @@ def fetch_doc(google: Google, data: Path, doc_id: str, now: datetime) -> str:
     files = {"metadata.json": text}
     comments = google.pages(f"{DRIVE}/files/{doc_id}/comments", fields=COMMENT_FIELDS, pageSize=100)
     files |= saved_pages("comments", comments)
-    changed = changed_since(metadata.get("modifiedTime"), last_history(folder))
+    modified = metadata.get("modifiedTime")
+    changed = changed_since(modified, last_saved(folder, "changelog.json"))
     if changed:
         pages = google.pages(
             f"{DRIVE}/files/{doc_id}/revisions", fields=REVISION_FIELDS, pageSize=1000
         )
-        files |= saved_pages("revisions", pages)
+        history = saved_pages("revisions", pages)
         revisions = [r for page in pages for r in parse(page).get("revisions") or []]
-        files["export.txt"] = google.get(f"{DRIVE}/files/{doc_id}/export", mimeType="text/plain")
+        history["export.txt"] = google.get(f"{DRIVE}/files/{doc_id}/export", mimeType="text/plain")
         numbers = [int(r["id"]) for r in revisions if str(r.get("id", "")).isdigit()]
         changelog = whole_changelog(google, doc_id, max(numbers, default=1))
         if changelog is None:
-            files |= revision_texts(google, revisions)
+            # A retry on a doc that hasn't changed adds nothing, so raw doesn't grow by it.
+            if changed_since(modified, last_saved(folder, "export.txt")):
+                files |= history | revision_texts(google, revisions)
             save_fetch(data, doc_id, fetch_id, at, ROUTE, files)
             return NO_CHANGELOG
-        files["changelog.json"] = changelog
+        files |= history | {"changelog.json": changelog}
     save_fetch(data, doc_id, fetch_id, at, ROUTE, files)
     return NEW if changed else UNCHANGED
 
