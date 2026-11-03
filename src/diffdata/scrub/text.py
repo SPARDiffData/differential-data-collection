@@ -17,8 +17,9 @@ Names are compared folded: in any case (WEISS for Weiß), without accents (Jose 
 with any spacing, with a curly apostrophe the same as a straight one, and with wide or
 styled letters (Ａｌｅｘ, 𝐀𝐥𝐞𝐱) the same as plain ones. Characters that show as nothing,
 like a zero-width space, a soft hyphen or a variation selector, are read past inside a
-name, so "Alex" with a zero-width space inside is replaced whole. The text is written in
-one Unicode form (NFC), so a name typed two ways is the same text.
+name and anywhere in the spacing between its words, so "Alex" with a zero-width space
+inside is replaced whole, and so is "Big Al" with one between two spaces. The text is
+written in one Unicode form (NFC), so a name typed two ways is the same text.
 
 A name ends where no letter touches it, but a Latin name ends at any letter that isn't
 Latin, so "Alex" is found in 我和Alex明天开会 or Alex는. A name in a script written without
@@ -95,11 +96,17 @@ PLAIN_FORMS = ("<wide>", "<narrow>", "<font>")
 # "@jordan", "@alex.newperson", "cc:@_jordan" or "@Jordan Smith": an @ that doesn't follow
 # a letter, a handle, and up to two more words, since a display name can have spaces. Only
 # words in capitals count, in any alphabet, which `Scrubber.mentions` checks. A handle reads
-# past invisible characters, inside a word and by the space between two. Emails are gone by
-# then.
+# past invisible characters, inside a word and anywhere in the spacing between two, which
+# needs a space or tab. Each word and gap has its own group, so the label is never split
+# again: a split that tries every place in a long run of Hangul fillers is slow. Emails are
+# gone by then.
 WORD = rf"(?:[\w.'’{INVISIBLE}-]*\w)?"
-GAP = rf"[{INVISIBLE}]*[ \t]+[{INVISIBLE}]*"
-MENTION = re.compile(rf"(?<![\w@])@(?P<label>[^\W\d]{WORD}(?:{GAP}[^\W\d_]{WORD}){{0,2}})")
+GAP = rf"[{INVISIBLE}]*[ \t][ \t{INVISIBLE}]*"
+MENTION = re.compile(
+    rf"(?<![\w@])@(?P<label>(?P<w0>[^\W\d]{WORD})"
+    rf"(?:(?P<g1>{GAP})(?P<w1>[^\W\d_]{WORD})(?:(?P<g2>{GAP})(?P<w2>[^\W\d_]{WORD}))?)?)"
+)
+MENTION_PARTS = ("w0", "g1", "w1", "g2", "w2")
 POSSESSIVE = re.compile(r"(?P<owner>.+)(?P<s>['’]s)")
 # Slack's own: <!here>, <!channel> and <!everyone> show as @here, @channel and @everyone.
 NOT_PEOPLE = {"here", "channel", "everyone"}
@@ -232,7 +239,7 @@ class Scrubber:
     def mentions(self, text: str, flags: list[Flag]) -> str:
         def replace(match: re.Match) -> str:
             # The words after the handle that start with a capital; the rest is ordinary text.
-            words = re.split(r"([ \t]+)", match["label"])
+            words = [match[part] for part in MENTION_PARTS if match[part] is not None]
             end = 1
             # A Hangul filler is a letter that shows as nothing, so a word can be all hidden.
             while end < len(words) and HIDDEN.sub("", words[end + 1])[:1].isupper():
@@ -288,9 +295,10 @@ def longest_first(text: str) -> tuple[int, str]:
 
 def spelled(name: str) -> str:
     """A folded name as a pattern: its words, with any spacing between them, and anything
-    invisible between their letters or by that spacing."""
+    invisible between their letters or anywhere in that spacing, which needs a real space."""
     gap = f"[{INVISIBLE}]*"
-    return rf"{gap}\s+{gap}".join(gap.join(map(re.escape, word)) for word in name.split())
+    space = rf"[{INVISIBLE}]*\s[\s{INVISIBLE}]*"
+    return space.join(gap.join(map(re.escape, word)) for word in name.split())
 
 
 def after(name: str) -> str:

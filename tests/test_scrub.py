@@ -419,7 +419,8 @@ def test_must_refuse_1_an_original_is_never_changed(config, export, tmp_path):
     # link, so the file it points to stays as it was.
     elsewhere = tmp_path / "elsewhere.toml"
     elsewhere.write_text(
-        'not_names = []\n\n[[person]]\nplaceholder = "[Person 1]"\nslack_ids = ["U00000001"]\n',
+        'not_names = []\n\n[[person]]\nplaceholder = "[Person 1]"\nslack_ids = ["U00000001"]\n'
+        "names = []\nnicknames = []\n",
         encoding="utf-8",
     )
     linked = elsewhere.read_bytes()
@@ -624,22 +625,33 @@ def test_must_refuse_9_a_failure_prints_no_real_values(
 
 
 LIST = b"not_names = []\n\n"  # the start of every list diffdata writes
+EMPTY = b"names = []\nnicknames = []\n"  # an entry's last two lines, with nothing in them
 BROKEN_LISTS = {
     "can't be read as TOML (at": b'not_names = ["Alex Example"\n',
     "isn't UTF-8": b'not_names = ["Alex \xe9"]\n',
     "a setting diffdata doesn't know": b'Alex = "Example"\n',
     "emptied or cut short": b"",
     "may have been emptied": b"# The people the scrub knows: Alex Example\n",
-    "same placeholder": LIST + b'[[person]]\nplaceholder = "[Person 1]"\n\n'
-    b'[[person]]\nplaceholder = "[Person 1]"\n',
-    "same Slack ID": LIST + b'[[person]]\nplaceholder = "[Person 1]"\nslack_ids = ["U00000001"]\n'
-    b'\n[[person]]\nplaceholder = "[Person 2]"\nslack_ids = ["U00000001"]\n',
-    "must be a list of words": LIST + b'[[person]]\nplaceholder = "[Person 1]"\nnames = "Alex"\n',
+    "same placeholder": LIST
+    + b'[[person]]\nplaceholder = "[Person 1]"\nslack_ids = []\n'
+    + EMPTY
+    + b'\n[[person]]\nplaceholder = "[Person 1]"\nslack_ids = []\n'
+    + EMPTY,
+    "same Slack ID": LIST
+    + b'[[person]]\nplaceholder = "[Person 1]"\nslack_ids = ["U00000001"]\n'
+    + EMPTY
+    + b'\n[[person]]\nplaceholder = "[Person 2]"\nslack_ids = ["U00000001"]\n'
+    + EMPTY,
+    "must be a list of words": LIST + b'[[person]]\nplaceholder = "[Person 1]"\nslack_ids = []\n'
+    b'names = "Alex"\nnicknames = []\n',
     "none of them empty": b'not_names = [" "]\n',
-    'a placeholder like "[Person 1]"': LIST + b'[[person]]\nplaceholder = "[Alex Example]"\n',
+    'a placeholder like "[Person 1]"': LIST + b'[[person]]\nplaceholder = "[Alex Example]"\n'
+    b"slack_ids = []\n" + EMPTY,
     "a field diffdata doesn't know": LIST + b'[[person]]\nplaceholder = "[Person 1]"\nnick = []\n',
     "a Slack ID that isn't one": LIST + b'[[person]]\nplaceholder = "[Person 1]"\n'
-    b'slack_ids = ["Alex"]\n',
+    b'slack_ids = ["Alex"]\n' + EMPTY,
+    "has no nicknames line": LIST + b'[[person]]\nplaceholder = "[Person 1]"\nslack_ids = []\n'
+    b'names = ["Alex Example"]\n',  # a person added by hand needs all four
     "must start with [[person]]": LIST + b'person = "Alex"\n',
 }
 
@@ -809,6 +821,10 @@ def test_a_name_with_hidden_or_wide_letters_is_replaced_whole(written):
         "\u00ad ",  # a soft hyphen
         "\u200b \u200b",  # on both sides
         "\ufe0f\t\u2060",  # a tab, between a variation selector and a word joiner
+        " \u200b ",  # a zero-width space between two spaces
+        " \u00ad ",  # a soft hyphen between two spaces
+        " \u3164 ",  # a Hangul filler, which is a letter, between two spaces
+        "\u200e \u200b\t\u2060 \ufe0f",  # any mix, as long as there's a space or a tab
     ],
 )
 def test_a_two_word_nickname_with_hidden_characters_by_its_space_is_replaced_whole(gap):
@@ -834,6 +850,17 @@ def test_a_hangul_filler_after_a_mention_doesnt_stop_the_scrub(written, scrubbed
     # can be all hidden. It isn't a word in capitals, so the mention ends before it.
     scrubber = Scrubber(People([Person("[Person 1]", [], ["Alex Example"])]))
     assert scrubber.scrub(written)[0] == scrubbed
+
+
+def test_a_long_run_of_hangul_fillers_after_a_mention_is_read_quickly():
+    # A Hangul filler is a letter, so a handle takes in the whole run. Splitting the handle
+    # again, trying every place in the run, took about 30 seconds for this one.
+    scrubber = Scrubber(People([Person("[Person 1]", [], ["Alex Example"])]))
+    fillers = "ㅤ" * 80_000
+    started = time.perf_counter()
+    assert scrubber.scrub(f"hi @Alex{fillers}\nok")[0] == "hi @[Person 1]\nok"
+    assert scrubber.scrub(f"@A{fillers}.")[0] == "@[name?]."
+    assert time.perf_counter() - started < 5
 
 
 def test_hidden_and_wide_letters_outside_a_name_are_kept():
@@ -891,6 +918,34 @@ def test_a_people_list_that_lost_people_since_the_last_scrub_stops_the_scrub(con
     people_file(config).write_text(cut, encoding="utf-8")
     with pytest.raises(ScrubError, match="may have been cut short") as stop:
         scrub(config)
+    assert not [value for value in REAL if value in str(stop.value)]
+    assert people_file(config).read_text(encoding="utf-8") == cut
+    assert not (config.data_dir / "scrubbed").exists()
+
+
+@pytest.mark.parametrize(
+    "line, missing",
+    [
+        ("[[person]]", "placeholder, slack_ids, names or nicknames"),
+        ("placeholder", "slack_ids, names or nicknames"),
+        ("slack_ids", "names or nicknames"),
+        ("names", "nicknames"),
+    ],
+)
+def test_a_list_cut_inside_its_last_entry_stops_the_scrub(config, scrubbed, line, missing):
+    # Cut right after one of the last entry's lines, the list is still TOML and can keep every
+    # number, but that person's nicknames are gone: they'd pass the scrub and the last check.
+    people = read_people(people_file(config))
+    people.people[-1].nicknames.append("Big Al")
+    people_file(config).write_text(render(people), encoding="utf-8")
+    text = people_file(config).read_text(encoding="utf-8")
+    last = text.rindex("\n[[person]]\n") + 1
+    start = last if line == "[[person]]" else text.index(f"\n{line} = ", last) + 1
+    cut = text[: text.index("\n", start) + 1]
+    people_file(config).write_text(cut, encoding="utf-8")
+    with pytest.raises(ScrubError, match="may have been cut short") as stop:
+        scrub(config)
+    assert f"has no {missing} line" in str(stop.value)
     assert not [value for value in REAL if value in str(stop.value)]
     assert people_file(config).read_text(encoding="utf-8") == cut
     assert not (config.data_dir / "scrubbed").exists()

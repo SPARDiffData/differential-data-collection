@@ -10,13 +10,15 @@ The list is meant to be edited by hand:
   nicknames  more names a person goes by, matched whole, as written
   not_names  words that are names here but ordinary words too, like "Will". They're left
              as written everywhere.
-A person can be added by hand too, with a placeholder no one else has.
+A person can be added by hand too, with a placeholder no one else has and all four fields.
 
 private/people-numbers.json keeps every number a scrub has given, and numbers only. A list
 missing one may have been cut short or edited by mistake, so the scrub stops: those people
-would come back with new numbers, and without their nicknames. To merge two entries for one
+would come back with new numbers, and without their nicknames. Every entry has all four
+fields, as `render()` writes them, so a list cut inside its last entry stops the scrub too:
+it would keep every number but lose that person's nicknames. To merge two entries for one
 person, as when they have two Slack accounts, the Slack IDs and names move onto one, and the
-other keeps its [[person]] entry with just its placeholder, so its number is never given to
+other keeps its [[person]] entry with its lists empty, so its number is never given to
 anyone else. Anyone whose Slack ID is still in the saved data can't be removed: the next
 scrub would add them back.
 
@@ -54,8 +56,10 @@ HEADER = """\
 #   not_names = ["..."]  words that are names here but ordinary words too, like "Will".
 #                        They're left as written everywhere.
 # Never change, reuse or delete a placeholder: a scrub stops if a number it gave is missing.
+# Each [[person]] needs all four lines, placeholder, slack_ids, names and nicknames, with []
+# for an empty list. A scrub stops if one is missing: the list may have been cut short.
 # To merge two entries for one person, as when they have two Slack accounts, move the Slack
-# IDs and names onto one, and keep the other [[person]] entry with just its placeholder.
+# IDs and names onto one, and keep the other [[person]] entry with its lists empty.
 # Comments you add are lost when a scrub adds someone.
 # To start a new list, delete the whole private/ folder: everyone gets a new number."""
 
@@ -118,9 +122,9 @@ def check_whole(people: People, given: set[int]) -> None:
         raise PeopleError(
             f"{PEOPLE_FILE} has lost [Person {lost[0]}]{more}, given by an earlier scrub, so "
             "it may have been cut short or edited by mistake. Put back a whole copy. If you "
-            "merged two entries for one person, keep the other [[person]] entry with just its "
-            "placeholder, so its number is never given to anyone else. To start a new list "
-            "on purpose, delete the whole private/ folder."
+            "merged two entries for one person, keep the other [[person]] entry with its lists "
+            "empty, so its number is never given to anyone else. To start a new list on "
+            "purpose, delete the whole private/ folder."
         )
 
 
@@ -163,7 +167,17 @@ def read_people(path: Path) -> People:
                 f"The {where} has a field diffdata doesn't know. Its fields can be "
                 f"{', '.join(PERSON_FIELDS)}."
             )
-        placeholder = entry.get("placeholder")
+        # A list cut inside its last entry, right after a line, is still TOML and can keep
+        # every number, but loses that person's nicknames.
+        if missing := [name for name in PERSON_FIELDS if name not in entry]:
+            fields = f"{', '.join(missing[:-1])} or {missing[-1]}" if missing[1:] else missing[0]
+            raise PeopleError(
+                f"The {where} has no {fields} line, which every entry diffdata writes has. If "
+                "you added or merged this person by hand, add the missing lines, with [] for an "
+                "empty list. Otherwise the list may have been cut short or edited by mistake: "
+                "put back a whole copy."
+            )
+        placeholder = entry["placeholder"]
         if not isinstance(placeholder, str) or not PLACEHOLDER.fullmatch(placeholder):
             raise PeopleError(f'The {where} needs a placeholder like "[Person 1]".')
         if placeholder in placeholders:
@@ -174,10 +188,7 @@ def read_people(path: Path) -> People:
         placeholders[placeholder] = at
         person = Person(
             placeholder,
-            *(
-                strings(entry.get(name, []), f"{name} for the {where}")
-                for name in PERSON_FIELDS[1:]
-            ),
+            *(strings(entry[name], f"{name} for the {where}") for name in PERSON_FIELDS[1:]),
         )
         for slack_id in person.slack_ids:
             if not ID_VALUE.fullmatch(slack_id):
