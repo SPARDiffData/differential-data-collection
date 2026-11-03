@@ -184,6 +184,17 @@ def complete(changelog: dict, last: int) -> bool:
     return [e[3] for e in entries] == list(range(1, last + 1))
 
 
+def check_sign_in(google: Google, doc_id: str) -> None:
+    """After a 401 from docs.google.com, ask Drive whether the sign-in still works. The
+    undocumented changelog may refuse the token outright, which isn't the sign-in's fault, but
+    a 401 from Drive is: it goes up to collect(), which stops the run."""
+    try:
+        google.get(f"{DRIVE}/files/{doc_id}", fields="id")
+    except FetchError as e:
+        if e.status == 401:
+            raise
+
+
 def whole_changelog(google: Google, doc_id: str, last: int) -> str | None:
     """The changelog from revision 1 to `last`, or None if all of it can't be had. In one
     request as Google sends it, else in chunks, joined in Google's own shape."""
@@ -193,6 +204,8 @@ def whole_changelog(google: Google, doc_id: str, last: int) -> str | None:
         if complete(parse(text), last):
             return text
     except FetchError as e:
+        if e.status == 401:
+            check_sign_in(google, doc_id)
         if e.status in (401, 403):
             return None
     merged: dict = {"changelog": [], "chunkedSnapshot": None}
@@ -245,18 +258,33 @@ def changed_since(modified: str | None, before: str | None) -> bool:
         return True
 
 
-def fetch_doc(google: Google, data: Path, doc_id: str, now: datetime) -> str:
+def fetch_doc(google: Google, data: Path, doc_id: str, now: datetime) -> tuple[str, list[str]]:
     """Fetch one listed doc and save it. Returns what happened: "new", "unchanged", or the
-    reason it couldn't be read, which is saved too (COL-7)."""
+    reason it couldn't be read, which is saved too (COL-7); and the parts that couldn't be
+    fetched, such as "comments", while the rest was saved."""
     folder = document_dir(data, google_doc.SOURCE, doc_id)
     fetch_id = now.strftime("%Y%m%dT%H%M%SZ")
     at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    missing: list[str] = []
 
-    def refused(reason: str) -> str:
+    def refused(reason: str) -> tuple[str, list[str]]:
         if last_reason(folder) != reason:  # a new fetch only when something changed
             access = json.dumps({"reason": reason}, indent=2) + "\n"
             save_fetch(data, doc_id, fetch_id, at, ROUTE, {"access.json": access})
-        return reason
+        return reason, missing
+
+    def part(name: str, request: Callable):
+        """One part of the doc, or None if Google refuses it for good: a doc too big to export,
+        say, keeps its comments and changelog. A failure that may pass (a cut connection, a 5xx,
+        a rate limit) still fails the whole doc, to be fetched again next run, and a 401 is the
+        sign-in's, so it stops the run."""
+        try:
+            return request()
+        except FetchError as e:
+            if e.status is None or e.status in (401, 429) or e.status >= 500:
+                raise
+            missing.append(name)
+            return None
 
     try:
         text = google.get(f"{DRIVE}/files/{doc_id}", fields=METADATA_FIELDS)
@@ -274,31 +302,47 @@ def fetch_doc(google: Google, data: Path, doc_id: str, now: datetime) -> str:
         return refused(NOT_A_DOC)
 
     files = {"metadata.json": text}
-    comments = google.pages(f"{DRIVE}/files/{doc_id}/comments", fields=COMMENT_FIELDS, pageSize=100)
-    files |= saved_pages("comments", comments)
+    comments = part(
+        "comments",
+        lambda: google.pages(
+            f"{DRIVE}/files/{doc_id}/comments", fields=COMMENT_FIELDS, pageSize=100
+        ),
+    )
+    if comments:
+        files |= saved_pages("comments", comments)
     modified = metadata.get("modifiedTime")
     changed = changed_since(modified, last_saved(folder, "changelog.json"))
     if changed:
-        pages = google.pages(
-            f"{DRIVE}/files/{doc_id}/revisions", fields=REVISION_FIELDS, pageSize=1000
+        pages = part(
+            "revision list",
+            lambda: google.pages(
+                f"{DRIVE}/files/{doc_id}/revisions", fields=REVISION_FIELDS, pageSize=1000
+            ),
         )
-        history = saved_pages("revisions", pages)
-        revisions = [r for page in pages for r in parse(page).get("revisions") or []]
-        history["export.txt"] = google.get(f"{DRIVE}/files/{doc_id}/export", mimeType="text/plain")
+        history = saved_pages("revisions", pages) if pages else {}
+        revisions = [r for page in pages or [] for r in parse(page).get("revisions") or []]
+        export = part(
+            "text export",
+            lambda: google.get(f"{DRIVE}/files/{doc_id}/export", mimeType="text/plain"),
+        )
+        if export is not None:
+            history["export.txt"] = export
         numbers = [int(r["id"]) for r in revisions if str(r.get("id", "")).isdigit()]
-        changelog = whole_changelog(google, doc_id, max(numbers, default=1))
+        # Without the newest revision's number, no changelog can be checked as whole, so none
+        # is asked for (must-refuse 6).
+        changelog = whole_changelog(google, doc_id, max(numbers)) if numbers else None
         if changelog is None:
             # A retry on a doc that hasn't changed adds nothing, so raw doesn't grow by it.
             if changed_since(modified, last_saved(folder, "export.txt")):
-                files |= history | revision_texts(google, revisions)
+                files |= history | revision_texts(google, doc_id, revisions)
             save_fetch(data, doc_id, fetch_id, at, ROUTE, files)
-            return NO_CHANGELOG
+            return NO_CHANGELOG, missing
         files |= history | {"changelog.json": changelog}
     save_fetch(data, doc_id, fetch_id, at, ROUTE, files)
-    return NEW if changed else UNCHANGED
+    return (NEW if changed else UNCHANGED), missing
 
 
-def revision_texts(google: Google, revisions: list[dict]) -> dict[str, str]:
+def revision_texts(google: Google, doc_id: str, revisions: list[dict]) -> dict[str, str]:
     """Each revision's text that can be had, the reader's history when there's no whole
     changelog. One that fails doesn't stop the fetch: the export and comments are still saved."""
     found = {}
@@ -307,7 +351,10 @@ def revision_texts(google: Google, revisions: list[dict]) -> dict[str, str]:
         if link and str(revision.get("id", "")).isalnum():
             try:
                 found[f"revision-{revision['id']}.txt"] = google.get(link)
-            except FetchError:
+            except FetchError as e:
+                if e.status == 401:  # the others would be refused too
+                    check_sign_in(google, doc_id)
+                    break
                 continue
     return found
 
@@ -327,8 +374,12 @@ def collect(
     outcomes: Counter = Counter()
     problems = []
     for number, doc_id in enumerate(config.google_docs, start=1):
+        if token is None and number > 1:
+            # An access token lasts an hour, and a run can take longer, so each doc gets the
+            # saved one, refreshed if it has run out.
+            google.token = google_signin.access_token()
         try:
-            outcome = fetch_doc(google, config.data_dir, doc_id, now)
+            outcome, missing = fetch_doc(google, config.data_dir, doc_id, now)
         except FetchError as e:
             if e.status == 401:  # the sign-in itself, so every other doc would fail too
                 raise google_signin.SignInError(
@@ -342,11 +393,24 @@ def collect(
             outcomes["failed"] += 1
             problems.append(f"Entry {number}: it couldn't be saved.")
             continue
+        except (KeyError, TypeError, AttributeError, ValueError):
+            # Google answered in a shape this doesn't expect. The other docs still go ahead.
+            outcomes["failed"] += 1
+            problems.append(
+                f"Entry {number}: Google's answer wasn't in the shape expected. Nothing was "
+                "saved for it."
+            )
+            continue
         outcomes[outcome] += 1
+        if missing:
+            problems.append(
+                f"Entry {number}: its {', '.join(missing)} couldn't be fetched, so the rest "
+                "was saved without it."
+            )
         if outcome == NO_CHANGELOG:
             problems.append(
-                f"Entry {number}: {outcome}, so it has no suggestions yet. Its text and comments "
-                "were saved, and the changelog is tried again on the next run."
+                f"Entry {number}: {outcome}, so it has no suggestions yet. What could be "
+                "fetched was saved, and the changelog is tried again on the next run."
             )
         elif outcome not in (NEW, UNCHANGED):
             problems.append(

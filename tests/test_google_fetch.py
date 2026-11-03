@@ -382,6 +382,22 @@ def test_must_refuse_6_a_changelog_with_revisions_missing_isnt_saved(tmp_path, p
     assert "changelog.json" not in fetches(tmp_path)[0].files
 
 
+@pytest.mark.parametrize(
+    "revisions", [[], [{"id": "FAKE-REV"}]], ids=["no revisions", "no numbered revision"]
+)
+def test_must_refuse_6_without_the_newest_revisions_number_no_changelog_is_asked_for(
+    tmp_path, revisions
+):
+    google = fake()
+    google.docs[DOC]["changelog"] = changelog(1)  # would pass as whole if end=1 were guessed
+    google.docs[DOC]["revisions"] = revisions
+    report = run(tmp_path, google)
+    assert not any("/revisions/load" in url for url in google.urls())
+    (fetch,) = fetches(tmp_path)
+    assert "changelog.json" not in fetch.files and "export.txt" in fetch.files
+    assert "1 without a whole changelog" in report
+
+
 def test_must_refuse_7_output_never_shows_a_doc_even_when_one_fails(tmp_path, capsys):
     google = fake()
     google.docs[OTHER] = google.doc()
@@ -517,6 +533,83 @@ def test_a_failure_partway_saves_nothing_for_that_doc(tmp_path):
     report = run(tmp_path, google)
     assert fetches(tmp_path) == []
     assert "Entry 1: Google answered HTTP 500. Nothing was saved for it." in report
+
+
+def test_a_doc_too_big_to_export_still_gets_its_comments_and_changelog(tmp_path):
+    google = fake()
+    google.fail["/export"] = [(403, b'{"reason": "exportSizeLimitExceeded"}')]
+    report = run(tmp_path, google)
+    (fetch,) = fetches(tmp_path)
+    assert {"metadata.json", "comments.json", "changelog.json"} <= set(fetch.files)
+    assert "export.txt" not in fetch.files
+    assert "1 with new history" in report
+    assert "Entry 1: its text export couldn't be fetched, so the rest was saved" in report
+
+
+def test_comments_google_refuses_dont_stop_the_rest_being_saved(tmp_path):
+    google = fake()
+    google.fail["/comments"] = [403]
+    report = run(tmp_path, google)
+    (fetch,) = fetches(tmp_path)
+    assert "comments.json" not in fetch.files and "changelog.json" in fetch.files
+    assert "Entry 1: its comments couldn't be fetched" in report
+
+
+def test_a_sign_in_that_runs_out_during_the_changelog_stops_the_run(tmp_path, monkeypatch):
+    google = fake()
+    google.fail["/revisions/load"] = [401]
+    original = FakeGoogle.__call__
+
+    def drive_refuses_the_check(self, request, timeout=None):
+        if request.full_url.endswith(f"files/{DOC}?fields=id"):
+            self.requests.append(request)
+            raise urllib.error.HTTPError(request.full_url, 401, "no", {}, io.BytesIO(b"body"))
+        return original(self, request, timeout)
+
+    monkeypatch.setattr(FakeGoogle, "__call__", drive_refuses_the_check)
+    with pytest.raises(google_signin.SignInError, match="sign-in"):
+        run(tmp_path, google)
+    assert fetches(tmp_path) == []
+
+
+def test_a_changelog_that_refuses_the_token_while_drive_takes_it_isnt_a_sign_in_problem(
+    tmp_path,
+):
+    google = fake()
+    google.fail["/revisions/load"] = [401]
+    report = run(tmp_path, google)
+    assert "1 without a whole changelog" in report
+    assert any(url.endswith(f"files/{DOC}?fields=id") for url in google.urls())
+
+
+def test_the_sign_in_is_read_again_for_each_doc_so_a_long_run_gets_a_fresh_token(
+    tmp_path, monkeypatch
+):
+    tokens = iter(["FAKE-ACCESS-TOKEN-0001", "FAKE-ACCESS-TOKEN-0002"])
+    monkeypatch.setattr(google_signin, "access_token", lambda: next(tokens))
+    google = fake()
+    google.docs[OTHER] = google.doc(OTHER)
+    config = config_for(tmp_path, DOC, OTHER)
+    google_fetch.collect(config, opener=google, pause=lambda _: None, now=WHEN)
+    used = {
+        r.full_url.split("?")[0].rsplit("/", 1)[-1]: r.get_header("Authorization")
+        for r in google.requests
+        if "/drive/v3/files/" in r.full_url and r.full_url.count("/") == 6
+    }
+    assert used == {DOC: "Bearer FAKE-ACCESS-TOKEN-0001", OTHER: "Bearer FAKE-ACCESS-TOKEN-0002"}
+
+
+@pytest.mark.parametrize(
+    "revisions", [{"id": "2"}, ["not a revision"]], ids=["not a list", "not an object"]
+)
+def test_an_answer_in_an_unexpected_shape_fails_that_doc_only(tmp_path, revisions):
+    google = fake()
+    google.docs[OTHER] = google.doc(OTHER)
+    google.docs[DOC]["revisions"] = revisions
+    report = run(tmp_path, google, DOC, OTHER)
+    assert "Entry 1: Google's answer wasn't in the shape expected." in report
+    assert fetches(tmp_path) == [] and len(fetches(tmp_path, OTHER)) == 1
+    assert "Built 1 doc(s)" in report
 
 
 def test_with_nothing_listed_nothing_is_fetched_or_signed_in(tmp_path, monkeypatch):

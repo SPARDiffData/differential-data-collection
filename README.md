@@ -73,7 +73,7 @@ Links in a canvas (Docs, images, other canvases) stay links: nothing fetches the
    - `documents/google-doc/<id>/versions/`, `events.jsonl` and `comments.md`: its history, with its comments and suggestions
    - `documents/google-doc/<id>/raw/`: every fetch, exactly as received
 
-Run it again whenever you like. It always reads a doc's comments, but reads its history only if the doc changed. If a doc's whole changelog can't be fetched, its text and comments are still saved, the run says so, and the changelog is tried again next time: until then the doc has no suggestions. `uv run diffdata collect google-docs build` rebuilds from what's saved, without fetching.
+Run it again whenever you like. It always reads a doc's comments, but reads its history only if the doc changed. If a doc's whole changelog can't be fetched, its text and comments are still saved, the run says so, and the changelog is tried again next time: until then the doc has no suggestions. If Google refuses one part of a doc for good, such as the text export of a doc too big to export, the rest is saved and the run names the part. `uv run diffdata collect google-docs build` rebuilds from what's saved, without fetching.
 
 **A doc that can't be read** is saved with the reason, and the run carries on: `no access` or `not found` (a listed doc you didn't pick looks like this), `a folder`, or `not a Google Doc`. Folders are refused, and their contents are never listed or opened, because choosing a folder isn't choosing the files in it.
 
