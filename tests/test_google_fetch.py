@@ -1,12 +1,14 @@
 """Fetching the listed Google Docs: what's asked for, what's saved, and what's refused. A fake
 Google that answers every request and records it; no network. Every value is made up."""
 
+import email.message
 import http.client
 import io
 import json
 import urllib.error
 import urllib.parse
 import urllib.request
+import urllib.response
 from datetime import UTC, datetime
 
 import pytest
@@ -498,6 +500,66 @@ def test_a_redirect_within_google_keeps_going():
     assert handler.redirect_request(request, None, 302, "Found", {}, url).full_url == url
 
 
+START = "https://www.googleapis.com/drive/v3/files/x"
+SIGNED = "https://doc-00-0a-docstext.googleusercontent.com/export/y?sig=FAKE"
+
+
+def through_the_real_opener(monkeypatch, hops: dict[str, str | None]) -> list[tuple]:
+    """Swap only the network out of the real OPENER: each URL in `hops` answers with a 302 to
+    the next, or 200 for None. Everything else, the redirect handler included, is the real
+    one. Returns each request that reached the network: its URL and Authorization header."""
+    sent = []
+
+    class Network(urllib.request.BaseHandler):
+        def https_open(self, request):
+            return network(request)
+
+    def network(request):
+        url = request.full_url
+        sent.append((url, request.get_header("Authorization")))
+        headers = email.message.Message()
+        if hops[url] is not None:
+            headers["Location"] = hops[url]
+        code = 200 if hops[url] is None else 302
+        response = urllib.response.addinfourl(io.BytesIO(b"FAKE-BODY"), headers, url, code)
+        response.msg = "OK" if code == 200 else "Found"
+        return response
+
+    # Fails, as it should, if OPENER isn't an opener built here, such as plain urlopen.
+    director = google_fetch.OPENER.__self__
+    monkeypatch.setitem(director.handle_open, "https", [Network()])
+    return sent
+
+
+def test_must_refuse_10_the_real_opener_drops_the_token_on_the_signed_hop(monkeypatch):
+    hops = {START: "https://docs.google.com/a", "https://docs.google.com/a": SIGNED, SIGNED: None}
+    sent = through_the_real_opener(monkeypatch, hops)
+    assert google_fetch.Google(TOKEN).get(START) == "FAKE-BODY"
+    bearer = f"Bearer {TOKEN}"
+    assert sent == [(START, bearer), ("https://docs.google.com/a", bearer), (SIGNED, None)]
+
+
+@pytest.mark.parametrize(
+    "hops",
+    [
+        {START: "https://docs.google.com/a", "https://docs.google.com/a": "https://example.org/b"},
+        {START: SIGNED, SIGNED: "https://example.org/b"},
+        {
+            START: "https://docs.google.com/a",
+            "https://docs.google.com/a": SIGNED,
+            SIGNED: "https://www.googleapis.com.example.org/b",
+        },
+    ],
+    ids=["after-two-google-hops", "after-the-signed-hop", "look-alike-after-three-hops"],
+)
+def test_must_refuse_10_the_real_opener_refuses_a_chain_that_ends_outside_google(monkeypatch, hops):
+    sent = through_the_real_opener(monkeypatch, hops)
+    with pytest.raises(FetchError, match="somewhere other than Google"):
+        google_fetch.Google(TOKEN).get(START)
+    assert [url for url, _ in sent] == list(hops)  # the last hop is never sent
+    assert all(token is None for url, token in sent if url == SIGNED)
+
+
 @pytest.mark.parametrize(
     "mime_type, reason",
     [
@@ -555,28 +617,56 @@ def test_comments_google_refuses_dont_stop_the_rest_being_saved(tmp_path):
     assert "Entry 1: its comments couldn't be fetched" in report
 
 
-def test_a_sign_in_that_runs_out_during_the_changelog_stops_the_run(tmp_path, monkeypatch):
+def test_a_view_only_doc_whose_revision_list_is_refused_still_gets_its_text(tmp_path):
+    # Google gives the revision list to editors only, so a doc the producer can only view or
+    # comment on answers 403 there. "/revisions?" is the list, not the changelog's
+    # "/revisions/load?".
     google = fake()
-    google.fail["/revisions/load"] = [401]
+    google.fail["/revisions?"] = [403]
+    report = run(tmp_path, google)
+    (fetch,) = fetches(tmp_path)
+    assert {"metadata.json", "comments.json", "export.txt"} <= set(fetch.files)
+    assert "revisions.json" not in fetch.files and "changelog.json" not in fetch.files
+    # With no newest revision number, no changelog is asked for (must-refuse 6).
+    assert not any("/revisions/load" in url for url in google.urls())
+    assert "1 without a whole changelog" in report
+    assert "Entry 1: its revision list couldn't be fetched, so the rest was saved" in report
+
+
+def drive_refuses_the_sign_in_check(monkeypatch):
+    """Make Drive answer 401 to check_sign_in's request, as it does for a sign-in that ran out."""
     original = FakeGoogle.__call__
 
-    def drive_refuses_the_check(self, request, timeout=None):
+    def refuse(self, request, timeout=None):
         if request.full_url.endswith(f"files/{DOC}?fields=id"):
             self.requests.append(request)
             raise urllib.error.HTTPError(request.full_url, 401, "no", {}, io.BytesIO(b"body"))
         return original(self, request, timeout)
 
-    monkeypatch.setattr(FakeGoogle, "__call__", drive_refuses_the_check)
+    monkeypatch.setattr(FakeGoogle, "__call__", refuse)
+
+
+# A changelog asked for whole fails for good, so it's asked for in chunks, and then the first
+# chunk answers 401.
+WHOLE_THEN_CHUNK = [500] * google_fetch.ATTEMPTS + [401]
+
+
+@pytest.mark.parametrize("fails", [[401], WHOLE_THEN_CHUNK], ids=["whole", "chunk"])
+def test_a_sign_in_that_runs_out_during_the_changelog_stops_the_run(tmp_path, monkeypatch, fails):
+    google = fake()
+    google.fail["/revisions/load"] = list(fails)
+    drive_refuses_the_sign_in_check(monkeypatch)
     with pytest.raises(google_signin.SignInError, match="sign-in"):
         run(tmp_path, google)
     assert fetches(tmp_path) == []
 
 
+@pytest.mark.parametrize("fails", [[401], WHOLE_THEN_CHUNK], ids=["whole", "chunk"])
 def test_a_changelog_that_refuses_the_token_while_drive_takes_it_isnt_a_sign_in_problem(
-    tmp_path,
+    tmp_path, fails
 ):
     google = fake()
-    google.fail["/revisions/load"] = [401]
+    google.fail["/revisions/load"] = list(fails)
     report = run(tmp_path, google)
     assert "1 without a whole changelog" in report
     assert any(url.endswith(f"files/{DOC}?fields=id") for url in google.urls())

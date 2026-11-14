@@ -216,7 +216,9 @@ def whole_changelog(google: Google, doc_id: str, last: int) -> str | None:
             if merged["chunkedSnapshot"] is None:
                 merged["chunkedSnapshot"] = part.get("chunkedSnapshot")
             merged["changelog"] += part.get("changelog") or []
-    except FetchError:
+    except FetchError as e:
+        if e.status == 401:  # the sign-in may have run out partway through the chunks
+            check_sign_in(google, doc_id)
         return None
     return json.dumps(merged, ensure_ascii=False) if complete(merged, last) else None
 
