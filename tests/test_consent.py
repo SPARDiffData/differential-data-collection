@@ -148,7 +148,7 @@ def test_the_screen_says_what_approving_means_then_lists_one_line_per_item(
     assert code == 0
     for text in (
         "What approving means:",
-        "reads an approved item on every /slack-export from now on,\n    and keeps every version",
+        "reads an approved canvas on every /slack-export from now on,\n    and keeps every version",
         "Claude reads an approved canvas in full",
         "Approve only what your team agreed to share. A doc others wrote may\n    need their",
         "A skipped item isn't asked about again.",

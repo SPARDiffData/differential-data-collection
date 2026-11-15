@@ -74,7 +74,7 @@ REVIEW_INTRO = """\
 {count} new canvas(es) and Google file(s) were found in your saved Slack data.
 
 What approving means:
-  - diffdata reads an approved item on every /slack-export from now on,
+  - diffdata reads an approved canvas on every /slack-export from now on,
     and keeps every version of it.
   - Claude reads an approved canvas in full when it collects it. An approved
     Google Doc is fetched by uv run diffdata collect google-docs, once you've

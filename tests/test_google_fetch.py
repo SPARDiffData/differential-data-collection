@@ -383,6 +383,8 @@ def test_an_approved_doc_is_named_by_its_letter_in_withdraw(tmp_path):
     report = fetch_all(tmp_path, google, DOC)
     assert "Approved item b: not found. If it's yours to share, pick it at sign-in." in report
     assert OTHER not in report
+    # Its reason is saved, so the reference log can mark it unreachable (#97).
+    assert google_fetch.last_reason(document_dir(tmp_path, "google-doc", OTHER)) == NOT_FOUND
     # A canvas isn't a Google file: it's neither counted nor asked for.
     assert "1 doc(s) to fetch" not in report and "(1 listed, 1 approved at review)" in report
     assert "Approved item c" not in report
