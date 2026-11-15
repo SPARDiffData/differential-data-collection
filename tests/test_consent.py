@@ -152,8 +152,11 @@ def test_the_screen_says_what_approving_means_then_lists_one_line_per_item(
         "Claude reads an approved canvas in full",
         "Approve only what your team agreed to share. A doc others wrote may\n    need their",
         "A skipped item isn't asked about again.",
+        "An approved\n    Google Doc is fetched by uv run diffdata collect google-docs",
+        "Other Google files aren't fetched.",
     ):
         assert text in screen
+    assert "wait" not in screen.split("a)")[0]  # nothing approved waits for a fetcher (#97)
     for name in ("REVIEW_INTRO", "REVIEW_ANSWERS", "WITHDRAW_INTRO", "WITHDRAW_ANSWERS"):
         text = getattr(review, name).format(count=26)
         assert max(len(line) for line in text.split("\n")) < 80  # fits an 80-column window
@@ -599,7 +602,7 @@ def test_a_withdrawn_canvas_isnt_read_from_the_next_run_or_asked_about_again(
     code, screen = answer(config, "e\n", "withdraw")
     assert code == 0
     assert "collected stays in your data folder for now" in screen
-    assert "Withdrawn: 1. diffdata stops reading them from the next /slack-export." in screen
+    assert "Withdrawn: 1. diffdata stops reading them from the next /slack-export," in screen
     assert decisions(config)[TEAM_NOTES] == "withdrawn"
     begin(config, [f"example-channel={CHANNEL}"], now=LATER)
     assert open_run(config.data_dir).canvases == [CANVAS, "F00000014"]
@@ -624,6 +627,28 @@ def test_withdrawing_a_canvas_also_listed_in_config_says_to_remove_it_there(
     assert "Also listed in slack_canvases in config.toml: f." in screen
     begin(listed_too, [f"example-channel={CHANNEL}"], now=LATER)
     assert "F00000014" in open_run(config.data_dir).canvases  # config.toml is its own opt-in
+
+
+def test_withdrawing_a_google_doc_also_listed_in_config_says_to_remove_it_there(
+    config, export, terminal
+):
+    # A listed doc is fetched whatever the approvals say, so withdraw must say so (#97).
+    export()
+    _, recorded = answer(config, "all\n")
+    assert "pick them at sign-in" in recorded
+    assert "then run: uv run diffdata collect google-docs" in recorded
+    assert "wait" not in recorded
+    listed_too = replace(config, google_docs=(DOC.removeprefix("google:"),))
+    code, screen = answer(config, "a\n", "withdraw", settings=listed_too)
+    assert code == 0
+    assert items(screen)[0].startswith("a) Google Doc")
+    assert items(screen)[0].endswith("· also listed in config.toml")
+    assert not any("also listed" in line for line in items(screen)[1:])
+    assert "a Google Doc from google_docs" in screen
+    assert decisions(config)[DOC] == "withdrawn"  # still recorded
+    assert "stops fetching them from the next collect google-docs" in screen
+    assert "Also listed in google_docs in config.toml: a." in screen
+    assert "Also listed in slack_canvases" not in screen
 
 
 @pytest.mark.parametrize("typed", ["all", "b, d", "none"])
@@ -654,7 +679,7 @@ def test_withdraw_with_nothing_approved_says_how_to_unlist_a_canvas(config, expo
     export()
     _, screen = answer(config, "\n", "withdraw")
     assert "Nothing was approved at review" in screen
-    assert "removing it from slack_canvases there" in screen
+    assert "a canvas from slack_canvases, a Google Doc from google_docs" in screen
 
 
 # Where the approvals file goes
