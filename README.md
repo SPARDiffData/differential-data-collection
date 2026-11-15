@@ -93,7 +93,7 @@ The build lists every canvas and Google file your saved Slack data links to. Not
 
 1. **When the build says items are waiting,** open PowerShell or Terminal in the repo folder and run `uv run diffdata consent review`. It explains what approving means, then shows a lettered list: each item's type, its real link, its title, and where and when it was first shared.
 2. **Answer** `all`, `none`, or `all but b, d` to skip some. Skipped items aren't asked about again. Pressing Enter alone records nothing, and the items wait for next time.
-3. **The next `/slack-export`** reads the approved canvases. Approved Google files aren't fetched yet: for now a Google Doc is fetched only if it's listed in `config.toml`. Attachments and ordinary links are never on the list.
+3. **The next `/slack-export`** reads the approved canvases. An approved Google Doc is fetched by `uv run diffdata collect google-docs`, once you've also picked it at Google's sign-in, the same as one listed in `config.toml`. Other Google files (Sheets, Slides, Drive files) aren't fetched. Attachments and ordinary links are never on the list.
 
 **To withdraw an approval,** run `uv run diffdata consent withdraw` the same way, and answer `all`, `none` or letters such as `b, d`. It takes effect from the next export. What was already collected stays in your data folder for now. A canvas listed in `config.toml` is withdrawn by removing it there.
 

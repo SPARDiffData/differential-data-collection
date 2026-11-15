@@ -35,7 +35,7 @@ from pathlib import Path
 
 from diffdata.common.config import Config
 from diffdata.consent import approvals
-from diffdata.consent.approvals import ApprovalsError
+from diffdata.consent.approvals import ApprovalsError, letters
 from diffdata.discover import references
 from diffdata.discover.slack_inbox import run_channel_names
 
@@ -77,7 +77,8 @@ What approving means:
   - diffdata reads an approved item on every /slack-export from now on,
     and keeps every version of it.
   - Claude reads an approved canvas in full when it collects it. An approved
-    Google file waits for the Google Docs fetcher.
+    Google Doc is fetched by uv run diffdata collect google-docs, once you've
+    also picked it at Google's sign-in. Other Google files aren't fetched.
   - Approve only what your team agreed to share. A doc others wrote may
     need their agreement too (CON-5).
   - A skipped item isn't asked about again. To withdraw an approval later,
@@ -150,18 +151,6 @@ def clean(text, limit: int | None = None) -> str:
     shown = "".join(" " if unicodedata.category(ch).startswith("C") else ch for ch in str(text))
     shown = " ".join(shown.split())
     return shown if limit is None or len(shown) <= limit else shown[: limit - 1] + "…"
-
-
-def letters(count: int) -> list[str]:
-    """a to z, then aa, ab and so on."""
-    found = []
-    for number in range(1, count + 1):
-        letter = ""
-        while number:
-            number, rest = divmod(number - 1, 26)
-            letter = chr(ord("a") + rest) + letter
-        found.append(letter)
-    return found
 
 
 def describe(entry: dict, channels: dict[str, str], titles: dict[str, str]) -> str:
@@ -357,8 +346,9 @@ def run_review(config: Config, stdin=None, stdout=None, now: datetime | None = N
     if approved:
         show(
             stdout,
-            "The next /slack-export reads the approved canvases. Approved Google files wait "
-            "for the Google Docs fetcher.",
+            "The next /slack-export reads the approved canvases. To fetch the approved Google "
+            "Docs, pick them at sign-in (uv run diffdata collect google-docs sign-in), then run: "
+            "uv run diffdata collect google-docs",
         )
     return 0
 
@@ -372,9 +362,7 @@ def run_withdraw(config: Config, stdin=None, stdout=None, now: datetime | None =
         path = approvals.safe_file(config)
         seen, decisions, log, channels = load(config, path)
         log = log or {}  # the log only describes the items, so withdrawing doesn't need it
-        approved = sorted(
-            key for key, decision in decisions.items() if decision == approvals.APPROVED
-        )
+        approved = approvals.approved_keys(decisions)
         if not approved:
             show(
                 stdout,

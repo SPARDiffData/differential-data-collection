@@ -1,10 +1,14 @@
-"""Fetch the Google Docs listed in config.toml (COL-4, COL-5), with the producer's own login.
+"""Fetch the Google Docs listed in config.toml or approved at review (COL-4, COL-5, CON-1),
+with the producer's own login.
 
 `diffdata collect google-docs sign-in` signs in through Google's Picker (google_signin.py),
-so the sign-in reaches only the docs the producer picked. This file fetches each doc that's
-listed in `google_docs` too, saves what it got unchanged with `save_fetch()`, and then
-`google_doc.build()` does the rest. A doc must be listed and picked: a listed doc that
-wasn't picked looks like one the login can't open.
+so the sign-in reaches only the docs the producer picked. This file fetches each picked doc
+that's also opted in, saves what it got unchanged with `save_fetch()`, and then
+`google_doc.build()` does the rest. A doc is opted in when it's listed in `google_docs`, or
+its latest decision in the approvals file is "approved" (consent/approvals.py). A doc must
+be opted in and picked: an opted-in doc that wasn't picked looks like one the login can't
+open. A withdrawn or skipped doc is never asked for, and if the approvals file can't be
+read, only the listed docs are.
 
 Every run asks for each doc's metadata and comments. It asks for revisions, the changelog
 and the text export only when Drive says the doc changed since the last fetch that saved
@@ -12,7 +16,8 @@ its history. A revision's own text is fetched only when the whole changelog can'
 the reader's fallback history.
 
 What this refuses (from the plan's must-refuse list on #52):
-  1   a doc that isn't listed, even if it was picked: only listed IDs are ever asked for
+  1   a doc that isn't opted in, even if it was picked: only listed or approved IDs are ever
+      asked for
   3   any request that could change a doc: everything here is a GET
   6   a partial changelog: the whole of it from revision 1, or no changelog.json
   7   showing doc content: the report gives counts, and a doc's place in the list
@@ -39,6 +44,7 @@ from diffdata.collect import google_doc, google_signin
 from diffdata.collect.google_doc import XSSI_PREFIX, Fetch, GoogleDocError, read_fetches, save_fetch
 from diffdata.common.config import Config
 from diffdata.common.documents import DocumentError, document_dir, exact
+from diffdata.consent import approvals
 
 DRIVE = "https://www.googleapis.com/drive/v3"
 CHANGELOG = "https://docs.google.com/document/d/{id}/revisions/load?id={id}&start={start}&end={end}"
@@ -361,6 +367,24 @@ def revision_texts(google: Google, doc_id: str, revisions: list[dict]) -> dict[s
     return found
 
 
+def to_fetch(config: Config) -> tuple[list[tuple[str, str]], bool]:
+    """Each doc to fetch, with how the report names it, and whether the approvals file could
+    be read. Listed docs come first, named by their place in `google_docs` ("Entry 2"). Then
+    the Google files approved at review that aren't listed, named by their letter in
+    `consent withdraw` ("Approved item c"), so a report never needs a doc's ID or title."""
+    docs = [(doc_id, f"Entry {n}") for n, doc_id in enumerate(config.google_docs, start=1)]
+    decisions = approvals.read_decisions(approvals.approvals_file(config))
+    if decisions is None:
+        return docs, False
+    listed = set(config.google_docs)
+    keys = approvals.approved_keys(decisions)
+    for letter, key in zip(approvals.letters(len(keys)), keys, strict=True):
+        doc_id = key.removeprefix(approvals.GOOGLE_PREFIX)
+        if key.startswith(approvals.GOOGLE_PREFIX) and doc_id not in listed:
+            docs.append((doc_id, f"Approved item {letter}"))
+    return docs, True
+
+
 def collect(
     config: Config,
     opener: Callable = OPENER,
@@ -368,14 +392,30 @@ def collect(
     pause: Callable = time.sleep,
     now: datetime | None = None,
 ) -> str:
-    """Fetch every listed doc, then build. Returns the report: counts, and places in the list."""
-    if not config.google_docs:
-        return f"No docs are listed under google_docs in {config.path}, so nothing was fetched."
+    """Fetch every listed or approved doc, then build. Returns the report: counts, and each
+    doc's place in the list or letter at review."""
+    docs, approvals_read = to_fetch(config)
+    unreadable = (
+        []
+        if approvals_read
+        else [
+            "Couldn't read the approvals file next to config.toml, so only the docs listed in "
+            "google_docs were fetched. Approved docs are fetched once it can be read again."
+        ]
+    )
+    if not docs:
+        return "\n".join(
+            [
+                f"No docs are listed under google_docs in {config.path} or approved at review, "
+                "so nothing was fetched.",
+                *unreadable,
+            ]
+        )
     google = Google(token or google_signin.access_token(), opener, pause)
     now = now or datetime.now(UTC)
     outcomes: Counter = Counter()
-    problems = []
-    for number, doc_id in enumerate(config.google_docs, start=1):
+    problems = list(unreadable)
+    for number, (doc_id, name) in enumerate(docs, start=1):
         if token is None and number > 1:
             # An access token lasts an hour, and a run can take longer, so each doc gets the
             # saved one, refreshed if it has run out.
@@ -388,39 +428,38 @@ def collect(
                     f"Google didn't accept the sign-in. {google_signin.SIGN_IN_AGAIN}"
                 ) from None
             outcomes["failed"] += 1
-            problems.append(f"Entry {number}: {e} Nothing was saved for it. Run this again.")
+            problems.append(f"{name}: {e} Nothing was saved for it. Run this again.")
             continue
         except (GoogleDocError, DocumentError, OSError):
             # An OSError's message can hold a path, and so the doc's ID, so it isn't shown.
             outcomes["failed"] += 1
-            problems.append(f"Entry {number}: it couldn't be saved.")
+            problems.append(f"{name}: it couldn't be saved.")
             continue
         except (KeyError, TypeError, AttributeError, ValueError):
             # Google answered in a shape this doesn't expect. The other docs still go ahead.
             outcomes["failed"] += 1
             problems.append(
-                f"Entry {number}: Google's answer wasn't in the shape expected. Nothing was "
-                "saved for it."
+                f"{name}: Google's answer wasn't in the shape expected. Nothing was saved for it."
             )
             continue
         outcomes[outcome] += 1
         if missing:
             problems.append(
-                f"Entry {number}: its {', '.join(missing)} couldn't be fetched, so the rest "
+                f"{name}: its {', '.join(missing)} couldn't be fetched, so the rest "
                 "was saved without it."
             )
         if outcome == NO_CHANGELOG:
             problems.append(
-                f"Entry {number}: {outcome}, so it has no suggestions yet. What could be "
+                f"{name}: {outcome}, so it has no suggestions yet. What could be "
                 "fetched was saved, and the changelog is tried again on the next run."
             )
         elif outcome not in (NEW, UNCHANGED):
-            problems.append(
-                f"Entry {number}: {outcome}. If it's yours to share, pick it at sign-in."
-            )
+            problems.append(f"{name}: {outcome}. If it's yours to share, pick it at sign-in.")
     done = (NEW, UNCHANGED, NO_CHANGELOG, "failed")
     report = [
-        f"{len(config.google_docs)} listed doc(s): {outcomes[NEW]} with new history, "
+        f"{len(docs)} doc(s) to fetch ({len(config.google_docs)} listed, "
+        f"{len(docs) - len(config.google_docs)} approved at review): "
+        f"{outcomes[NEW]} with new history, "
         f"{outcomes[UNCHANGED]} unchanged, {outcomes[NO_CHANGELOG]} without a whole changelog, "
         f"{outcomes['failed']} failed, "
         f"{sum(n for k, n in outcomes.items() if k not in done)} couldn't be read.",
