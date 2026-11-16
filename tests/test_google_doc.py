@@ -908,6 +908,21 @@ def test_someone_back_after_a_while_starts_a_new_version(tmp_path):
     assert [editor for editor, _ in found] == ["gaia:111", "gaia:222", "gaia:111"]
 
 
+def test_someone_already_in_the_version_who_comes_back_doesnt_start_a_new_one(tmp_path):
+    # B writes with A, A carries on alone for an hour, and B comes back: same version.
+    found = versions_of(
+        tmp_path,
+        typed(1, "A1.", 0, A, "A", 1),
+        typed(2, " B1.", 1, B, "B", 4),
+        typed(3, " A2.", 1.05, A, "A", 8),
+        typed(4, " A3.", 20, A, "A", 12),
+        typed(5, " A4.", 40, A, "A", 16),
+        typed(6, " A5.", 60, A, "A", 20),
+        typed(7, " B2.", 61, B, "B", 24),
+    )
+    assert found == [("gaia:111", "A1."), ("gaia:111", "A1. B1. A2. A3. A4. A5. B2.")]
+
+
 def test_a_long_sitting_is_cut_into_versions(tmp_path):
     # An edit every 20 minutes for 5 hours: never a 30-minute pause, but no idea should be
     # lost inside one sitting that long.
@@ -1046,6 +1061,42 @@ def test_accepting_a_long_suggested_deletion_keeps_the_old_text_in_a_version(tmp
     assert [text for _, text in found] == [paragraph + "Rest.", "Rest."]
     (accept,) = of_type(tmp_path, "accept")
     assert accept["parent"] == "sug-1"
+
+
+def test_accepting_a_long_suggested_replacement_keeps_the_old_text_in_a_version(tmp_path):
+    # A suggests replacing a paragraph, and accepts that a minute later. The old text goes
+    # as plain text, so this is a large deletion too, and the new text is in the next version.
+    paragraph = "An argument someone wrote and then thought better of. " * 3  # 162 characters
+    new = "Better."
+    found = versions_of(
+        tmp_path,
+        typed(1, paragraph + "Rest.", 0, A, "A", 1),
+        entry(
+            several(
+                {"ty": "msfd", "si": 1, "ei": len(paragraph), "sugid": "sug-1"},
+                {"ty": "iss", "ibi": 1, "s": new, "sugid": "sug-1"},
+            ),
+            minute(0.5),
+            A,
+            2,
+            "A",
+        ),
+        entry(
+            several(
+                {"ty": "ds", "si": len(new) + 1, "ei": len(new) + len(paragraph)},
+                {"ty": "ds", "si": 1, "ei": len(new)},
+                {"ty": "is", "ibi": 1, "s": new},
+            ),
+            minute(1),
+            A,
+            3,
+            "A",
+        ),
+    )
+    assert [text for _, text in found] == [paragraph + "Rest.", new + "Rest."]
+    (accept,) = of_type(tmp_path, "accept")
+    assert accept["parent"] == "sug-1"
+    assert clean_copy(tmp_path) == new + "Rest."
 
 
 def test_a_long_deletion_inside_an_entry_cuts_the_version_before_the_entry(tmp_path):

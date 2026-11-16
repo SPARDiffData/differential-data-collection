@@ -17,6 +17,12 @@ CONFIG_NAME = "config.toml"
 # A canvas is listed by its ID, or by its link: https://<workspace>.slack.com/docs/<team>/<ID>
 CANVAS_ID = re.compile(r"F[A-Z0-9]{6,}")
 CANVAS_LINK = re.compile(r"https://[a-z0-9-]+\.slack\.com/docs/T[A-Z0-9]+/(F[A-Z0-9]{6,})/?")
+# A Google Doc is listed by its ID, or by its link, from the address bar or Drive's "open" form.
+DOC_ID = re.compile(r"[A-Za-z0-9_-]{20,}")
+DOC_LINK = re.compile(
+    r"https://docs\.google\.com/document(?:/u/\d+)?/d/([A-Za-z0-9_-]{20,})(?:[/?#].*)?"
+    r"|https://drive\.google\.com/open\?id=([A-Za-z0-9_-]{20,})(?:&.*)?"
+)
 # A canvas is read again at least this often, even if nothing says it changed (COL-8).
 CANVAS_REFRESH_DAYS = 7
 
@@ -36,6 +42,8 @@ class Config:
     slack_canvases: tuple[str, ...] = ()
     # COL-8: read a canvas again after this many days, even if nothing says it changed.
     canvas_refresh_days: int = CANVAS_REFRESH_DAYS
+    # CON-1: a doc is fetched only if it's listed here and picked in Google's Picker. IDs.
+    google_docs: tuple[str, ...] = ()
     # Which config.toml these settings came from.
     path: Path | None = None
 
@@ -52,6 +60,15 @@ def canvas_id(value: str) -> str | None:
         return value
     link = CANVAS_LINK.fullmatch(value)
     return link[1] if link else None
+
+
+def doc_id(value: str) -> str | None:
+    """A Google Doc's ID, from its ID or its link. None if it's neither."""
+    value = value.strip()
+    if DOC_ID.fullmatch(value):
+        return value
+    link = DOC_LINK.fullmatch(value)
+    return (link[1] or link[2]) if link else None
 
 
 def user_config_file() -> Path:
@@ -119,6 +136,23 @@ def load_config(path: str | Path | None = None) -> Config:
                 "are the same canvas. Remove one, or replace it with the canvas you meant."
             )
         canvas_ids.append(found)
+    docs = sources.get("google_docs", [])
+    if not isinstance(docs, list) or not all(isinstance(d, str) for d in docs):
+        raise ConfigError(f"google_docs in {path} must be a list of Google Doc IDs or links.")
+    doc_ids: list[str] = []
+    for number, listed in enumerate(docs, start=1):
+        found = doc_id(listed)
+        if found is None:
+            raise ConfigError(
+                f"Entry {number} in google_docs in {path} isn't a Google Doc ID or a link like "
+                "https://docs.google.com/document/d/.../edit."
+            )
+        if found in doc_ids:
+            raise ConfigError(
+                f"Entries {doc_ids.index(found) + 1} and {number} in google_docs in {path} are "
+                "the same doc. Remove one, or replace it with the doc you meant."
+            )
+        doc_ids.append(found)
     refresh_days = sources.get("canvas_refresh_days", CANVAS_REFRESH_DAYS)
     # bool is a kind of int in Python, so true would otherwise pass as 1.
     if isinstance(refresh_days, bool) or not isinstance(refresh_days, int) or refresh_days < 1:
@@ -132,5 +166,6 @@ def load_config(path: str | Path | None = None) -> Config:
         slack_workspace_url=workspace.rstrip("/"),
         slack_canvases=tuple(canvas_ids),
         canvas_refresh_days=refresh_days,
+        google_docs=tuple(doc_ids),
         path=path,
     )

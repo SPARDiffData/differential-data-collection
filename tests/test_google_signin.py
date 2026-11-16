@@ -86,8 +86,9 @@ def test_the_sign_in_link_asks_for_drive_file_only_and_opens_the_picker():
 
 def test_signing_in_saves_the_token_beside_config_and_reports_counts_only(home, capsys):
     google = FakeGoogle(granted())
-    report = sign_in(home, opener=google, browser=browser(PICKED), timeout=10)
-    assert report.startswith("Signed in. Docs picked: 2.")
+    listed = ["FAKE-DOC-0001", "FAKE-DOC-0009"]
+    report = sign_in(home, opener=google, browser=browser(PICKED), timeout=10, listed=listed)
+    assert report.startswith("Signed in. Docs picked: 2, 1 of them listed in google_docs.")
     saved = json.loads((home / "google-token.json").read_text("utf-8"))
     assert (saved["access_token"], saved["scope"]) == (TOKEN, SCOPE)
     # One request in all: the code swapped for a token, at Google's sign-in server.
@@ -117,10 +118,13 @@ def test_an_answer_for_another_sign_in_is_refused_before_asking_for_a_token(home
     assert google.requests == [] and not (home / "google-token.json").exists()
 
 
-def test_a_cancelled_sign_in_saves_nothing(home):
+@pytest.mark.parametrize("error", ["access_denied", "invalid_scope"])
+def test_a_sign_in_google_answers_with_an_error_saves_nothing(home, error):
+    # Only the first of these is someone cancelling, so the message doesn't say that.
     google = FakeGoogle(granted())
-    with pytest.raises(SignInError, match="cancelled"):
-        sign_in(home, opener=google, browser=browser({"error": "access_denied"}), timeout=10)
+    with pytest.raises(SignInError, match="didn't finish") as stopped:
+        sign_in(home, opener=google, browser=browser({"error": error}), timeout=10)
+    assert "cancelled" not in str(stopped.value)
     assert google.requests == [] and not (home / "google-token.json").exists()
 
 
@@ -138,6 +142,36 @@ def test_a_refused_sign_in_never_shows_what_google_sent_back(home):
     with pytest.raises(SignInError) as refused:
         sign_in(home, opener=google, browser=browser(PICKED), timeout=10)
     assert "HTTP 400" in str(refused.value) and TOKEN not in str(refused.value)
+
+
+def test_google_being_unreachable_saves_nothing(home):
+    def unreachable(request, timeout=None):
+        raise urllib.error.URLError("no network")
+
+    with pytest.raises(SignInError, match="Couldn't reach Google's sign-in server"):
+        sign_in(home, opener=unreachable, browser=browser(PICKED), timeout=10)
+    assert not (home / "google-token.json").exists()
+
+
+def test_an_answer_with_no_access_token_saves_nothing(home):
+    google = FakeGoogle({"scope": SCOPE})
+    with pytest.raises(SignInError, match="held no sign-in"):
+        sign_in(home, opener=google, browser=browser(PICKED), timeout=10)
+    assert not (home / "google-token.json").exists()
+
+
+def test_a_save_cut_short_leaves_the_old_sign_in_and_no_copy_of_the_token(home, monkeypatch):
+    saved(home)
+    before = (home / "google-token.json").read_text("utf-8")
+
+    def full_disk(*args):
+        raise OSError("No space left")
+
+    monkeypatch.setattr(google_signin.os, "replace", full_disk)
+    with pytest.raises(OSError, match="No space left"):
+        google_signin.save_token(home, granted(), CLIENT["installed"], 1000.0)
+    assert list(home.glob(".saving-*")) == []
+    assert (home / "google-token.json").read_text("utf-8") == before
 
 
 def test_the_sign_in_is_never_kept_inside_a_repo(tmp_path):
@@ -171,6 +205,23 @@ def test_the_sign_in_is_never_kept_in_a_synced_folder(tmp_path):
 def test_a_missing_client_file_says_where_it_goes(tmp_path):
     with pytest.raises(SignInError, match="No google-client.json"):
         sign_in(tmp_path / ".diffdata", browser=browser(PICKED), timeout=10)
+
+
+@pytest.mark.parametrize(
+    "content, why",
+    [
+        (b"{ not json", "can't be read"),
+        (b"\xff\xfe", "can't be read"),
+        (b"[]", "can't be read"),
+        (b'{"web": {"client_id": "FAKE-CLIENT.apps.example"}}', "isn't a Desktop app client"),
+    ],
+)
+def test_a_client_file_that_cant_be_used_is_refused_before_the_browser_opens(home, content, why):
+    (home / "google-client.json").write_bytes(content)
+    opened = browser(PICKED)
+    with pytest.raises(SignInError, match=why):
+        sign_in(home, opener=FakeGoogle(granted()), browser=opened, timeout=10)
+    assert opened.opened == []
 
 
 def saved(home, scope=SCOPE, expires_at=2000.0, refresh=REFRESH):
@@ -207,15 +258,46 @@ def test_a_saved_sign_in_with_a_wider_scope_is_refused_before_any_request(home):
     assert google.requests == []
 
 
+def test_a_run_out_sign_in_with_no_refresh_token_asks_to_sign_in_again(home):
+    saved(home, refresh=None)
+    google = FakeGoogle(granted())
+    with pytest.raises(SignInError, match="has run out"):
+        access_token(home, opener=google, now=lambda: 3000.0)
+    assert google.requests == []
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"{ not json",
+        b"\xff\xfe",
+        b"[]",
+        json.dumps({"scope": SCOPE, "expires_at": 2000.0}).encode(),
+        json.dumps({"access_token": TOKEN, "scope": SCOPE, "expires_at": "soon"}).encode(),
+    ],
+    ids=["not json", "not text", "a list", "no access token", "text in expires_at"],
+)
+def test_a_saved_sign_in_that_cant_be_used_says_to_sign_in_again(home, content):
+    (home / "google-token.json").write_bytes(content)
+    google = FakeGoogle(granted())
+    with pytest.raises(SignInError, match="can't be read. Sign in again") as refused:
+        access_token(home, opener=google, now=lambda: 1000.0)
+    assert google.requests == [] and TOKEN not in str(refused.value)
+
+
 def test_not_signed_in_yet_says_how(home):
     with pytest.raises(SignInError, match="diffdata collect google-docs sign-in"):
         access_token(home)
 
 
-def test_the_command_reports_a_refusal_without_a_traceback(monkeypatch, capsys):
-    def refuse():
+def test_the_command_reports_a_refusal_without_a_traceback(
+    monkeypatch, capsys, tmp_path, no_real_config
+):
+    def refuse(listed):
         raise SignInError("No google-client.json in FAKE-HOME.")
 
+    no_real_config.parent.mkdir(parents=True, exist_ok=True)
+    no_real_config.write_text(f'[local]\ndata_dir = "{tmp_path.as_posix()}"\n', "utf-8")
     monkeypatch.setattr(google_signin, "sign_in", refuse)
     assert cli.main(["collect", "google-docs", "sign-in"]) == 1
     assert capsys.readouterr().err == "diffdata: No google-client.json in FAKE-HOME.\n"

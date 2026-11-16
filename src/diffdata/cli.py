@@ -1,6 +1,6 @@
 """The `diffdata` command.
 
-`discover slack` (DIS-1), `consent` (CON-1, CON-3), `collect google-docs sign-in` (COL-4) and
+`discover slack` (DIS-1), `consent` (CON-1, CON-3), `collect google-docs` (COL-4, COL-5) and
 `scrub` (SCR-2) are built. The other subcommands are stubs that name the requirement IDs
 (docs/requirements.md) their feature Issues will build.
 """
@@ -9,7 +9,7 @@ import argparse
 import sys
 
 from diffdata import __version__
-from diffdata.collect import google_signin
+from diffdata.collect import google_fetch, google_signin
 from diffdata.common.config import ConfigError, load_config
 from diffdata.common.paths import UnsafeDataDirError
 from diffdata.consent import review
@@ -70,14 +70,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 def add_collect_sources(collect: argparse.ArgumentParser) -> None:
     sources = collect.add_subparsers(dest="source", metavar="<source>", required=True)
-    docs_help = "Google Docs, with the producer's own Google login (COL-4)."
+    docs_help = (
+        "Fetch and build the Google Docs listed in config.toml, with your own Google login "
+        "(COL-4, COL-5)."
+    )
     docs = sources.add_parser("google-docs", help=docs_help, description=docs_help)
-    steps = docs.add_subparsers(dest="step", metavar="<step>", required=True)
+    steps = docs.add_subparsers(dest="step", metavar="<step>")
     sign_in_help = (
         "Sign in with your Google account and pick the docs to share, in Google's own "
         "picker. Run it again to pick more."
     )
     steps.add_parser("sign-in", help=sign_in_help, description=sign_in_help)
+    build_help = "Rebuild the fetched docs without fetching anything."
+    steps.add_parser("build", help=build_help, description=build_help)
 
 
 def add_discover_sources(discover: argparse.ArgumentParser) -> None:
@@ -159,8 +164,15 @@ def run_slack_step(args: argparse.Namespace) -> int:
 
 def run_google_docs_step(args: argparse.Namespace) -> int:
     try:
-        report = google_signin.sign_in()
-    except google_signin.SignInError as e:
+        # First, so an unsafe data folder stops everything before signing in or fetching.
+        config = load_config()
+        if args.step == "sign-in":
+            report = google_signin.sign_in(listed=config.google_docs)
+        elif args.step == "build":
+            report = google_fetch.build_report(config)
+        else:
+            report = google_fetch.collect(config)
+    except (ConfigError, UnsafeDataDirError, google_signin.SignInError) as e:
         print(f"diffdata: {e}", file=sys.stderr)
         return 1
     print(report)

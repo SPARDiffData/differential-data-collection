@@ -212,3 +212,48 @@ def test_channels_stops_when_none_are_listed(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     assert cli.main(["discover", "slack", "channels"]) == 1
     assert "slack_channels" in capsys.readouterr().err
+
+
+DOC_ID = "FAKE-DOC-00000000000001"
+
+
+def docs_config(folder, docs):
+    data = (folder / "data").as_posix()
+    text = f'[sources]\ngoogle_docs = {docs}\n[local]\ndata_dir = "{data}"\n'
+    return write_config(folder, text)
+
+
+@pytest.mark.parametrize(
+    "listed",
+    [
+        DOC_ID,
+        f"https://docs.google.com/document/d/{DOC_ID}/edit?tab=t.0",
+        f"https://docs.google.com/document/u/1/d/{DOC_ID}",
+        f"https://drive.google.com/open?id={DOC_ID}",
+    ],
+)
+def test_a_google_doc_is_listed_by_its_id_or_its_link(tmp_path, listed):
+    assert load_config(docs_config(tmp_path, f'["{listed}"]')).google_docs == (DOC_ID,)
+
+
+def test_google_docs_are_optional(tmp_path):
+    path = write_config(tmp_path, f'[local]\ndata_dir = "{(tmp_path / "d").as_posix()}"\n')
+    assert load_config(path).google_docs == ()
+
+
+def test_a_bad_google_docs_entry_is_named_by_its_place_only(tmp_path):
+    path = docs_config(tmp_path, f'["{DOC_ID}", "https://example.org/private-name"]')
+    with pytest.raises(ConfigError, match="Entry 2 in google_docs") as refused:
+        load_config(path)
+    assert "private-name" not in str(refused.value)
+
+
+def test_the_same_doc_listed_twice_is_refused(tmp_path):
+    link = f"https://docs.google.com/document/d/{DOC_ID}/edit"
+    with pytest.raises(ConfigError, match="Entries 1 and 2 in google_docs"):
+        load_config(docs_config(tmp_path, f'["{DOC_ID}", "{link}"]'))
+
+
+def test_google_docs_must_be_a_list(tmp_path):
+    with pytest.raises(ConfigError, match="must be a list"):
+        load_config(docs_config(tmp_path, '"one"'))
