@@ -4,7 +4,7 @@
 
 ## Status
 
-**v0.0.1: repo skeleton.** The `diffdata` command and its stages exist. Slack export (DIS-1) works through Claude Code; the other stages are stubs. Next come the reference log, canvas and Google Doc current versions, and pushing to the shared Drive. See [CHANGELOG.md](CHANGELOG.md).
+**v0.0.1: repo skeleton.** The `diffdata` command and its stages exist. Slack export (DIS-1) works through Claude Code; the other stages are stubs. Next come the reference log, canvas and Google Doc current versions, and uploading to central storage on Google Cloud Storage. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick start
 
