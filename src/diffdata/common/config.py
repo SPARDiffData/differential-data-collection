@@ -42,7 +42,8 @@ class Config:
     slack_canvases: tuple[str, ...] = ()
     # COL-8: read a canvas again after this many days, even if nothing says it changed.
     canvas_refresh_days: int = CANVAS_REFRESH_DAYS
-    # CON-1: a doc is fetched only if it's listed here and picked in Google's Picker. IDs.
+    # CON-1: a doc is fetched only if it's listed here or approved at review, and picked in
+    # Google's Picker. IDs.
     google_docs: tuple[str, ...] = ()
     # Which config.toml these settings came from.
     path: Path | None = None
