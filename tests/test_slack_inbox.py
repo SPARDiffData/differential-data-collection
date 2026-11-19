@@ -702,7 +702,7 @@ def test_an_opted_out_persons_stub_keeps_only_its_place(config, capsys):
     assert kickoff == (
         "Opted out (U00000001) at 2026-10-01 09:14:00 CDT ===\n"
         "Message TS: 1790864040.000100\n"
-        "Thread: 3 replies (latest: 2026-10-03 04:02:00 CDT)\n"
+        "Thread: 3 replies (latest: -)\n"
     )
     assert json.loads(path.read_text(encoding="utf-8"))["left_out"] == 2
 
@@ -890,3 +890,96 @@ def test_a_thread_reply_whose_author_shows_as_id_colon_is_cut_to_a_stub(config):
     saved = saved_text(config)
     assert "Words that must be left out" not in saved and "alex@example.com" not in saved
     assert "A question." in saved
+
+
+def thread_text(parent_author: str, parent_text: str, replies: list[tuple[str, str]], total=None):
+    """A thread read: the parent by `parent_author`, then each (author, text) reply."""
+    total = len(replies) if total is None else total
+    text = (
+        "=== THREAD PARENT MESSAGE ===\n"
+        f"From: {parent_author}\nTime: 2026-10-01 09:14:00 CDT\n"
+        f"Message TS: 1790864040.000100\n{parent_text}\n\n"
+        f"=== THREAD REPLIES ({total} total) ===\n\n"
+    )
+    for n, (author, body) in enumerate(replies, start=1):
+        text += (
+            f"--- Reply {n} of {len(replies)} ---\nFrom: {author}\n"
+            f"Time: 2026-10-01 09:2{n}:00 CDT\nMessage TS: 1790864400.00011{n}\n{body}\n\n"
+        )
+    return text
+
+
+ALEX = "Alex Example <alex@example.com> (U00000001)"
+SAM = "Sam Sample <sam@example.com> (U00000002)"
+RILEY = "Riley Placeholder <riley@example.com> (U00000003)"
+
+
+def save_thread(config, text) -> tuple[int, str]:
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    save(opted, payload(response=connector_result("read_channel.txt")), now=T0)
+    code = save(opted, thread_payload(wrapped(text)), now=T0)
+    return code, saved_text(config)
+
+
+def test_must_refuse_2_a_replies_line_pasted_into_their_parent_doesnt_keep_their_text(config):
+    parent = "Log:\n=== THREAD REPLIES (2 total) ===\nSECRET after the fake line"
+    code, saved = save_thread(config, thread_text(ALEX, parent, [(SAM, "Reply A."), (RILEY, "B.")]))
+    assert code == 0
+    assert "SECRET" not in saved and "Log:" not in saved
+    assert "Reply A." in saved and "B." in saved
+
+
+def test_must_refuse_2_the_next_reply_marker_pasted_into_their_reply_doesnt_keep_their_text(
+    config,
+):
+    body = "See:\n--- Reply 2 of 3 ---\nSECRET after the fake marker"
+    replies = [(ALEX, body), (SAM, "Second."), (RILEY, "Third.")]
+    code, saved = save_thread(config, thread_text(SAM, "A question.", replies))
+    assert code == 0
+    assert "SECRET" not in saved and "See:" not in saved
+    assert "Second." in saved and "Third." in saved
+
+
+def test_must_refuse_2_a_message_header_pasted_without_a_ts_line_is_cut_with_their_text(config):
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    text = (
+        "Channel: #example-channel (C00000001)\n\n"
+        f"=== Message from {ALEX} at 2026-10-01 09:14:00 CDT ===\n"
+        "Message TS: 1790864040.000100\n"
+        f"pasted:\n=== Message from {SAM} at 2026-10-01 09:00:00 CDT ===\nSECRET\n"
+        "Reactions: +1 (1)\n"
+    )
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    assert save(opted, payload(response=wrapped(text)), now=T0) == 0
+    saved = saved_text(config)
+    assert "SECRET" not in saved and "pasted:" not in saved and "+1" not in saved
+
+
+def test_the_stubs_thread_line_is_rebuilt_from_the_count_alone(config):
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    text = (
+        "Channel: #example-channel (C00000001)\n\n"
+        f"=== Message from {ALEX} at 2026-10-01 09:14:00 CDT ===\n"
+        "Message TS: 1790864040.000100\nHello\n"
+        "Thread: 1 reply (latest: SECRET words)\n"
+    )
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    assert save(opted, payload(response=wrapped(text)), now=T0) == 0
+    saved = saved_text(config)
+    assert "SECRET" not in saved and "Thread: 1 reply (latest: -)" in saved
+
+
+def test_someone_else_quoting_an_opted_out_id_in_their_text_doesnt_stop_the_export(config):
+    code, saved = save_thread(
+        config, thread_text(SAM, "Ask Alex (U00000001) about it.", [(RILEY, "Will do.")])
+    )
+    assert code == 0 and "Will do." in saved
+
+
+def test_a_thread_whose_reply_count_differs_from_its_total_is_still_cut_and_saved(config):
+    # Slack's total can drift, say after a deletion: the replies themselves still count up.
+    replies = [(ALEX, "Words that must be left out."), (SAM, "Kept.")]
+    code, saved = save_thread(config, thread_text(SAM, "A question.", replies, total=3))
+    assert code == 0
+    assert "Words that must be left out" not in saved and "Kept." in saved

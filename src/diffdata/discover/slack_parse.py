@@ -347,43 +347,95 @@ def leave_out(
 
 
 def still_shows(tool_response, user_ids: set[str]) -> bool:
-    """Whether any of these people still shows as an author anywhere in a result, beyond
-    their stubs: a shape leave_out didn't take, kept whole. The hook then saves nothing."""
-    text = raw_text(tool_response)  # JSON doesn't escape "(", ")", letters or digits
+    """Whether any of these people still shows as an author, on a "=== Message from" or a
+    "From:" line, anywhere in a result beyond their stubs: a shape leave_out didn't take,
+    kept whole. The hook then saves nothing. Only author lines count, so someone else's
+    message that happens to quote "(U...)" doesn't stop the export."""
+    text = "\n".join(strings_in(raw_text(tool_response)))
     for user_id in user_ids:
-        shown = sum(m["user_id"] == user_id for m in SHOWN_ID.finditer(text))
+        shown = 0
+        for line in text.split("\n"):
+            if line.startswith(("=== Message from ", "From: ")):
+                shown += any(m["user_id"] == user_id for m in SHOWN_ID.finditer(line))
         if shown > text.count(f"{OPTED_OUT_NAME} ({user_id})"):
             return True
     return False
 
 
+def strings_in(raw: str) -> list[str]:
+    """Every text in a result, JSON decoded, at any depth: what the parser would read."""
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return [raw]
+    found: list[str] = []
+
+    def walk(item) -> None:
+        if isinstance(item, str):
+            inner = strings_in(item) if item.lstrip()[:1] in ("{", "[") else [item]
+            found.extend(inner)
+        elif isinstance(item, dict):
+            for part in item.values():
+                walk(part)
+        elif isinstance(item, list):
+            for part in item:
+                walk(part)
+
+    walk(value)
+    return found
+
+
+def opens_like_a_message(block: str, in_thread: bool) -> bool:
+    """Whether the text after a marker starts the way the tool writes a message: in a thread
+    read, From, Time and Message TS lines; in a channel read, a Message TS line. The TS must
+    be in its own shape."""
+    lines = [line.strip() for line in block.split("\n") if line.strip()]
+    keys = ["From", "Time", "Message TS"] if in_thread else ["Message TS"]
+    if len(lines) < len(keys):
+        return False
+    for line, key in zip(lines, keys, strict=False):
+        if line.partition(": ")[0] != key:
+            return False
+    return TS.fullmatch(lines[len(keys) - 1].partition(": ")[2].strip()) is not None
+
+
 def real_markers(text: str, in_thread: bool) -> list[re.Match]:
     """The marker lines the tool itself writes, in the order it writes them. A line in
-    someone's text that only looks like one stays part of that text: a channel read has only
-    "=== Message from" lines; a thread read has one parent line, then one replies line, then
-    "--- Reply n of N ---" counting up from 1."""
+    someone's text that only looks like one stays part of that text, and is cut with it: a
+    channel read has only "=== Message from" lines; a thread read has one parent line, then
+    one replies line, then "--- Reply n of N ---" counting up from 1. Each must be followed
+    the way the tool follows it: a message marker by its header lines, the replies line by
+    nothing but blank lines."""
+    candidates = list(MARKER.finditer(text))
     found = []
     expected, total, parent_seen, replies_seen = 1, None, False, False
-    for marker in MARKER.finditer(text):
+    for i, marker in enumerate(candidates):
         line = marker[0].strip()
+        end = candidates[i + 1].start() if i + 1 < len(candidates) else len(text)
+        block = text[marker.end() : end]
         if not in_thread:
-            if marker["who"] is not None:
+            if marker["who"] is not None and opens_like_a_message(block, False):
                 found.append(marker)
             continue
-        if line == "=== THREAD PARENT MESSAGE ===" and not parent_seen and not found:
-            parent_seen = True
-        elif (count := REPLIES_TOTAL.fullmatch(line)) and parent_seen and not replies_seen:
-            replies_seen, total = True, int(count["total"])
-        elif (
-            (reply := REPLY_MARKER.fullmatch(line))
-            and replies_seen
-            and int(reply["n"]) == expected
-            and int(reply["of"]) == total
-        ):
-            expected += 1
+        if line == "=== THREAD PARENT MESSAGE ===":
+            ok = not parent_seen and not found and opens_like_a_message(block, True)
+            parent_seen = parent_seen or ok
+        elif REPLIES_TOTAL.fullmatch(line):
+            ok = parent_seen and not replies_seen and not block.strip()
+            replies_seen = replies_seen or ok
+        elif reply := REPLY_MARKER.fullmatch(line):
+            ok = (
+                replies_seen
+                and int(reply["n"]) == expected
+                and (total is None or int(reply["of"]) == total)
+                and opens_like_a_message(block, True)
+            )
+            if ok:
+                expected, total = expected + 1, int(reply["of"])
         else:
-            continue
-        found.append(marker)
+            ok = False
+        if ok:
+            found.append(marker)
     return found
 
 
@@ -432,8 +484,12 @@ def leave_out_text(
         stub += [line for line in head if line.startswith(("Time: ", "Message TS: "))]
         details = lines[len(head) :]
         while details and detail_line(details[-1]):
-            if detail_line(details[-1])[0] == "Thread":
-                stub.append(details[-1].rstrip())
+            if detail_line(details[-1])[0] == "Thread" and (
+                count := REPLIES.match(detail_line(details[-1])[1])
+            ):
+                # Rebuilt from the count alone: the "latest" part could be their own words.
+                n = int(count[1])
+                stub.append(f"Thread: {n} {'reply' if n == 1 else 'replies'} (latest: -)")
             details.pop()
         trailing = len(block) - len(block.rstrip("\n"))
         parts.append("\n".join(stub) + "\n" * max(trailing, 1))

@@ -486,7 +486,8 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
             return fail(
                 "This Slack result came in a shape diffdata couldn't cut someone in "
                 "slack_opted_out out of, so nothing was saved. Stop the export and tell the "
-                "user."
+                "user: they can pass this message to the project team, with any names or text "
+                "replaced, so the filter can be fixed."
             )
         messages, _ = parse_result(hook["tool_name"], hook["tool_input"], response)
         left = sum(m.user_name == OPTED_OUT_NAME for m in messages)
