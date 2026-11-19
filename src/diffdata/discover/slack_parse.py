@@ -360,7 +360,7 @@ def still_shows(tool_response, user_ids: set[str]) -> bool:
     message that happens to quote "(U...)" doesn't stop the export."""
     text = "\n".join(strings_in(raw_text(tool_response)))
     for line in text.split("\n"):
-        line = line.rstrip("\r")
+        line = line.strip()  # indented or with Windows line ends, it still counts
         if not line.startswith(("=== Message from ", "From: ")):
             continue
         for found in SHOWN_ID.finditer(line):
@@ -387,7 +387,7 @@ def strings_in(raw: str) -> list[str]:
 
     def walk(item) -> None:
         if isinstance(item, str):
-            inner = strings_in(item) if item.lstrip()[:1] in ("{", "[") else [item]
+            inner = strings_in(item) if item.lstrip()[:1] in ("{", "[", '"') else [item]
             found.extend(inner)
         elif isinstance(item, dict):
             for part in item.values():

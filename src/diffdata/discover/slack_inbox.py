@@ -481,6 +481,18 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
         # People who opted out (#105): their messages are cut to a stub before anything is
         # written, keeping only what finds their threads and checks the pages.
         opted_out = set(config.slack_opted_out)
+        shaped = result_json(response)
+        if not (isinstance(shaped, dict) and isinstance(shaped.get("messages"), str)) and any(
+            user_id in json.dumps(response) for user_id in opted_out
+        ):
+            # Not the connector's usual shape, so the filter can't find the messages to cut,
+            # and someone who opted out is in it somewhere. A result in this shape never
+            # counts towards the start points anyway (slack_state.a_read).
+            return fail(
+                "This Slack result isn't in the shape diffdata expects, and it includes "
+                "someone in slack_opted_out, so nothing was saved. Stop the export and tell "
+                "the user: they can pass this message to the project team."
+            )
         before, skipped_before = parse_result(hook["tool_name"], hook["tool_input"], response)
         response, left_names, theirs_unreadable = leave_out(response, opted_out, hook["tool_name"])
         after, skipped_after = parse_result(hook["tool_name"], hook["tool_input"], response)
@@ -491,9 +503,9 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
             # from the start-point checks, would be worse than stopping.
             return fail(
                 "Cutting out someone in slack_opted_out would also have changed other people's "
-                "messages in this Slack result, so nothing was saved. Stop the export and tell "
-                "the user: they can pass this message to the project team, so the filter can "
-                "be fixed."
+                "messages in this Slack result, or someone pasted Slack's own header lines into "
+                "a message, so nothing was saved. Stop the export and tell the user: they can "
+                "pass this message to the project team, so the filter can be fixed."
             )
         if still_shows(response, opted_out):
             return fail(

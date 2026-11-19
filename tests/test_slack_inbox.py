@@ -860,7 +860,7 @@ def test_a_result_in_a_shape_the_filter_doesnt_take_isnt_saved_at_all(config, ca
     begin(opted, ["example-channel=C00000001"], now=T0)
     assert save(opted, payload(response=[{"type": "text", "text": json.dumps(inner)}]), now=T0) == 2
     assert inbox_files(config) == []
-    assert "couldn't cut someone in slack_opted_out out of" in capsys.readouterr().err
+    assert "isn't in the shape diffdata expects" in capsys.readouterr().err
 
 
 def test_a_refused_read_records_no_one_as_left_out(config):
@@ -1043,3 +1043,32 @@ def test_a_name_in_a_shape_the_parser_doesnt_take_is_still_kept_for_the_scrub(co
     thread = thread_text(SAM, "A question.", [(odd, "Theirs.")])
     assert save(opted, thread_payload(wrapped(thread)), now=T0) == 0
     assert slack_inbox.read_left_out(config.data_dir)[OPTED_OUT] == ["Alex Example"]
+
+
+@pytest.mark.parametrize("shape", ["a second block", "blocks inside a dict", "messages as JSON"])
+def test_must_refuse_2_a_thread_read_in_an_odd_shape_with_them_in_it_isnt_saved(config, shape):
+    # A thread read has no channel-header check to stop it by chance, so the shape check must.
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    save(opted, payload(response=connector_result("read_channel.txt")), now=T0)
+    text = (FIXTURES / "read_thread.txt").read_text(encoding="utf-8")
+    pagination = "There are no more messages in this thread.\n"
+    inner = {"messages": text, "pagination_info": pagination}
+    if shape == "a second block":
+        response = [{"type": "text", "text": json.dumps(inner)}, {"type": "text", "text": "\nNote"}]
+    elif shape == "blocks inside a dict":
+        response = {"content": [{"type": "text", "text": json.dumps(inner)}]}
+    else:
+        inner["messages"] = json.dumps(text)
+        response = [{"type": "text", "text": json.dumps(inner)}]
+    assert save(opted, thread_payload(response), now=T0) == 2
+    saved = saved_text(config)
+    assert "Thanks! Notes" not in saved and "call-notes.txt" not in saved
+
+
+def test_indented_author_lines_are_still_caught_by_the_last_check(config):
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    text = "\n".join(" " + line for line in (FIXTURES / "read_channel.txt").read_text().split("\n"))
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    save(opted, payload(response=wrapped(text)), now=T0)
+    assert "Meeting moved" not in saved_text(config)
