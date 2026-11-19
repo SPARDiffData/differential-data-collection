@@ -26,6 +26,8 @@ folders = []                          # fixed places to check, e.g. ["~/Document
 data_dir = "~/diffdata-data"
 
 [store]
-# STO-1: the pilot store is the SPARDiffData shared Google Drive.
-backend = "google-drive"
-folder = ""  # the shared Drive folder to push to
+# STO-1: the pilot store is a Google Cloud Storage bucket (decision D3 in the Second
+# Half Plan). Nothing reads this section yet: the upload isn't built.
+backend = "gcs"
+bucket = ""  # the bucket's name, from the project team
+folder = ""  # your team's folder in the bucket
