@@ -284,6 +284,7 @@ def test_the_opt_out_list_is_empty_by_default(tmp_path):
         ('["U00000001", "u00000002"]', "Entry 2 in slack_opted_out"),
         ('["C00000001"]', "Entry 1 in slack_opted_out"),
         ('["U0001"]', "Entry 1 in slack_opted_out"),
+        ('["UABCDEFGH"]', "Entry 1 in slack_opted_out"),  # no digit, as the scrub requires
         ('["U00000001", "U00000001"]', "Entries 1 and 2 in slack_opted_out"),
         ('"U00000001"', "must be a list of Slack user IDs"),
     ],
@@ -296,3 +297,24 @@ def test_must_refuse_6_an_opt_out_entry_that_isnt_a_user_id_stops_the_run(tmp_pa
     with pytest.raises(ConfigError, match=message) as refused:
         load_config(path)
     assert "example.com" not in str(refused.value)  # the entry's place, never its value
+
+
+@pytest.mark.parametrize(
+    "text, where",
+    [
+        ('[store]\nslack_opted_out = ["U00000001"]\n', "store.slack_opted_out"),
+        ('slack_opted_out = ["U00000001"]\n', "slack_opted_out"),
+        ('[sources]\nslack_opt_out = ["U00000001"]\n', "sources.slack_opt_out"),
+        ('[sources]\nopted_out = ["U00000001"]\n', "sources.opted_out"),
+    ],
+)
+def test_must_refuse_6_an_opt_out_list_anywhere_but_sources_stops_the_run(tmp_path, text, where):
+    # A line pasted at the end of the file lands under the last table, [store], and a
+    # misspelt key is just unknown: either would silently leave no one out.
+    data = (tmp_path / "data").as_posix()
+    path = write_config(tmp_path, f'[local]\ndata_dir = "{data}"\n' + text)
+    with pytest.raises(
+        ConfigError, match="must be slack_opted_out, under \\[sources\\]"
+    ) as refused:
+        load_config(path)
+    assert where in str(refused.value) and "U00000001" not in str(refused.value)

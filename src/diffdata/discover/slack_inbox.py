@@ -33,8 +33,10 @@ Layout under the data folder:
 """
 
 import json
+import os
 import re
 import sys
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -145,6 +147,63 @@ def inbox_dir(data: Path) -> Path:
 def write_json(path: Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def write_atomic(path: Path, text: str) -> None:
+    """Write through a temporary file, so a write cut short leaves the old file whole."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(dir=path.parent, prefix=".saving-")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
+def left_out_path(data: Path) -> Path:
+    return slack_dir(data) / "left_out.json"
+
+
+def read_left_out(data: Path) -> dict[str, list[str]]:
+    """Each opted-out person's Slack ID and the display names seen for them (#105). Empty if
+    there's no file yet. A file that's there but can't be read stops the run: the names in it
+    may exist nowhere else, and without them the scrub couldn't replace mentions of them."""
+    path = left_out_path(data)
+    if not path.exists():
+        return {}
+    damaged = SlackExportError(
+        "slack/left_out.json in the data folder can't be read, so nothing was built or "
+        "scrubbed. It lists the people who opted out, for the scrub. Put back a copy, or ask "
+        "the project team."
+    )
+    try:
+        found = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise damaged from error
+    if not isinstance(found, dict) or not all(
+        isinstance(user_id, str)
+        and isinstance(names, list)
+        and all(isinstance(n, str) for n in names)
+        for user_id, names in found.items()
+    ):
+        raise damaged
+    return found
+
+
+def record_left_out(data: Path, seen: dict[str, set[str]]) -> None:
+    """Add these people and names to slack/left_out.json. It only grows: someone taken off
+    the list later is still pseudonymised, never shown by name."""
+    known = read_left_out(data)
+    for user_id, names in seen.items():
+        known[user_id] = sorted(set(known.get(user_id, [])) | names)
+    write_atomic(
+        left_out_path(data),
+        json.dumps(dict(sorted(known.items())), indent=2, ensure_ascii=False) + "\n",
+    )
 
 
 def open_run(data: Path) -> Run | None:

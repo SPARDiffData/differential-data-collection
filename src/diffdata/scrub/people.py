@@ -26,8 +26,8 @@ from pathlib import Path
 
 from diffdata.collect import slack_canvas
 from diffdata.common.documents import documents_dir
-from diffdata.discover.slack_export import read_left_out, read_store
-from diffdata.discover.slack_inbox import slack_dir
+from diffdata.discover.slack_export import read_store
+from diffdata.discover.slack_inbox import read_left_out, slack_dir
 
 PEOPLE_FILE = "private/people.toml"  # under the data folder, as messages name it
 PLACEHOLDER = re.compile(r"\[Person ([1-9][0-9]*)\]")

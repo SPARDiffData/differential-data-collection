@@ -23,8 +23,25 @@ DOC_LINK = re.compile(
     r"https://docs\.google\.com/document(?:/u/\d+)?/d/([A-Za-z0-9_-]{20,})(?:[/?#].*)?"
     r"|https://drive\.google\.com/open\?id=([A-Za-z0-9_-]{20,})(?:&.*)?"
 )
-# A Slack user ID, as the connector shows it: U or W, then 8 or more capitals and digits.
-USER_ID = re.compile(r"[UW][A-Z0-9]{8,}")
+# A Slack user ID, as the connector shows it: U or W, then 8 or more capitals and digits, at
+# least one a digit. The same shape the scrub's people list takes (scrub/people.py).
+USER_ID = re.compile(r"[UW](?=[A-Z]*[0-9])[A-Z0-9]{8,}")
+OPT_OUT_KEY = "slack_opted_out"
+
+
+def opt_out_keys(table: dict, where: str) -> list[str]:
+    """Where a key that looks like the opt-out list sits, by table: anything but
+    [sources] slack_opted_out itself would otherwise be silently ignored."""
+    found = []
+    for key, value in table.items():
+        squashed = re.sub(r"[^a-z]", "", key.lower())
+        if "optout" in squashed or "optedout" in squashed:
+            found.append(f"{where}{key}")
+        if isinstance(value, dict):
+            found += opt_out_keys(value, f"{where}{key}.")
+    return found
+
+
 # A canvas is read again at least this often, even if nothing says it changed (COL-8).
 CANVAS_REFRESH_DAYS = 7
 
@@ -158,7 +175,15 @@ def load_config(path: str | Path | None = None) -> Config:
                 "the same doc. Remove one, or replace it with the doc you meant."
             )
         doc_ids.append(found)
-    opted_out = sources.get("slack_opted_out", [])
+    misplaced = [k for k in opt_out_keys(raw, "") if k != f"sources.{OPT_OUT_KEY}"]
+    if misplaced:
+        # A paste at the end of the file lands in the last table, and a misspelling is just an
+        # unknown key. Either would leave no one out, so neither is allowed.
+        raise ConfigError(
+            f"{path} has {', '.join(misplaced)}. The opt-out list must be slack_opted_out, "
+            "under [sources]. Move it there, then run again. Nothing was collected."
+        )
+    opted_out = sources.get(OPT_OUT_KEY, [])
     if not isinstance(opted_out, list) or not all(isinstance(u, str) for u in opted_out):
         raise ConfigError(f"slack_opted_out in {path} must be a list of Slack user IDs.")
     user_ids: list[str] = []

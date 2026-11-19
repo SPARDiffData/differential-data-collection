@@ -728,3 +728,30 @@ def test_must_refuse_4_mentions_of_opted_out_people_are_replaced_in_the_scrubbed
     assert re.search(r"Added my comments, @\[Person \d+\]", shown)
     for value in ("José", "Ejemplo", "Alex Example", "U00000006", "U00000001"):
         assert value not in shown
+
+
+def test_must_refuse_1_the_scrub_wont_run_until_a_build_has_left_opted_out_people_out(
+    config, export
+):
+    export()
+    opted = replace(config, slack_opted_out=("U00000001",))
+    with pytest.raises(ScrubError, match="Run uv run diffdata discover slack build first"):
+        scrub(opted)
+    assert not (config.data_dir / "scrubbed").exists()
+    build(opted)
+    scrub(opted)  # now it runs
+
+
+def test_a_damaged_list_of_opted_out_people_stops_the_scrub_and_the_build(config, export):
+    from diffdata.discover.slack_inbox import SlackExportError
+
+    opted = replace(config, slack_opted_out=("U00000006",))
+    export()
+    build(opted)
+    left = config.data_dir / "slack" / "left_out.json"
+    left.write_text(left.read_text(encoding="utf-8")[:10], encoding="utf-8")
+    with pytest.raises(ScrubError, match="left_out.json in the data folder can't be read"):
+        scrub(opted)
+    assert not (config.data_dir / "scrubbed").exists()
+    with pytest.raises(SlackExportError, match="left_out.json"):
+        build(opted)

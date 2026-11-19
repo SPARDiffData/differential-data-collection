@@ -335,3 +335,27 @@ def test_with_no_one_opted_out_nothing_is_left_out(config, export_run):
     report = export_run()
     assert "left out" not in report
     assert not (config.data_dir / "slack" / "left_out.json").exists()
+
+
+def test_must_refuse_5_a_day_only_an_opted_out_person_posted_on_loses_its_file(
+    config, export_run, tmp_path
+):
+    channel = tmp_path / "read_channel_lonely_day.txt"
+    channel.write_text(
+        "Channel: #example-channel (C00000001)\n\n"
+        "=== Message from Alex Example <alex@example.com> (U00000001) "
+        "at 2026-10-09 09:00:00 CDT ===\n"
+        "Message TS: 1791554400.000900\n"
+        "A day with only my post on it.\n\n"
+        "=== Message from Sam Sample <sam@example.com> (U00000002) "
+        "at 2026-10-08 09:00:00 CDT ===\n"
+        "Message TS: 1791468000.000800\n"
+        "Another day.\n",
+        encoding="utf-8",
+    )
+    export_run(channel_fixture=str(channel))
+    assert "2026-10-09.md" in view(config)
+    build(replace(config, slack_opted_out=(OPTED_OUT,)))
+    assert "2026-10-09.md" not in view(config)
+    assert "A day with only my post" not in everything_built(config)
+    assert "2026-10-08.md" in view(config)

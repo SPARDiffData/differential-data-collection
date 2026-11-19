@@ -44,6 +44,7 @@ from diffdata.discover.slack_inbox import (
     inbox_dir,
     is_expired,
     open_run,
+    record_left_out,
     require_workspace,
     run_channel_names,
     run_path,
@@ -340,36 +341,6 @@ def remove_from_store(path: Path, user_ids: set[str]) -> list[dict]:
     return removed
 
 
-def left_out_path(data: Path) -> Path:
-    return slack_dir(data) / "left_out.json"
-
-
-def read_left_out(data: Path) -> dict[str, list[str]]:
-    """Each opted-out person's Slack ID and the display names seen for them. Empty if there's
-    no file yet or it can't be read: a damaged file is written again whole by the next build."""
-    try:
-        found = json.loads(left_out_path(data).read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return {}
-    if not isinstance(found, dict):
-        return {}
-    return {
-        user_id: [n for n in names if isinstance(n, str)]
-        for user_id, names in found.items()
-        if isinstance(user_id, str) and isinstance(names, list)
-    }
-
-
-def record_left_out(data: Path, seen: dict[str, set[str]]) -> None:
-    """Add these people and names to slack/left_out.json. It only grows: someone taken off
-    the list later is still pseudonymised, never shown by name."""
-    known = read_left_out(data)
-    for user_id, names in seen.items():
-        known[user_id] = sorted(set(known.get(user_id, [])) | names)
-    text = json.dumps(dict(sorted(known.items())), indent=2, ensure_ascii=False) + "\n"
-    references.write_log(left_out_path(data), text)
-
-
 def ts_key(record: dict) -> tuple[int, ...]:
     return tuple(int(part) for part in record["ts"].split("."))
 
@@ -457,5 +428,11 @@ def write_view(
         if not path.is_file() or path.read_text(encoding="utf-8") != text:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8", newline="\n")
+            changed += 1
+    # A day whose posts were all removed from the store, as when everyone who posted that day
+    # opted out (#105), mustn't keep its old file, or the scrub would copy it.
+    for path in folder.glob("*.md") if folder.is_dir() else []:
+        if path.stem not in days and re.fullmatch(r"\d{4}-\d{2}-\d{2}", path.stem):
+            path.unlink()
             changed += 1
     return changed
