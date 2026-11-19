@@ -306,9 +306,15 @@ def to_markdown(text: str, people: dict[str, str], channels: dict[str, str]) -> 
 OPTED_OUT_NAME = "Opted out"
 # The ID at the end of an author, even in a shape AUTHOR doesn't take, such as a name with @.
 AUTHOR_ID = re.compile(r"\((?P<user_id>[A-Z][A-Z0-9]+)\)\s*$")
+# Any user ID shown as an author: "(U...)", or "(ID: U...)" as the search tool shows it.
+SHOWN_ID = re.compile(r"\((?:ID: )?(?P<user_id>[UW][A-Z0-9]{8,})\)")
+REPLY_MARKER = re.compile(r"--- Reply (?P<n>\d+) of (?P<of>\d+) ---")
+REPLIES_TOTAL = re.compile(r"=== THREAD REPLIES \((?P<total>\d+) total\) ===")
 
 
-def leave_out(tool_response, user_ids: set[str]) -> tuple[object, dict[str, set[str]]]:
+def leave_out(
+    tool_response, user_ids: set[str], tool_name: str = ""
+) -> tuple[object, dict[str, set[str]]]:
     """A channel or thread read with each message by these authors cut down to a stub: the
     author's ID, shown as "Opted out", the Time and Message TS lines, and a Thread line if
     it had one, so a thread they started is still found and read for others' replies. Their
@@ -317,14 +323,16 @@ def leave_out(tool_response, user_ids: set[str]) -> tuple[object, dict[str, set[
     names: dict[str, set[str]] = {}
     if not user_ids:
         return tool_response, names
+    in_thread = tool_name.endswith("slack_read_thread")
 
     def fix_string(raw: str) -> str:
         try:
             value = json.loads(raw)
         except json.JSONDecodeError:
-            return leave_out_text(raw, user_ids, names)  # an error or plain text
+            return leave_out_text(raw, user_ids, names, in_thread)  # an error or plain text
         if isinstance(value, dict) and isinstance(value.get("messages"), str):
-            value = {**value, "messages": leave_out_text(value["messages"], user_ids, names)}
+            messages = leave_out_text(value["messages"], user_ids, names, in_thread)
+            value = {**value, "messages": messages}
         elif isinstance(value, list):  # a result Claude Code saved to a file: the block list
             value = [{"type": "text", "text": fix_string(raw_text(value))}]
         else:
@@ -338,15 +346,57 @@ def leave_out(tool_response, user_ids: set[str]) -> tuple[object, dict[str, set[
     return ([{"type": "text", "text": fixed}] if isinstance(tool_response, list) else fixed), names
 
 
-def leave_out_text(text: str, user_ids: set[str], names: dict[str, set[str]]) -> str:
+def still_shows(tool_response, user_ids: set[str]) -> bool:
+    """Whether any of these people still shows as an author anywhere in a result, beyond
+    their stubs: a shape leave_out didn't take, kept whole. The hook then saves nothing."""
+    text = raw_text(tool_response)  # JSON doesn't escape "(", ")", letters or digits
+    for user_id in user_ids:
+        shown = sum(m["user_id"] == user_id for m in SHOWN_ID.finditer(text))
+        if shown > text.count(f"{OPTED_OUT_NAME} ({user_id})"):
+            return True
+    return False
+
+
+def real_markers(text: str, in_thread: bool) -> list[re.Match]:
+    """The marker lines the tool itself writes, in the order it writes them. A line in
+    someone's text that only looks like one stays part of that text: a channel read has only
+    "=== Message from" lines; a thread read has one parent line, then one replies line, then
+    "--- Reply n of N ---" counting up from 1."""
+    found = []
+    expected, total, parent_seen, replies_seen = 1, None, False, False
+    for marker in MARKER.finditer(text):
+        line = marker[0].strip()
+        if not in_thread:
+            if marker["who"] is not None:
+                found.append(marker)
+            continue
+        if line == "=== THREAD PARENT MESSAGE ===" and not parent_seen and not found:
+            parent_seen = True
+        elif (count := REPLIES_TOTAL.fullmatch(line)) and parent_seen and not replies_seen:
+            replies_seen, total = True, int(count["total"])
+        elif (
+            (reply := REPLY_MARKER.fullmatch(line))
+            and replies_seen
+            and int(reply["n"]) == expected
+            and int(reply["of"]) == total
+        ):
+            expected += 1
+        else:
+            continue
+        found.append(marker)
+    return found
+
+
+def leave_out_text(
+    text: str, user_ids: set[str], names: dict[str, set[str]], in_thread: bool = False
+) -> str:
     """The messages text with each block by these authors cut down to its stub."""
-    markers = list(MARKER.finditer(text))
+    markers = real_markers(text, in_thread)
     parts = [text[: markers[0].start()] if markers else text]
     for i, marker in enumerate(markers):
         end = markers[i + 1].start() if i + 1 < len(markers) else len(text)
         block = text[marker.end() : end]
         lines = [line for line in block.split("\n") if line.strip()]
-        who = marker["who"]
         head = []  # the From, Time and Message TS lines before the text, as parse_block reads
         for line in lines:
             key = line.partition(": ")[0]
@@ -355,14 +405,21 @@ def leave_out_text(text: str, user_ids: set[str], names: dict[str, set[str]]) ->
             head.append(line)
             if key == "Message TS":
                 break
+        who = marker["who"]
         if who is None:
             who = next((line[6:].strip() for line in head if line.startswith("From: ")), None)
+        # Theirs if their ID is the author, or shows as an author anywhere in the marker or the
+        # From line, in a shape the parser may not take.
+        header = marker[0] + "\n" + "\n".join(line for line in head if line.startswith("From: "))
         found = AUTHOR_ID.search(who) if who else None
-        if marker["replies"] or found is None or found["user_id"] not in user_ids:
+        user_id = found["user_id"] if found and found["user_id"] in user_ids else None
+        if user_id is None:
+            shown = [m["user_id"] for m in SHOWN_ID.finditer(header) if m["user_id"] in user_ids]
+            user_id = shown[0] if shown else None
+        if marker["replies"] or user_id is None:
             parts.append(text[marker.start() : end])
             continue
-        user_id = found["user_id"]
-        author = AUTHOR.match(who)
+        author = AUTHOR.match(who) if who else None
         names.setdefault(user_id, set()).update([author["name"]] if author else [])
         stub_author = f"{OPTED_OUT_NAME} ({user_id})"
         if marker["who"] is None:

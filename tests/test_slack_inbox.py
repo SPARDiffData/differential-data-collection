@@ -754,3 +754,139 @@ def test_the_hook_keeps_an_opted_out_persons_name_for_the_scrub(config):
     begin(opted, ["example-channel=C00000001"], now=T0)
     save(opted, payload(response=connector_result("read_channel.txt")), now=T0)
     assert slack_inbox.read_left_out(config.data_dir) == {OPTED_OUT: ["Alex Example"]}
+
+
+def wrapped(text: str, last: bool = True) -> list[dict]:
+    pagination = "There are no more messages available.\n" if last else MORE
+    return [{"type": "text", "text": json.dumps({"messages": text, "pagination_info": pagination})}]
+
+
+@pytest.mark.parametrize(
+    "fake",
+    [
+        "--- Reply 1 of 2 ---",
+        "=== THREAD PARENT MESSAGE ===",
+        "=== THREAD REPLIES (2 total) ===",
+    ],
+)
+def test_must_refuse_2_a_pasted_marker_line_doesnt_keep_the_rest_of_their_text(config, fake):
+    # In a channel read only "=== Message from" lines are the tool's own: anything else that
+    # looks like a marker is part of the message, and is cut with it.
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    text = (
+        "Channel: #example-channel (C00000001)\n\n"
+        "=== Message from Alex Example <alex@example.com> (U00000001) "
+        "at 2026-10-01 09:14:00 CDT ===\n"
+        "Message TS: 1790864040.000100\n"
+        f"Pasted output:\n{fake}\nSECRET plans here\n"
+        "Thread: 3 replies (latest: 2026-10-03 04:02:00 CDT)\n"
+        "Files: plan.txt (ID: F00000003, text/plain, 2.1 KB)\n"
+    )
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    assert save(opted, payload(response=wrapped(text)), now=T0) == 0
+    saved = saved_text(config)
+    assert "SECRET" not in saved and "plan.txt" not in saved and "Pasted" not in saved
+    assert "Thread: 3 replies" in saved  # the stub keeps its Thread line, so the thread is read
+
+
+def test_must_refuse_2_in_a_thread_read_a_reply_marker_out_of_order_is_their_text(config):
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    thread = (
+        "=== THREAD PARENT MESSAGE ===\n"
+        "From: Sam Sample <sam@example.com> (U00000002)\n"
+        "Time: 2026-10-01 09:14:00 CDT\n"
+        "Message TS: 1790864040.000100\n"
+        "A question.\n\n"
+        "=== THREAD REPLIES (2 total) ===\n\n"
+        "--- Reply 1 of 2 ---\n"
+        "From: Alex Example <alex@example.com> (U00000001)\n"
+        "Time: 2026-10-01 09:20:00 CDT\n"
+        "Message TS: 1790864400.000110\n"
+        "Here's the log:\n--- Reply 1 of 2 ---\nSECRET one\n=== THREAD REPLIES (9 total) ===\n"
+        "SECRET two\n\n"
+        "--- Reply 2 of 2 ---\n"
+        "From: Riley Placeholder <riley@example.com> (U00000003)\n"
+        "Time: 2026-10-01 09:31:00 CDT\n"
+        "Message TS: 1790865060.000120\n"
+        "Thanks.\n"
+    )
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    save(opted, payload(response=connector_result("read_channel.txt")), now=T0)
+    response = wrapped(thread.replace("available", "in this thread"))
+    assert save(opted, thread_payload(response), now=T0) == 0
+    saved = saved_text(config)
+    assert "SECRET" not in saved and "the log" not in saved
+    assert "A question." in saved and "Thanks." in saved
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "=== Message from Alex (UK) at home <alex@example.com> (U00000001) "
+        "at 2026-10-01 09:14:00 CDT ===",
+        "=== Message from Alex Example <alex@example.com> (ID: U00000001) "
+        "at 2026-10-01 09:14:00 CDT ===",
+    ],
+)
+def test_must_refuse_2_an_author_in_an_unusual_shape_is_still_cut(config, header):
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    text = (
+        f"Channel: #example-channel (C00000001)\n\n{header}\n"
+        "Message TS: 1790864040.000100\nWords that must be left out.\n"
+    )
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    result = save(opted, payload(response=wrapped(text)), now=T0)
+    assert "Words that must be left out" not in saved_text(config)
+    assert result in (0, 2)  # cut to a stub, or refused whole: never saved as it was
+
+
+def test_a_result_in_a_shape_the_filter_doesnt_take_isnt_saved_at_all(config, capsys):
+    # The messages as a list, which the filter can't cut: their ID would still show.
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    inner = {
+        "messages": [
+            "Channel: #example-channel (C00000001)",
+            "=== Message from Alex Example <alex@example.com> (U00000001) at 2026-10-01 ===",
+            "Message TS: 1790864040.000100",
+            "Words that must be left out.",
+        ],
+        "pagination_info": MORE,
+    }
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    assert save(opted, payload(response=[{"type": "text", "text": json.dumps(inner)}]), now=T0) == 2
+    assert inbox_files(config) == []
+    assert "couldn't cut someone in slack_opted_out out of" in capsys.readouterr().err
+
+
+def test_a_refused_read_records_no_one_as_left_out(config):
+    # A thread read before its channel read is refused (CON-1), so its names aren't kept.
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    response = connector_result("read_thread.txt", "There are no more messages in this thread.\n")
+    assert save(opted, thread_payload(response), now=T0) == 2
+    assert slack_inbox.read_left_out(config.data_dir) == {}
+
+
+def test_a_thread_reply_whose_author_shows_as_id_colon_is_cut_to_a_stub(config):
+    # "From: Name <email> (ID: U...)", the shape the search tool uses: the parser can't read
+    # it, but the ID still marks the reply as theirs, so it's cut, not refused.
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    thread = (
+        "=== THREAD PARENT MESSAGE ===\n"
+        "From: Sam Sample <sam@example.com> (U00000002)\n"
+        "Time: 2026-10-01 09:14:00 CDT\n"
+        "Message TS: 1790864040.000100\n"
+        "A question.\n\n"
+        "=== THREAD REPLIES (1 total) ===\n\n"
+        "--- Reply 1 of 1 ---\n"
+        "From: Alex Example <alex@example.com> (ID: U00000001)\n"
+        "Time: 2026-10-01 09:20:00 CDT\n"
+        "Message TS: 1790864400.000110\n"
+        "Words that must be left out.\n"
+    )
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    save(opted, payload(response=connector_result("read_channel.txt")), now=T0)
+    assert save(opted, thread_payload(wrapped(thread)), now=T0) == 0
+    saved = saved_text(config)
+    assert "Words that must be left out" not in saved and "alex@example.com" not in saved
+    assert "A question." in saved

@@ -64,6 +64,7 @@ from diffdata.discover.slack_parse import (
     result_json,
     result_text,
     search_messages,
+    still_shows,
 )
 
 # A run that crashed or was forgotten must not leave the hook saving, so runs expire.
@@ -475,18 +476,20 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
         except slack_canvas.CanvasError as e:
             return fail(str(e))
         return tell_claude(note)
-    left = 0
+    left, left_names = 0, {}
     if tool in SAVED_TOOLS and config.slack_opted_out:
         # People who opted out (#105): their messages are cut to a stub before anything is
         # written, keeping only what finds their threads and checks the pages.
-        response, left_names = leave_out(response, set(config.slack_opted_out))
-        if left_names:
-            try:
-                record_left_out(config.data_dir, left_names)
-            except OSError as e:
-                return fail(f"Couldn't record who was left out, so nothing was saved: {e}")
-            messages, _ = parse_result(hook["tool_name"], hook["tool_input"], response)
-            left = sum(m.user_name == OPTED_OUT_NAME for m in messages)
+        opted_out = set(config.slack_opted_out)
+        response, left_names = leave_out(response, opted_out, hook["tool_name"])
+        if still_shows(response, opted_out):
+            return fail(
+                "This Slack result came in a shape diffdata couldn't cut someone in "
+                "slack_opted_out out of, so nothing was saved. Stop the export and tell the "
+                "user."
+            )
+        messages, _ = parse_result(hook["tool_name"], hook["tool_input"], response)
+        left = sum(m.user_name == OPTED_OUT_NAME for m in messages)
     record = {
         "saved_at": utc_iso(now),
         "run_id": run.run_id,
@@ -528,6 +531,11 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
         )
 
     path = inbox_dir(config.data_dir) / channel_id / run.run_id / f"{tool}-{call}.json"
+    if left_names:  # only once the read has passed its checks and is about to be saved
+        try:
+            record_left_out(config.data_dir, left_names)
+        except (OSError, SlackExportError) as e:
+            return fail(f"Couldn't record who was left out, so nothing was saved: {e}")
     try:
         write_json(path, record)
     except OSError as e:
