@@ -453,8 +453,14 @@ def collect(
                 f"{name}: {outcome}, so it has no suggestions yet. What could be "
                 "fetched was saved, and the changelog is tried again on the next run."
             )
-        elif outcome not in (NEW, UNCHANGED):
+        elif outcome not in (NEW, UNCHANGED) and number <= len(config.google_docs):
             problems.append(f"{name}: {outcome}. If it's yours to share, pick it at sign-in.")
+        elif outcome not in (NEW, UNCHANGED):
+            # An approved item may be a Sheet or Slides file, which the Picker never shows.
+            problems.append(
+                f"{name}: {outcome}. If it's a Google Doc and yours to share, pick it at "
+                "sign-in. Other Google files aren't fetched."
+            )
     done = (NEW, UNCHANGED, NO_CHANGELOG, "failed")
     report = [
         f"{len(docs)} doc(s) to fetch ({len(config.google_docs)} listed, "

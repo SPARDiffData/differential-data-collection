@@ -381,7 +381,10 @@ def test_an_approved_doc_is_named_by_its_letter_in_withdraw(tmp_path):
     decide(tmp_path, (f"google:{DOC}", "approved"), (f"google:{OTHER}", "approved"))
     decide(tmp_path, (CANVAS_KEY, "approved"))
     report = fetch_all(tmp_path, google, DOC)
-    assert "Approved item b: not found. If it's yours to share, pick it at sign-in." in report
+    assert (
+        "Approved item b: not found. If it's a Google Doc and yours to share, pick it at "
+        "sign-in. Other Google files aren't fetched." in report
+    )
     assert OTHER not in report
     # Its reason is saved, so the reference log can mark it unreachable (#97).
     assert google_fetch.last_reason(document_dir(tmp_path, "google-doc", OTHER)) == NOT_FOUND
@@ -505,7 +508,9 @@ def test_must_refuse_8_a_doc_the_login_cant_open_is_recorded_and_the_run_carries
     assert set(fetch.files) == {"access.json"}
     assert json.loads(fetch.files["access.json"].read_text("utf-8")) == {"reason": reason}
     assert "changelog.json" in fetches(tmp_path, OTHER)[0].files
-    assert f"Entry 1: {reason}" in report
+    assert f"Entry 1: {reason}. If it's yours to share, pick it at sign-in." in report
+    # Only an approved item can be a Sheet or Slides file, so a listed doc isn't told that.
+    assert "Other Google files" not in report
 
 
 def test_a_listed_doc_that_wasnt_picked_is_recorded_once(tmp_path):
