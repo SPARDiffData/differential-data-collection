@@ -69,11 +69,15 @@ def build(config: Config) -> str:
     left_messages: set[tuple[str, str]] = set()  # (channel, ts) of each message left out
     read_left_out(data)  # a damaged list of names stops the build before anything changes
     for store_file in sorted((slack_dir(data) / "store").glob("*/messages.jsonl")):
-        for record in remove_from_store(store_file, opted_out):
-            left_names[record["user_id"]].add(record["user_name"])
-            totals["removed"] += 1
-    if left_names:  # straight away: the store no longer holds these names
-        record_left_out(data, left_names)
+        theirs = [r for r in read_store(store_file) if r["user_id"] in opted_out]
+        if not theirs:
+            continue
+        names_here: dict[str, set[str]] = defaultdict(set)
+        for record in theirs:
+            names_here[record["user_id"]].add(record["user_name"])
+        # Before the store loses them: a build cut short must not lose these names (#105).
+        record_left_out(data, names_here)
+        totals["removed"] += len(remove_from_store(store_file, opted_out))
     latest: dict[tuple[str, str], dict] = {}  # each message's last saved read
     channel_dirs = sorted(p for p in inbox_dir(data).glob("*") if p.is_dir())
     for channel_dir in channel_dirs:

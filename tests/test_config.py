@@ -325,7 +325,7 @@ def test_must_refuse_6_an_opt_out_list_anywhere_but_sources_stops_the_run(tmp_pa
     [
         ('[sources]\nslack_oped_out = ["U00000001"]\n', "slack_oped_out"),
         ('[sources]\nslack_chanels = ["general"]\n', "slack_chanels"),
-        ('stray = "value"\n', "top-level stray"),
+        ('stray = "value"\n', "a key under the top level that isn't a setting name"),
     ],
 )
 def test_a_setting_diffdata_doesnt_know_stops_the_run(tmp_path, text, named):
@@ -340,8 +340,9 @@ def test_a_setting_diffdata_doesnt_know_stops_the_run(tmp_path, text, named):
 @pytest.mark.parametrize(
     "text, named",
     [
-        ('[store]\nslack_opted_ou = ["U00000001"]\n', "store.slack_opted_ou"),
-        ('[store]\nbucket = ""\nextra = 1\n', "store.extra"),
+        ('[store]\nslack_opted_ou = ["U00000001"]\n', "a key under store that isn't"),
+        ('[store]\nbucket = ""\nextra = 1\n', "a key under store that isn't"),
+        ('[store]\nbukcet = ""\n', "store.bukcet"),  # close to a setting: shown
     ],
 )
 def test_a_setting_local_or_store_doesnt_know_stops_the_run(tmp_path, text, named):
@@ -360,3 +361,14 @@ def test_a_key_that_looks_like_an_id_or_a_name_is_never_printed(tmp_path):
     with pytest.raises(ConfigError, match="a key that isn't a setting name") as refused:
         load_config(path)
     assert "U0FAKE0001" not in str(refused.value) and "Alex" not in str(refused.value)
+
+
+def test_a_lowercase_key_that_isnt_close_to_a_setting_is_never_printed(tmp_path):
+    # It may be a pasted name, so only the table is named.
+    data = (tmp_path / "data").as_posix()
+    path = write_config(
+        tmp_path, f'[sources]\nalex_example = "U00000001"\n[local]\ndata_dir = "{data}"\n'
+    )
+    with pytest.raises(ConfigError, match="a key under sources that isn't a setting name") as e:
+        load_config(path)
+    assert "alex" not in str(e.value)

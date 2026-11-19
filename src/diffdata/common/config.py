@@ -6,6 +6,7 @@ gitignored. The data folder always comes through `data_dir()`, so a folder insid
 or a synced folder is refused.
 """
 
+import difflib
 import re
 import tomllib
 from dataclasses import dataclass
@@ -35,8 +36,16 @@ STORE_KEYS = {"backend", "bucket", "folder"}
 SETTING_NAME = re.compile(r"(?:top-level )?(?:[a-z_]+\.)*[a-z_]{1,40}")
 
 
-def shown_key(key: str) -> str:
-    return key if SETTING_NAME.fullmatch(key) else "a key that isn't a setting name"
+def shown_key(key: str, known: set[str] | None = None) -> str:
+    """The key as typed, if it looks like a setting name and, when `known` is given, is close
+    to one of them: a typo worth showing. Anything else might be a pasted ID or name."""
+    name = key.rsplit(".", 1)[-1].removeprefix("top-level ")
+    if not SETTING_NAME.fullmatch(key):
+        return "a key that isn't a setting name"
+    if known is not None and not difflib.get_close_matches(name, sorted(known), cutoff=0.7):
+        table = key.rsplit(".", 1)[0] if "." in key else "the top level"
+        return f"a key under {table} that isn't a setting name"
+    return key
 
 
 # Every setting [sources] takes. Anything else is a typo, and stops the run.
@@ -206,15 +215,18 @@ def load_config(path: str | Path | None = None) -> Config:
             f"{path} has {', '.join(misplaced)}. The opt-out list must be slack_opted_out, "
             "under [sources]. Move it there, then run again. Nothing was collected."
         )
-    unknown = [f"sources.{key}" for key in sorted(set(sources) - SOURCES_KEYS)]
+    unknown = [
+        shown_key(f"sources.{key}", SOURCES_KEYS) for key in sorted(set(sources) - SOURCES_KEYS)
+    ]
     for table, known in (("local", LOCAL_KEYS), ("store", STORE_KEYS)):
         section = raw.get(table, {})
         if isinstance(section, dict):
-            unknown += [f"{table}.{key}" for key in sorted(set(section) - known)]
+            unknown += [shown_key(f"{table}.{key}", known) for key in sorted(set(section) - known)]
     unknown += sorted(
-        f"top-level {key}" for key, value in raw.items() if not isinstance(value, dict)
+        shown_key(f"top-level {key}", set())
+        for key, value in raw.items()
+        if not isinstance(value, dict)
     )
-    unknown = [shown_key(key) for key in unknown]
     if unknown:
         # A misspelt setting is otherwise ignored without a word, and for slack_opted_out
         # that would leave no one out (#105).

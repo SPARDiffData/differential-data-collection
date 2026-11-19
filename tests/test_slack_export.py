@@ -397,3 +397,21 @@ def test_names_from_removed_store_lines_are_kept_before_any_day_file_is_written(
     with pytest.raises(OSError):
         build(replace(config, slack_opted_out=(OPTED_OUT,)))
     assert read_left_out(config.data_dir) == {OPTED_OUT: ["Alex Example"]}
+
+
+def test_a_store_clean_up_cut_short_keeps_the_names_from_stores_already_cleaned(
+    config, export_run, monkeypatch
+):
+    # Names go in left_out.json before each store is rewritten, not after them all.
+    from diffdata.discover import slack_export
+    from diffdata.discover.slack_inbox import read_left_out
+
+    export_run()
+
+    def locked(*args, **kwargs):
+        raise OSError("the store file is locked")
+
+    monkeypatch.setattr(slack_export, "remove_from_store", locked)
+    with pytest.raises(OSError):
+        build(replace(config, slack_opted_out=(OPTED_OUT,)))
+    assert read_left_out(config.data_dir) == {OPTED_OUT: ["Alex Example"]}
