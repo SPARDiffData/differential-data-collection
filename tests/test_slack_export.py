@@ -378,3 +378,22 @@ def test_must_refuse_1_a_display_name_with_brackets_and_at_is_still_matched_by_i
     opted = replace(config, slack_opted_out=(OPTED_OUT,))
     export_run(channel_fixture=str(channel), settings=opted)
     assert "Words that must be left out" not in everything_built(config)
+
+
+def test_names_from_removed_store_lines_are_kept_before_any_day_file_is_written(
+    config, export_run, monkeypatch
+):
+    # Once the store no longer holds a name, it must already be in left_out.json, or a build
+    # cut short while writing day files would lose it for good.
+    from diffdata.discover import slack_export
+    from diffdata.discover.slack_inbox import read_left_out
+
+    export_run()
+
+    def cut_short(*args, **kwargs):
+        raise OSError("a day file is locked")
+
+    monkeypatch.setattr(slack_export, "write_view", cut_short)
+    with pytest.raises(OSError):
+        build(replace(config, slack_opted_out=(OPTED_OUT,)))
+    assert read_left_out(config.data_dir) == {OPTED_OUT: ["Alex Example"]}

@@ -172,9 +172,9 @@ def make_copies(config: Config, earlier: bool) -> str:
     if stores and applied_stamp(data) != opt_out_stamp(opted_out):
         # The last finished build applied a different list, or none, or stopped partway.
         raise ScrubError(
-            "slack_opted_out in config.toml has changed since the last finished build, so "
-            "nothing was scrubbed. Run uv run diffdata discover slack build first, then scrub "
-            "again."
+            "slack_opted_out in config.toml has changed since the last build, or the last "
+            "build didn't finish, so nothing was scrubbed. Run uv run diffdata discover slack "
+            "build first, then scrub again."
         )
     for store in stores:
         if any(record["user_id"] in opted_out for record in read_store(store)):

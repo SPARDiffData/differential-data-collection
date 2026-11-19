@@ -27,6 +27,18 @@ DOC_LINK = re.compile(
 # least one a digit. The same shape the scrub's people list takes (scrub/people.py).
 USER_ID = re.compile(r"[UW](?=[A-Z]*[0-9])[A-Z0-9]{8,}")
 OPT_OUT_KEY = "slack_opted_out"
+# Every setting [local] and [store] take. Anything else is a typo, and stops the run.
+LOCAL_KEYS = {"data_dir"}
+STORE_KEYS = {"backend", "bucket", "folder"}
+# A key that looks like a setting name is safe to print. Anything else may be a pasted ID or
+# name, so it's never shown.
+SETTING_NAME = re.compile(r"(?:top-level )?(?:[a-z_]+\.)*[a-z_]{1,40}")
+
+
+def shown_key(key: str) -> str:
+    return key if SETTING_NAME.fullmatch(key) else "a key that isn't a setting name"
+
+
 # Every setting [sources] takes. Anything else is a typo, and stops the run.
 SOURCES_KEYS = {
     "slack_channels",
@@ -186,6 +198,7 @@ def load_config(path: str | Path | None = None) -> Config:
             )
         doc_ids.append(found)
     misplaced = [k for k in opt_out_keys(raw, "") if k != f"sources.{OPT_OUT_KEY}"]
+    misplaced = [shown_key(k) for k in misplaced]
     if misplaced:
         # A paste at the end of the file lands in the last table, and a misspelling is just an
         # unknown key. Either would leave no one out, so neither is allowed.
@@ -193,10 +206,15 @@ def load_config(path: str | Path | None = None) -> Config:
             f"{path} has {', '.join(misplaced)}. The opt-out list must be slack_opted_out, "
             "under [sources]. Move it there, then run again. Nothing was collected."
         )
-    unknown = sorted(set(sources) - SOURCES_KEYS)
+    unknown = [f"sources.{key}" for key in sorted(set(sources) - SOURCES_KEYS)]
+    for table, known in (("local", LOCAL_KEYS), ("store", STORE_KEYS)):
+        section = raw.get(table, {})
+        if isinstance(section, dict):
+            unknown += [f"{table}.{key}" for key in sorted(set(section) - known)]
     unknown += sorted(
         f"top-level {key}" for key, value in raw.items() if not isinstance(value, dict)
     )
+    unknown = [shown_key(key) for key in unknown]
     if unknown:
         # A misspelt setting is otherwise ignored without a word, and for slack_opted_out
         # that would leave no one out (#105).

@@ -335,3 +335,28 @@ def test_a_setting_diffdata_doesnt_know_stops_the_run(tmp_path, text, named):
     with pytest.raises(ConfigError, match="a setting diffdata doesn't know") as refused:
         load_config(path)
     assert named in str(refused.value) and "U00000001" not in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    "text, named",
+    [
+        ('[store]\nslack_opted_ou = ["U00000001"]\n', "store.slack_opted_ou"),
+        ('[store]\nbucket = ""\nextra = 1\n', "store.extra"),
+    ],
+)
+def test_a_setting_local_or_store_doesnt_know_stops_the_run(tmp_path, text, named):
+    data = (tmp_path / "data").as_posix()
+    path = write_config(tmp_path, f'[local]\ndata_dir = "{data}"\n' + text)
+    with pytest.raises(ConfigError, match="a setting diffdata doesn't know") as refused:
+        load_config(path)
+    assert named in str(refused.value)
+
+
+def test_a_key_that_looks_like_an_id_or_a_name_is_never_printed(tmp_path):
+    data = (tmp_path / "data").as_posix()
+    path = write_config(
+        tmp_path, f'[sources]\nU0FAKE0001 = "Alex Example"\n[local]\ndata_dir = "{data}"\n'
+    )
+    with pytest.raises(ConfigError, match="a key that isn't a setting name") as refused:
+        load_config(path)
+    assert "U0FAKE0001" not in str(refused.value) and "Alex" not in str(refused.value)

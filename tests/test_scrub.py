@@ -780,7 +780,7 @@ def test_must_refuse_1_a_build_cut_short_after_the_store_clean_up_holds_the_scru
     with pytest.raises(OSError):
         build(opted)
     monkeypatch.undo()
-    with pytest.raises(ScrubError, match="has changed since the last finished build"):
+    with pytest.raises(ScrubError, match="or the last build didn't finish"):
         scrub(opted)
     assert not (config.data_dir / "scrubbed").exists()
     build(opted)

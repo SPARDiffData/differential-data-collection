@@ -72,6 +72,8 @@ def build(config: Config) -> str:
         for record in remove_from_store(store_file, opted_out):
             left_names[record["user_id"]].add(record["user_name"])
             totals["removed"] += 1
+    if left_names:  # straight away: the store no longer holds these names
+        record_left_out(data, left_names)
     latest: dict[tuple[str, str], dict] = {}  # each message's last saved read
     channel_dirs = sorted(p for p in inbox_dir(data).glob("*") if p.is_dir())
     for channel_dir in channel_dirs:
