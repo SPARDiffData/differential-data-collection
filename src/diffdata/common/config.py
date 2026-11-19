@@ -23,6 +23,8 @@ DOC_LINK = re.compile(
     r"https://docs\.google\.com/document(?:/u/\d+)?/d/([A-Za-z0-9_-]{20,})(?:[/?#].*)?"
     r"|https://drive\.google\.com/open\?id=([A-Za-z0-9_-]{20,})(?:&.*)?"
 )
+# A Slack user ID, as the connector shows it: U or W, then 8 or more capitals and digits.
+USER_ID = re.compile(r"[UW][A-Z0-9]{8,}")
 # A canvas is read again at least this often, even if nothing says it changed (COL-8).
 CANVAS_REFRESH_DAYS = 7
 
@@ -44,6 +46,9 @@ class Config:
     canvas_refresh_days: int = CANVAS_REFRESH_DAYS
     # CON-1: a doc is fetched only if it's listed here and picked in Google's Picker. IDs.
     google_docs: tuple[str, ...] = ()
+    # CON-4, CON-5: Slack user IDs of people who opted out. Their messages are left out of
+    # everything the build saves. Real IDs, so they live here only, never in code or output.
+    slack_opted_out: tuple[str, ...] = ()
     # Which config.toml these settings came from.
     path: Path | None = None
 
@@ -153,6 +158,24 @@ def load_config(path: str | Path | None = None) -> Config:
                 "the same doc. Remove one, or replace it with the doc you meant."
             )
         doc_ids.append(found)
+    opted_out = sources.get("slack_opted_out", [])
+    if not isinstance(opted_out, list) or not all(isinstance(u, str) for u in opted_out):
+        raise ConfigError(f"slack_opted_out in {path} must be a list of Slack user IDs.")
+    user_ids: list[str] = []
+    for number, listed in enumerate(opted_out, start=1):
+        found = listed.strip()
+        # A typo would silently leave no one out, so it stops the run instead.
+        if not USER_ID.fullmatch(found):
+            raise ConfigError(
+                f"Entry {number} in slack_opted_out in {path} isn't a Slack user ID "
+                "(U or W, then 8 or more capital letters and digits). Nothing was collected."
+            )
+        if found in user_ids:
+            raise ConfigError(
+                f"Entries {user_ids.index(found) + 1} and {number} in slack_opted_out in {path} "
+                "are the same person. Remove one, or replace it with the ID you meant."
+            )
+        user_ids.append(found)
     refresh_days = sources.get("canvas_refresh_days", CANVAS_REFRESH_DAYS)
     # bool is a kind of int in Python, so true would otherwise pass as 1.
     if isinstance(refresh_days, bool) or not isinstance(refresh_days, int) or refresh_days < 1:
@@ -167,5 +190,6 @@ def load_config(path: str | Path | None = None) -> Config:
         slack_canvases=tuple(canvas_ids),
         canvas_refresh_days=refresh_days,
         google_docs=tuple(doc_ids),
+        slack_opted_out=tuple(user_ids),
         path=path,
     )

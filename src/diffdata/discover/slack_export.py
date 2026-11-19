@@ -16,6 +16,13 @@ notices in the channel reads saved so far. See collect/slack_canvas.py.
 
 Last, it adds every source the messages and canvases point to into the reference log
 (DIS-2, DIS-3). See references.py.
+
+Messages by people listed in `slack_opted_out` in config.toml are left out of all of it (CON-4,
+CON-5): the store, the view and the reference log. Their earlier lines in the store are
+removed, so a list added after a run still takes effect. Replies others wrote to their posts
+stay. Each opted-out person's ID and display names go in slack/left_out.json, which never
+leaves the data folder, so the scrub can still replace mentions of them (scrub/people.py).
+The report gives counts only.
 """
 
 import json
@@ -53,11 +60,23 @@ def build(config: Config) -> str:
     names = run_channel_names(data)
     run = open_run(data)
     totals: Counter = Counter()
+    opted_out = set(config.slack_opted_out)
+    left_names: dict[str, set[str]] = defaultdict(set)  # each opted-out person's names seen
+    left_messages: set[tuple[str, str]] = set()  # (channel, ts) of each message left out
+    for store_file in sorted((slack_dir(data) / "store").glob("*/messages.jsonl")):
+        for record in remove_from_store(store_file, opted_out):
+            left_names[record["user_id"]].add(record["user_name"])
+            totals["removed"] += 1
     latest: dict[tuple[str, str], dict] = {}  # each message's last saved read
     channel_dirs = sorted(p for p in inbox_dir(data).glob("*") if p.is_dir())
     for channel_dir in channel_dirs:
         channel_id = channel_dir.name
         records, counts = read_inbox(channel_dir, channel_id, config.slack_workspace_url)
+        for record in records:
+            if record["user_id"] in opted_out:
+                left_names[record["user_id"]].add(record["user_name"])
+                left_messages.add((channel_id, record["ts"]))
+        records = [r for r in records if r["user_id"] not in opted_out]
         latest.update({(channel_id, record["ts"]): record for record in records})
         store_file = slack_dir(data) / "store" / channel_id / "messages.jsonl"
         totals.update(counts)
@@ -67,6 +86,9 @@ def build(config: Config) -> str:
         totals["days"] += write_view(
             folder, channel_id, name, names, config.slack_workspace_url, read_store(store_file)
         )
+
+    if left_names:
+        record_left_out(data, left_names)
 
     stores = {
         store_file.parent.name: read_store(store_file)
@@ -91,6 +113,16 @@ def build(config: Config) -> str:
         )
     if totals["empty"]:
         report.append(f"{totals['empty']} result file(s) had no messages in them.")
+    if left_messages:
+        report.append(
+            f"{len(left_messages)} message(s) left out, because their authors are listed in "
+            "slack_opted_out in config.toml."
+        )
+    if totals["removed"]:
+        report.append(
+            f"Removed {totals['removed']} earlier line(s) by people in slack_opted_out from the "
+            "message store."
+        )
     if canvases["canvases"]:
         report.append(
             f"{canvases['canvases']} canvas(es): {canvases['reads']} read(s), "
@@ -293,6 +325,49 @@ def add_to_store(path: Path, records: list[dict]) -> int:
         with path.open("a", encoding="utf-8", newline="\n") as f:
             f.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in new)
     return len(new)
+
+
+def remove_from_store(path: Path, user_ids: set[str]) -> list[dict]:
+    """Rewrite a store without the lines by these authors, through a temporary file, so a write
+    cut short leaves the old store whole. Returns the lines removed."""
+    if not user_ids:
+        return []
+    records = read_store(path)
+    removed = [r for r in records if r["user_id"] in user_ids]
+    if removed:
+        kept = [r for r in records if r["user_id"] not in user_ids]
+        references.write_log(path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in kept))
+    return removed
+
+
+def left_out_path(data: Path) -> Path:
+    return slack_dir(data) / "left_out.json"
+
+
+def read_left_out(data: Path) -> dict[str, list[str]]:
+    """Each opted-out person's Slack ID and the display names seen for them. Empty if there's
+    no file yet or it can't be read: a damaged file is written again whole by the next build."""
+    try:
+        found = json.loads(left_out_path(data).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(found, dict):
+        return {}
+    return {
+        user_id: [n for n in names if isinstance(n, str)]
+        for user_id, names in found.items()
+        if isinstance(user_id, str) and isinstance(names, list)
+    }
+
+
+def record_left_out(data: Path, seen: dict[str, set[str]]) -> None:
+    """Add these people and names to slack/left_out.json. It only grows: someone taken off
+    the list later is still pseudonymised, never shown by name."""
+    known = read_left_out(data)
+    for user_id, names in seen.items():
+        known[user_id] = sorted(set(known.get(user_id, [])) | names)
+    text = json.dumps(dict(sorted(known.items())), indent=2, ensure_ascii=False) + "\n"
+    references.write_log(left_out_path(data), text)
 
 
 def ts_key(record: dict) -> tuple[int, ...]:

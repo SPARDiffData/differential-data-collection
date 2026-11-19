@@ -10,6 +10,10 @@
 slack_channels = ["example-channel"]  # channel names, without the '#'
 slack_workspace_url = "https://example.slack.com"  # your workspace's address, for message links
 slack_canvases = []                   # canvas IDs ("F...") or canvas links; read when they may have changed
+# CON-4, CON-5: Slack user IDs ("U...") of people who opted out of this channel. The project
+# team sends you these lines when the 7-day opt-out window closes. Their messages are left
+# out of everything diffdata builds. They're real IDs, so keep them here, never in the repo.
+slack_opted_out = []
 # Canvases and Google files found in your Slack data are approved or skipped in your own
 # terminal with `uv run diffdata consent review`, and withdrawn with
 # `uv run diffdata consent withdraw`. Those decisions go in approvals.jsonl, next to this file.

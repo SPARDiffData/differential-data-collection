@@ -708,3 +708,23 @@ def test_must_refuse_12_a_second_scrub_stops_while_the_lock_is_taken(config, scr
     with pytest.raises(ScrubError, match="delete private/scrub.lock"):
         scrub(config)
     assert lock.exists() and copies(config) == before
+
+
+# The opt-out filter (#105): mentions of people who opted out are still replaced.
+
+
+def test_must_refuse_4_mentions_of_opted_out_people_are_replaced_in_the_scrubbed_copies(
+    config, export
+):
+    # José (U00000006) is only ever named in plain text by others; Alex (U00000001) is
+    # mentioned by ID. Both opted out, so their own messages are left out.
+    opted = replace(config, slack_opted_out=("U00000006", "U00000001"))
+    export()
+    build(opted)
+    scrub(opted)
+    shown = "\n".join(copies(config).values())
+    assert "Thanks riley" not in shown and "Kickoff notes" not in shown  # their own messages
+    assert re.search(r"Q&A notes from \[Person \d+\] are in the doc", shown)
+    assert re.search(r"Added my comments, @\[Person \d+\]", shown)
+    for value in ("José", "Ejemplo", "Alex Example", "U00000006", "U00000001"):
+        assert value not in shown

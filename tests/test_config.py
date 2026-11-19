@@ -257,3 +257,42 @@ def test_the_same_doc_listed_twice_is_refused(tmp_path):
 def test_google_docs_must_be_a_list(tmp_path):
     with pytest.raises(ConfigError, match="must be a list"):
         load_config(docs_config(tmp_path, '"one"'))
+
+
+# The opt-out list (#105): Slack user IDs only, so a typo can't silently leave no one out.
+
+
+def test_reads_the_opted_out_slack_ids(tmp_path):
+    data = (tmp_path / "data").as_posix()
+    ids = '["U00000001", " W00000002 "]'
+    path = write_config(
+        tmp_path, f'[sources]\nslack_opted_out = {ids}\n[local]\ndata_dir = "{data}"\n'
+    )
+    assert load_config(path).slack_opted_out == ("U00000001", "W00000002")
+
+
+def test_the_opt_out_list_is_empty_by_default(tmp_path):
+    data = (tmp_path / "data").as_posix()
+    path = write_config(tmp_path, f'[local]\ndata_dir = "{data}"\n')
+    assert load_config(path).slack_opted_out == ()
+
+
+@pytest.mark.parametrize(
+    "value, message",
+    [
+        ('["alex@example.com"]', "Entry 1 in slack_opted_out"),
+        ('["U00000001", "u00000002"]', "Entry 2 in slack_opted_out"),
+        ('["C00000001"]', "Entry 1 in slack_opted_out"),
+        ('["U0001"]', "Entry 1 in slack_opted_out"),
+        ('["U00000001", "U00000001"]', "Entries 1 and 2 in slack_opted_out"),
+        ('"U00000001"', "must be a list of Slack user IDs"),
+    ],
+)
+def test_must_refuse_6_an_opt_out_entry_that_isnt_a_user_id_stops_the_run(tmp_path, value, message):
+    data = (tmp_path / "data").as_posix()
+    path = write_config(
+        tmp_path, f'[sources]\nslack_opted_out = {value}\n[local]\ndata_dir = "{data}"\n'
+    )
+    with pytest.raises(ConfigError, match=message) as refused:
+        load_config(path)
+    assert "example.com" not in str(refused.value)  # the entry's place, never its value
