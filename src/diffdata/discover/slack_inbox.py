@@ -32,6 +32,7 @@ Layout under the data folder:
   slack/inbox/<channel-id>/<run-id>/search_messages-<call>.json   one message search's threads
 """
 
+import hashlib
 import json
 import os
 import re
@@ -192,6 +193,30 @@ def read_left_out(data: Path) -> dict[str, list[str]]:
     ):
         raise damaged
     return found
+
+
+def applied_path(data: Path) -> Path:
+    return slack_dir(data) / "opt_out_applied.json"
+
+
+def opt_out_stamp(user_ids) -> str:
+    """A fingerprint of an opt-out list, so the scrub can tell which list the last finished
+    build applied without the file naming anyone."""
+    joined = "\n".join(sorted(set(user_ids)))
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+
+def applied_stamp(data: Path) -> str:
+    """The stamp of the opt-out list the last finished build applied. No file means no list
+    was ever applied, the same as an empty one."""
+    try:
+        found = json.loads(applied_path(data).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return opt_out_stamp([])
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return ""  # matches no list, so the scrub waits for a build
+    stamp = found.get("applied") if isinstance(found, dict) else None
+    return stamp if isinstance(stamp, str) else ""
 
 
 def record_left_out(data: Path, seen: dict[str, set[str]]) -> None:

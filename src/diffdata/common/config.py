@@ -27,6 +27,16 @@ DOC_LINK = re.compile(
 # least one a digit. The same shape the scrub's people list takes (scrub/people.py).
 USER_ID = re.compile(r"[UW](?=[A-Z]*[0-9])[A-Z0-9]{8,}")
 OPT_OUT_KEY = "slack_opted_out"
+# Every setting [sources] takes. Anything else is a typo, and stops the run.
+SOURCES_KEYS = {
+    "slack_channels",
+    "slack_workspace_url",
+    "slack_canvases",
+    "canvas_refresh_days",
+    "google_docs",
+    "folders",
+    OPT_OUT_KEY,
+}
 
 
 def opt_out_keys(table: dict, where: str) -> list[str]:
@@ -182,6 +192,17 @@ def load_config(path: str | Path | None = None) -> Config:
         raise ConfigError(
             f"{path} has {', '.join(misplaced)}. The opt-out list must be slack_opted_out, "
             "under [sources]. Move it there, then run again. Nothing was collected."
+        )
+    unknown = sorted(set(sources) - SOURCES_KEYS)
+    unknown += sorted(
+        f"top-level {key}" for key, value in raw.items() if not isinstance(value, dict)
+    )
+    if unknown:
+        # A misspelt setting is otherwise ignored without a word, and for slack_opted_out
+        # that would leave no one out (#105).
+        raise ConfigError(
+            f"{path} has a setting diffdata doesn't know: {', '.join(unknown)}. Check the "
+            "spelling against config.example.toml. Nothing was collected."
         )
     opted_out = sources.get(OPT_OUT_KEY, [])
     if not isinstance(opted_out, list) or not all(isinstance(u, str) for u in opted_out):

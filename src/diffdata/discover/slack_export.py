@@ -40,10 +40,13 @@ from diffdata.discover import references, slack_state
 from diffdata.discover.slack_inbox import (
     SAVED_TOOLS,
     SlackExportError,
+    applied_path,
     close_run,
     inbox_dir,
     is_expired,
     open_run,
+    opt_out_stamp,
+    read_left_out,
     record_left_out,
     require_workspace,
     run_channel_names,
@@ -64,6 +67,7 @@ def build(config: Config) -> str:
     opted_out = set(config.slack_opted_out)
     left_names: dict[str, set[str]] = defaultdict(set)  # each opted-out person's names seen
     left_messages: set[tuple[str, str]] = set()  # (channel, ts) of each message left out
+    read_left_out(data)  # a damaged list of names stops the build before anything changes
     for store_file in sorted((slack_dir(data) / "store").glob("*/messages.jsonl")):
         for record in remove_from_store(store_file, opted_out):
             left_names[record["user_id"]].add(record["user_name"])
@@ -87,9 +91,23 @@ def build(config: Config) -> str:
         totals["days"] += write_view(
             folder, channel_id, name, names, config.slack_workspace_url, read_store(store_file)
         )
+    # A channel whose store outlived its inbox folder gets its view rewritten too, so a day
+    # file can't keep a message the store no longer has.
+    done = {d.name for d in channel_dirs}
+    for store_file in sorted((slack_dir(data) / "store").glob("*/messages.jsonl")):
+        channel_id = store_file.parent.name
+        if channel_id not in done:
+            name = names.get(channel_id, channel_id)
+            folder = slack_dir(data) / "export" / re.sub(r"[^a-z0-9_-]", "-", name.lower())
+            totals["days"] += write_view(
+                folder, channel_id, name, names, config.slack_workspace_url, read_store(store_file)
+            )
 
     if left_names:
         record_left_out(data, left_names)
+    # Only now is the list applied to every store and day file. The scrub checks this stamp,
+    # so a build cut short partway can't let it copy a day file not yet rewritten.
+    write_json(applied_path(data), {"applied": opt_out_stamp(opted_out)})
 
     stores = {
         store_file.parent.name: read_store(store_file)

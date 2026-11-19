@@ -755,3 +755,48 @@ def test_a_damaged_list_of_opted_out_people_stops_the_scrub_and_the_build(config
     assert not (config.data_dir / "scrubbed").exists()
     with pytest.raises(SlackExportError, match="left_out.json"):
         build(opted)
+    # Before anything changes, even when this build would leave no one out.
+    store = config.data_dir / "slack" / "store" / CHANNEL / "messages.jsonl"
+    before = store.read_bytes()
+    with pytest.raises(SlackExportError, match="left_out.json"):
+        build(config)
+    assert store.read_bytes() == before
+
+
+def test_must_refuse_1_a_build_cut_short_after_the_store_clean_up_holds_the_scrub_back(
+    config, export, monkeypatch
+):
+    # The store is cleaned first and the day files are rewritten after, so a build that
+    # stops in between leaves day files the store check alone wouldn't catch.
+    from diffdata.discover import slack_export
+
+    export()
+    opted = replace(config, slack_opted_out=("U00000001",))
+
+    def cut_short(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(slack_export, "write_view", cut_short)
+    with pytest.raises(OSError):
+        build(opted)
+    monkeypatch.undo()
+    with pytest.raises(ScrubError, match="has changed since the last finished build"):
+        scrub(opted)
+    assert not (config.data_dir / "scrubbed").exists()
+    build(opted)
+    scrub(opted)
+    assert "Kickoff notes" not in "\n".join(copies(config).values())
+
+
+def test_must_refuse_1_a_channel_whose_inbox_folder_is_gone_has_its_day_files_rewritten(
+    config, export, tmp_path
+):
+    export()
+    inbox = config.data_dir / "slack" / "inbox" / CHANNEL
+    shutil.move(inbox, tmp_path / "moved-inbox")
+    opted = replace(config, slack_opted_out=("U00000001",))
+    build(opted)
+    scrub(opted)
+    shown = "\n".join(copies(config).values())
+    assert "Kickoff notes" not in shown and "Meeting moved" not in shown
+    assert "Same doc as yesterday" in shown

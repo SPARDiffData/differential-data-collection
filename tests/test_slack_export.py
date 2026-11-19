@@ -359,3 +359,22 @@ def test_must_refuse_5_a_day_only_an_opted_out_person_posted_on_loses_its_file(
     assert "2026-10-09.md" not in view(config)
     assert "A day with only my post" not in everything_built(config)
     assert "2026-10-08.md" in view(config)
+
+
+def test_must_refuse_1_a_display_name_with_brackets_and_at_is_still_matched_by_its_id(
+    config, export_run, tmp_path
+):
+    # The author is the last "(ID) at" on the header line, so a name like "Alex (UK) at home"
+    # can't pass as user "UK" and slip past the filter (#105).
+    channel = tmp_path / "read_channel_odd_name.txt"
+    channel.write_text(
+        "Channel: #example-channel (C00000001)\n\n"
+        "=== Message from Alex (UK) at home <alex@example.com> (U00000001) "
+        "at 2026-10-08 09:00:00 CDT ===\n"
+        "Message TS: 1791468000.000800\n"
+        "Words that must be left out.\n",
+        encoding="utf-8",
+    )
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    export_run(channel_fixture=str(channel), settings=opted)
+    assert "Words that must be left out" not in everything_built(config)

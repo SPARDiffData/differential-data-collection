@@ -318,3 +318,20 @@ def test_must_refuse_6_an_opt_out_list_anywhere_but_sources_stops_the_run(tmp_pa
     ) as refused:
         load_config(path)
     assert where in str(refused.value) and "U00000001" not in str(refused.value)
+
+
+@pytest.mark.parametrize(
+    "text, named",
+    [
+        ('[sources]\nslack_oped_out = ["U00000001"]\n', "slack_oped_out"),
+        ('[sources]\nslack_chanels = ["general"]\n', "slack_chanels"),
+        ('stray = "value"\n', "top-level stray"),
+    ],
+)
+def test_a_setting_diffdata_doesnt_know_stops_the_run(tmp_path, text, named):
+    # A typo in slack_opted_out that doesn't look like it would otherwise be ignored (#105).
+    data = (tmp_path / "data").as_posix()
+    path = write_config(tmp_path, text + f'[local]\ndata_dir = "{data}"\n')
+    with pytest.raises(ConfigError, match="a setting diffdata doesn't know") as refused:
+        load_config(path)
+    assert named in str(refused.value) and "U00000001" not in str(refused.value)
