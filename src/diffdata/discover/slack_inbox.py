@@ -56,6 +56,7 @@ from diffdata.consent import approvals
 from diffdata.discover import slack_state
 from diffdata.discover.slack_parse import (
     OPTED_OUT_NAME,
+    id_left,
     leave_out,
     next_cursor,
     pages_known,
@@ -507,7 +508,7 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
                 "a message, so nothing was saved. Stop the export and tell the user: they can "
                 "pass this message to the project team, so the filter can be fixed."
             )
-        if still_shows(response, opted_out):
+        if still_shows(response, opted_out) or id_left(response, opted_out):
             return fail(
                 "This Slack result came in a shape diffdata couldn't cut someone in "
                 "slack_opted_out out of, or someone pasted a line naming them as an author, so "
@@ -592,6 +593,16 @@ def check(config: Config, payload: bytes, now: datetime | None = None) -> int:
         if tool != SEARCH_TOOL:
             field_name = CHECKED_READS[tool]
             read_id = hook["tool_input"][field_name]
+            # Concise results have no message headers, so nothing in them could be cut for
+            # people who opted out (#105). Detailed is the default, and what the export asks.
+            if tool in SAVED_TOOLS and hook["tool_input"].get("response_format", "detailed") != (
+                "detailed"
+            ):
+                return fail(
+                    "/slack-export reads channels and threads with response_format detailed "
+                    "only, so this read was stopped before it ran. Call it again with "
+                    'response_format "detailed".'
+                )
     except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, AttributeError):
         return fail(
             "Couldn't tell what this Slack read is for, so it was stopped. Stop the export."

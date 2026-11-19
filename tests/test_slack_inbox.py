@@ -974,9 +974,15 @@ def test_the_stubs_thread_line_is_rebuilt_from_the_count_alone(config):
     assert "SECRET" not in saved and "Thread: 1 reply (latest: -)" in saved
 
 
-def test_someone_else_quoting_an_opted_out_id_in_their_text_doesnt_stop_the_export(config):
+def test_someone_else_typing_an_opted_out_id_stops_the_export_rather_than_risk_a_leak(config):
+    # "Name (U...)" outside a header is also how a concise-format read shows its author, and
+    # the two can't be told apart, so the catch-all refuses both. A mention ("<@U...") is fine.
     code, saved = save_thread(
         config, thread_text(SAM, "Ask Alex (U00000001) about it.", [(RILEY, "Will do.")])
+    )
+    assert code == 2 and "Ask Alex" not in saved
+    code, saved = save_thread(
+        config, thread_text(SAM, "Ask <@U00000001|Alex> about it.", [(RILEY, "Will do.")])
     )
     assert code == 0 and "Will do." in saved
 
@@ -1072,3 +1078,28 @@ def test_indented_author_lines_are_still_caught_by_the_last_check(config):
     begin(opted, ["example-channel=C00000001"], now=T0)
     save(opted, payload(response=wrapped(text)), now=T0)
     assert "Meeting moved" not in saved_text(config)
+
+
+def test_must_refuse_2_a_concise_read_with_them_in_it_is_never_saved(config):
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    text = "Channel: #example-channel (C00000001)\nAlex Example (U00000001): SECRET concise\n"
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    assert save(opted, payload(response=wrapped(text)), now=T0) == 2
+    assert inbox_files(config) == []
+
+
+def test_must_refuse_2_a_non_text_block_with_them_in_it_is_never_saved(config):
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    extra = {"type": "resource", "resource": {"text": (FIXTURES / "read_channel.txt").read_text()}}
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    assert save(opted, payload(response=[*HEADER_ONLY, extra]), now=T0) == 2
+    assert inbox_files(config) == []
+
+
+@pytest.mark.parametrize("tool", ["slack_read_channel", "slack_read_thread"])
+def test_a_read_in_concise_format_is_stopped_before_it_runs(config, capsys, tool):
+    begin(config, ["example-channel=C00000001"], now=T0)
+    hook = json.loads(payload(tool=tool))
+    hook["tool_input"]["response_format"] = "concise"
+    assert slack_inbox.check(config, json.dumps(hook).encode("utf-8"), now=T0) == 2
+    assert 'response_format "detailed"' in capsys.readouterr().err

@@ -377,6 +377,18 @@ def still_shows(tool_response, user_ids: set[str]) -> bool:
     return False
 
 
+def id_left(tool_response, user_ids: set[str]) -> bool:
+    """The catch-all: whether any of these IDs is still anywhere in a result, in any form or
+    block, other than a stub's "Opted out (U...)" or a mention's "<@U...". A result the filter
+    couldn't cut, in whatever shape, still carries their ID somewhere, so it's refused."""
+    left = json.dumps(tool_response, ensure_ascii=False)
+    for user_id in user_ids:
+        rest = left.replace(f"{OPTED_OUT_NAME} ({user_id})", "").replace(f"<@{user_id}", "")
+        if re.search(rf"(?<![A-Z0-9]){re.escape(user_id)}(?![A-Z0-9])", rest):
+            return True
+    return False
+
+
 def strings_in(raw: str) -> list[str]:
     """Every text in a result, JSON decoded, at any depth: what the parser would read."""
     try:
