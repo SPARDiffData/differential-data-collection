@@ -116,7 +116,7 @@ We build the **Produce, Collect and Store** layers, dogfooding on our own SPAR t
 
 | ID | Requirement | Pri |
 |---|---|---|
-| STO-1 | Pilot store: a Google Cloud Storage bucket in the team's Google Cloud project (D3), with one folder per producer team that has its own access list. No public access. | M |
+| STO-1 | Pilot store: a Google Cloud Storage bucket in the team's Google Cloud project (decision D3 in the Second Half Plan, Nov 2026), with one folder per producer team, each folder with its own access list. A team's uploaders can add files to their own folder only. No public access. | M |
 | STO-2 | Folder structure: producer, then project, then source type, then date. | M |
 | STO-3 | Pushes run on a schedule and are additive: never overwrite. How to handle conflicts is open. | M |
 | STO-9 | Expect several people to collect the same source. An upload whose content already exists in storage is skipped (content hash). | M |
@@ -126,7 +126,7 @@ We build the **Produce, Collect and Store** layers, dogfooding on our own SPAR t
 | STO-5 | Access per consumer, limited to producers who approved them (CON-6). | F |
 | STO-6 | Every access and change is logged. | F |
 | STO-7 | Deletion on request removes the data and notifies consumers who already accessed it. | F |
-| STO-8 | US-only storage: the bucket is in a single US region (D3). | F |
+| STO-8 | US-only storage: the bucket is in a single US region (decision D3). | F |
 | REC-1 | Approved users download scrubbed data. No query interface or UI. | F |
 
 ### 5.8 Engineering (lane: Paul, repo)
