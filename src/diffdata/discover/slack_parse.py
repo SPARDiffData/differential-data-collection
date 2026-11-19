@@ -308,30 +308,36 @@ OPTED_OUT_NAME = "Opted out"
 AUTHOR_ID = re.compile(r"\((?P<user_id>[A-Z][A-Z0-9]+)\)\s*$")
 # Any user ID shown as an author: "(U...)", or "(ID: U...)" as the search tool shows it.
 SHOWN_ID = re.compile(r"\((?:ID: )?(?P<user_id>[UW][A-Z0-9]{8,})\)")
+# A channel stub's marker line: "=== Message from Opted out (U...) at <time> ===".
+STUB_HEADER = re.compile(r"=== Message from STUB at [^=\n]* ===[ \t]*")
 REPLY_MARKER = re.compile(r"--- Reply (?P<n>\d+) of (?P<of>\d+) ---")
 REPLIES_TOTAL = re.compile(r"=== THREAD REPLIES \((?P<total>\d+) total\) ===")
 
 
 def leave_out(
     tool_response, user_ids: set[str], tool_name: str = ""
-) -> tuple[object, dict[str, set[str]]]:
+) -> tuple[object, dict[str, set[str]], int]:
     """A channel or thread read with each message by these authors cut down to a stub: the
     author's ID, shown as "Opted out", the Time and Message TS lines, and a Thread line if
     it had one, so a thread they started is still found and read for others' replies. Their
     name, email, text, files and reactions are dropped. Returns the result, in the same
-    shape, unchanged if no one was left out, and the names seen for each person left out."""
+    shape, unchanged if no one was left out, the names seen for each person left out, and how
+    many of their own messages the parser couldn't read before they were cut."""
     names: dict[str, set[str]] = {}
+    unreadable = [0]
     if not user_ids:
-        return tool_response, names
+        return tool_response, names, 0
     in_thread = tool_name.endswith("slack_read_thread")
 
     def fix_string(raw: str) -> str:
         try:
             value = json.loads(raw)
         except json.JSONDecodeError:
-            return leave_out_text(raw, user_ids, names, in_thread)  # an error or plain text
+            return leave_out_text(
+                raw, user_ids, names, in_thread, unreadable
+            )  # an error or plain text
         if isinstance(value, dict) and isinstance(value.get("messages"), str):
-            messages = leave_out_text(value["messages"], user_ids, names, in_thread)
+            messages = leave_out_text(value["messages"], user_ids, names, in_thread, unreadable)
             value = {**value, "messages": messages}
         elif isinstance(value, list):  # a result Claude Code saved to a file: the block list
             value = [{"type": "text", "text": fix_string(raw_text(value))}]
@@ -342,8 +348,9 @@ def leave_out(
     # The blocks are joined first: one message, or the JSON itself, can run across two blocks.
     fixed = fix_string(raw_text(tool_response))
     if not names:
-        return tool_response, names
-    return ([{"type": "text", "text": fixed}] if isinstance(tool_response, list) else fixed), names
+        return tool_response, names, 0
+    shaped = [{"type": "text", "text": fixed}] if isinstance(tool_response, list) else fixed
+    return shaped, names, unreadable[0]
 
 
 def still_shows(tool_response, user_ids: set[str]) -> bool:
@@ -352,13 +359,21 @@ def still_shows(tool_response, user_ids: set[str]) -> bool:
     kept whole. The hook then saves nothing. Only author lines count, so someone else's
     message that happens to quote "(U...)" doesn't stop the export."""
     text = "\n".join(strings_in(raw_text(tool_response)))
-    for user_id in user_ids:
-        shown = 0
-        for line in text.split("\n"):
-            if line.startswith(("=== Message from ", "From: ")):
-                shown += any(m["user_id"] == user_id for m in SHOWN_ID.finditer(line))
-        if shown > text.count(f"{OPTED_OUT_NAME} ({user_id})"):
-            return True
+    for line in text.split("\n"):
+        line = line.rstrip("\r")
+        if not line.startswith(("=== Message from ", "From: ")):
+            continue
+        for found in SHOWN_ID.finditer(line):
+            user_id = found["user_id"]
+            # Only a whole stub line, as leave_out writes it, is allowed to carry their ID:
+            # "Opted out (U...)" typed into their own text doesn't count.
+            stub = f"{OPTED_OUT_NAME} ({user_id})"
+            if (
+                user_id in user_ids
+                and line != f"From: {stub}"
+                and not STUB_HEADER.fullmatch(line.replace(stub, "STUB", 1))
+            ):
+                return True
     return False
 
 
@@ -440,7 +455,11 @@ def real_markers(text: str, in_thread: bool) -> list[re.Match]:
 
 
 def leave_out_text(
-    text: str, user_ids: set[str], names: dict[str, set[str]], in_thread: bool = False
+    text: str,
+    user_ids: set[str],
+    names: dict[str, set[str]],
+    in_thread: bool = False,
+    unreadable: list[int] | None = None,
 ) -> str:
     """The messages text with each block by these authors cut down to its stub."""
     markers = real_markers(text, in_thread)
@@ -471,8 +490,14 @@ def leave_out_text(
         if marker["replies"] or user_id is None:
             parts.append(text[marker.start() : end])
             continue
+        if unreadable is not None and parse_block(block, marker["who"]) is None:
+            unreadable[0] += 1  # theirs, and unreadable as it came: the stub can be read
         author = AUTHOR.match(who) if who else None
-        names.setdefault(user_id, set()).update([author["name"]] if author else [])
+        if author:
+            name = author["name"]
+        else:  # a shape the parser doesn't take: the text before the email, or the last "("
+            name = (who or "").split("<")[0].rsplit("(", 1)[0].strip()
+        names.setdefault(user_id, set()).update([name] if name else [])
         stub_author = f"{OPTED_OUT_NAME} ({user_id})"
         if marker["who"] is None:
             stub = [marker[0], f"From: {stub_author}"]

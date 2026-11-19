@@ -481,16 +481,29 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
         # People who opted out (#105): their messages are cut to a stub before anything is
         # written, keeping only what finds their threads and checks the pages.
         opted_out = set(config.slack_opted_out)
-        response, left_names = leave_out(response, opted_out, hook["tool_name"])
+        before, skipped_before = parse_result(hook["tool_name"], hook["tool_input"], response)
+        response, left_names, theirs_unreadable = leave_out(response, opted_out, hook["tool_name"])
+        after, skipped_after = parse_result(hook["tool_name"], hook["tool_input"], response)
+        others = [{m.ts for m in found if m.user_id not in opted_out} for found in (before, after)]
+        if others[0] != others[1] or skipped_before - theirs_unreadable != skipped_after:
+            # The cut must leave everyone else's messages, and the count of messages diffdata
+            # can't read, exactly as they were: a reply lost, or an unreadable message hidden
+            # from the start-point checks, would be worse than stopping.
+            return fail(
+                "Cutting out someone in slack_opted_out would also have changed other people's "
+                "messages in this Slack result, so nothing was saved. Stop the export and tell "
+                "the user: they can pass this message to the project team, so the filter can "
+                "be fixed."
+            )
         if still_shows(response, opted_out):
             return fail(
                 "This Slack result came in a shape diffdata couldn't cut someone in "
-                "slack_opted_out out of, so nothing was saved. Stop the export and tell the "
+                "slack_opted_out out of, or someone pasted a line naming them as an author, so "
+                "nothing was saved. Stop the export and tell the "
                 "user: they can pass this message to the project team, with any names or text "
                 "replaced, so the filter can be fixed."
             )
-        messages, _ = parse_result(hook["tool_name"], hook["tool_input"], response)
-        left = sum(m.user_name == OPTED_OUT_NAME for m in messages)
+        left = sum(m.user_name == OPTED_OUT_NAME for m in after)
     record = {
         "saved_at": utc_iso(now),
         "run_id": run.run_id,

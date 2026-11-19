@@ -771,7 +771,9 @@ def wrapped(text: str, last: bool = True) -> list[dict]:
 )
 def test_must_refuse_2_a_pasted_marker_line_doesnt_keep_the_rest_of_their_text(config, fake):
     # In a channel read only "=== Message from" lines are the tool's own: anything else that
-    # looks like a marker is part of the message, and is cut with it.
+    # looks like a marker is part of the message, and is cut with it. Where the parser would
+    # have read the pasted line as a message it couldn't read, the cut would hide that from
+    # the start-point checks, so the result is refused whole instead: never kept either way.
     opted = replace(config, slack_opted_out=(OPTED_OUT,))
     text = (
         "Channel: #example-channel (C00000001)\n\n"
@@ -783,10 +785,14 @@ def test_must_refuse_2_a_pasted_marker_line_doesnt_keep_the_rest_of_their_text(c
         "Files: plan.txt (ID: F00000003, text/plain, 2.1 KB)\n"
     )
     begin(opted, ["example-channel=C00000001"], now=T0)
-    assert save(opted, payload(response=wrapped(text)), now=T0) == 0
+    code = save(opted, payload(response=wrapped(text)), now=T0)
     saved = saved_text(config)
     assert "SECRET" not in saved and "plan.txt" not in saved and "Pasted" not in saved
-    assert "Thread: 3 replies" in saved  # the stub keeps its Thread line, so the thread is read
+    if fake.startswith("=== THREAD REPLIES"):  # the parser never reads a replies line as one
+        assert code == 0
+        assert "Thread: 3 replies" in saved  # the stub keeps its Thread line
+    else:
+        assert code == 2 and inbox_files(config) == []
 
 
 def test_must_refuse_2_in_a_thread_read_a_reply_marker_out_of_order_is_their_text(config):
@@ -813,10 +819,9 @@ def test_must_refuse_2_in_a_thread_read_a_reply_marker_out_of_order_is_their_tex
     begin(opted, ["example-channel=C00000001"], now=T0)
     save(opted, payload(response=connector_result("read_channel.txt")), now=T0)
     response = wrapped(thread.replace("available", "in this thread"))
-    assert save(opted, thread_payload(response), now=T0) == 0
+    assert save(opted, thread_payload(response), now=T0) == 2  # refused whole: see above
     saved = saved_text(config)
     assert "SECRET" not in saved and "the log" not in saved
-    assert "A question." in saved and "Thanks." in saved
 
 
 @pytest.mark.parametrize(
@@ -936,12 +941,11 @@ def test_must_refuse_2_the_next_reply_marker_pasted_into_their_reply_doesnt_keep
     body = "See:\n--- Reply 2 of 3 ---\nSECRET after the fake marker"
     replies = [(ALEX, body), (SAM, "Second."), (RILEY, "Third.")]
     code, saved = save_thread(config, thread_text(SAM, "A question.", replies))
-    assert code == 0
+    assert code == 2  # the pasted marker is a message the parser can't read: refused whole
     assert "SECRET" not in saved and "See:" not in saved
-    assert "Second." in saved and "Third." in saved
 
 
-def test_must_refuse_2_a_message_header_pasted_without_a_ts_line_is_cut_with_their_text(config):
+def test_must_refuse_2_a_message_header_pasted_without_a_ts_line_never_keeps_their_text(config):
     opted = replace(config, slack_opted_out=(OPTED_OUT,))
     text = (
         "Channel: #example-channel (C00000001)\n\n"
@@ -951,7 +955,7 @@ def test_must_refuse_2_a_message_header_pasted_without_a_ts_line_is_cut_with_the
         "Reactions: +1 (1)\n"
     )
     begin(opted, ["example-channel=C00000001"], now=T0)
-    assert save(opted, payload(response=wrapped(text)), now=T0) == 0
+    assert save(opted, payload(response=wrapped(text)), now=T0) == 2  # refused whole
     saved = saved_text(config)
     assert "SECRET" not in saved and "pasted:" not in saved and "+1" not in saved
 
@@ -983,3 +987,59 @@ def test_a_thread_whose_reply_count_differs_from_its_total_is_still_cut_and_save
     code, saved = save_thread(config, thread_text(SAM, "A question.", replies, total=3))
     assert code == 0
     assert "Words that must be left out" not in saved and "Kept." in saved
+
+
+def test_must_refuse_2_typing_the_stub_string_doesnt_get_an_uncut_result_past_the_last_check(
+    config,
+):
+    # Windows line ends: the filter can't find the markers, so it cuts nothing, and the last
+    # check must refuse, even though their own text holds "Opted out (U00000001)".
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    text = (
+        "Channel: #example-channel (C00000001)\r\n\r\n"
+        f"=== Message from {ALEX} at 2026-10-01 09:14:00 CDT ===\r\n"
+        "Message TS: 1790864040.000100\r\n"
+        "SECRET plans. Signed, Opted out (U00000001)\r\n"
+    )
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    assert save(opted, payload(response=wrapped(text)), now=T0) == 2
+    assert inbox_files(config) == []
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["reply without a Time line", "text after the replies line", "unreadable channel message"],
+)
+def test_must_refuse_3_a_cut_that_would_drop_someone_elses_message_is_refused(config, case):
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    if case == "unreadable channel message":
+        text = (
+            "Channel: #example-channel (C00000001)\n\n"
+            f"=== Message from {ALEX} at 2026-10-01 09:14:00 CDT ===\n"
+            "Message TS: 1790864040.000100\nTheirs.\n\n"
+            f"=== Message from {SAM} at 2026-10-01 09:00:00 CDT ===\n"
+            "Message TS: not-a-ts\nSam's message, which the parser can't read.\n"
+        )
+        code = save(opted, payload(response=wrapped(text)), now=T0)
+    else:
+        save(opted, payload(response=connector_result("read_channel.txt")), now=T0)
+        if case == "reply without a Time line":
+            text = thread_text(SAM, "A question.", [(ALEX, "Theirs."), (RILEY, "Kept.")])
+            text = text.replace("Time: 2026-10-01 09:22:00 CDT\n", "")
+        else:
+            text = thread_text(ALEX, "Theirs.", [(SAM, "Kept.")])
+            text = text.replace("(1 total) ===\n\n", "(1 total) ===\nstray line\n\n")
+        code = save(opted, thread_payload(wrapped(text)), now=T0)
+    assert code == 2  # stopping beats losing a reply, or hiding a message from the checks
+    assert "Theirs." not in saved_text(config)
+
+
+def test_a_name_in_a_shape_the_parser_doesnt_take_is_still_kept_for_the_scrub(config):
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    assert save(opted, payload(), now=T0) == 0  # a channel read with no one in it
+    odd = "Alex Example <alex@example.com> (ID: U00000001)"
+    thread = thread_text(SAM, "A question.", [(odd, "Theirs.")])
+    assert save(opted, thread_payload(wrapped(thread)), now=T0) == 0
+    assert slack_inbox.read_left_out(config.data_dir)[OPTED_OUT] == ["Alex Example"]
