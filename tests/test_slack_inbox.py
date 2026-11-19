@@ -650,3 +650,107 @@ def test_check_stops_the_read_when_the_run_file_is_damaged(
     assert slack_inbox.check_from_hook(read) == 2
     err = capsys.readouterr().err
     assert "so it was stopped" in err and "Stop the export" in err
+
+
+# The opt-out filter in the save hook (#105). U00000001 (Alex) opted out.
+
+OPTED_OUT = "U00000001"
+# Their name, email and words. Others' messages that mention them keep the mention: the scrub
+# replaces it.
+THEIRS = ("Message from Alex", "From: Alex", "alex@example.com", "Meeting moved", "<!here>")
+THEIRS += ("Kickoff notes", "Thanks! Notes", "call-notes.txt", "F00000003")
+
+
+def thread_payload(response):
+    hook = json.loads(payload(tool="slack_read_thread", call="toolu_0002", response=response))
+    hook["tool_input"] = {"channel_id": CHANNEL, "message_ts": "1790864040.000100"}
+    return json.dumps(hook).encode("utf-8")
+
+
+def saved_text(config) -> str:
+    return "\n".join(p.read_text(encoding="utf-8") for p in inbox_files(config))
+
+
+def test_must_refuse_2_an_opted_out_persons_words_never_reach_the_raw_inbox(config, capsys):
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    last = "There are no more messages available.\n"
+    assert save(opted, payload(response=connector_result("read_channel.txt", last)), now=T0) == 0
+    note = hook_note(capsys)
+    assert "2 message(s) by people in slack_opted_out were left out" in note
+    # Their post with replies is still listed, so its thread is read for others' replies.
+    assert "slack_read_thread: 1790864040.000100." in note
+    assert "Alex" not in note
+    response = connector_result("read_thread.txt", "There are no more messages in this thread.\n")
+    assert save(opted, thread_payload(response), now=T0) == 0
+    saved = saved_text(config)
+    for theirs in THEIRS:
+        assert theirs not in saved
+    assert "Opted out (U00000001)" in saved
+    # Everyone else's messages are saved as they were.
+    for kept in ("Same doc as yesterday", "Added my comments", "One more thought"):
+        assert kept in saved
+
+
+def test_an_opted_out_persons_stub_keeps_only_its_place(config, capsys):
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    save(opted, payload(response=connector_result("read_channel.txt")), now=T0)
+    [path] = inbox_files(config)
+    text = json.loads(json.loads(path.read_text(encoding="utf-8"))["tool_response"][0]["text"])
+    kickoff = text["messages"].split("=== Message from ")[-1]
+    assert kickoff == (
+        "Opted out (U00000001) at 2026-10-01 09:14:00 CDT ===\n"
+        "Message TS: 1790864040.000100\n"
+        "Thread: 3 replies (latest: 2026-10-03 04:02:00 CDT)\n"
+    )
+    assert json.loads(path.read_text(encoding="utf-8"))["left_out"] == 2
+
+
+def test_text_that_looks_like_a_header_line_isnt_kept(config):
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    text = (
+        "Channel: #example-channel (C00000001)\n\n"
+        "=== Message from Alex Ex@mple (U00000001) at 2026-10-01 09:14:00 CDT ===\n"
+        "Message TS: 1790864040.000100\n"
+        "Time: secret meeting at noon\n"
+        "From: the planning doc\n"
+    )
+    response = [{"type": "text", "text": json.dumps({"messages": text, "pagination_info": MORE})}]
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    assert save(opted, payload(response=response), now=T0) == 0
+    saved = saved_text(config)
+    assert "secret meeting" not in saved and "planning doc" not in saved
+    assert "Ex@mple" not in saved  # a name in a shape the parser doesn't take is cut too
+
+
+@pytest.mark.parametrize("as_blocks", [False, True])
+def test_must_refuse_2_a_result_too_big_for_claude_is_cut_too(
+    config, capsys, overflowed, as_blocks
+):
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    response = connector_result(
+        "read_channel.txt", pagination="There are no more messages available.\n"
+    )
+    saved_copy = json.dumps(response) if as_blocks else response[0]["text"]
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    assert save(opted, overflowed(saved_copy), now=T0) == 0
+    saved = saved_text(config)
+    assert "Meeting moved" not in saved and "alex@example.com" not in saved
+    assert "Same doc as yesterday" in saved
+
+
+def test_with_no_one_opted_out_the_raw_result_is_saved_unchanged(config):
+    response = connector_result("read_channel.txt")
+    begin(config, ["example-channel=C00000001"], now=T0)
+    save(config, payload(response=response), now=T0)
+    [path] = inbox_files(config)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["tool_response"] == response and "left_out" not in saved
+
+
+def test_the_hook_keeps_an_opted_out_persons_name_for_the_scrub(config):
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    save(opted, payload(response=connector_result("read_channel.txt")), now=T0)
+    assert slack_inbox.read_left_out(config.data_dir) == {OPTED_OUT: ["Alex Example"]}

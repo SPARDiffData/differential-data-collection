@@ -24,12 +24,19 @@ stopped before anything is fetched, as is any Slack read the export never makes.
 set onFailure: block, so a hook that can't start or times out stops the read too.
 `begin` says where each channel's read and search start, from slack_state.py.
 
+Messages by people listed in `slack_opted_out` in config.toml are cut down before a channel or
+thread read is saved: each keeps its author's ID, shown as "Opted out", its time and TS, and a
+Thread line if it had one, so their threads are still found and read for others' replies and
+the page checks still hold. Their name, email, text, files and reactions are never saved
+(#105). Their IDs and names go in slack/left_out.json, for the scrub only.
+
 Layout under the data folder:
   slack/run.json                                   the open run, if any
   slack/runs/<run-id>.json                         every closed run, and why it closed
   slack/state.json                                 each channel's start point (slack_state.py)
   slack/inbox/<channel-id>/<run-id>/<tool>-<call>.json   one raw channel or thread read
   slack/inbox/<channel-id>/<run-id>/search_messages-<call>.json   one message search's threads
+  slack/left_out.json                              who opted out, by ID and name, for the scrub
 """
 
 import hashlib
@@ -48,6 +55,8 @@ from diffdata.common.paths import UnsafeDataDirError
 from diffdata.consent import approvals
 from diffdata.discover import slack_state
 from diffdata.discover.slack_parse import (
+    OPTED_OUT_NAME,
+    leave_out,
     next_cursor,
     pages_known,
     parse_result,
@@ -466,6 +475,18 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
         except slack_canvas.CanvasError as e:
             return fail(str(e))
         return tell_claude(note)
+    left = 0
+    if tool in SAVED_TOOLS and config.slack_opted_out:
+        # People who opted out (#105): their messages are cut to a stub before anything is
+        # written, keeping only what finds their threads and checks the pages.
+        response, left_names = leave_out(response, set(config.slack_opted_out))
+        if left_names:
+            try:
+                record_left_out(config.data_dir, left_names)
+            except OSError as e:
+                return fail(f"Couldn't record who was left out, so nothing was saved: {e}")
+            messages, _ = parse_result(hook["tool_name"], hook["tool_input"], response)
+            left = sum(m.user_name == OPTED_OUT_NAME for m in messages)
     record = {
         "saved_at": utc_iso(now),
         "run_id": run.run_id,
@@ -475,6 +496,8 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
     }
     if overflow is not None:
         record["overflow_file"] = overflow.name
+    if left:
+        record["left_out"] = left  # a count, never who
     if tool == slack_canvas.TOOL:
         # To the microsecond, so two reads in the same second keep their order (COL-9).
         record["saved_at"] = now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -509,9 +532,10 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
         write_json(path, record)
     except OSError as e:
         return fail(f"Couldn't save a Slack result to the inbox: {e}")
-    return tell_claude(
-        saved_note(tool, hook["tool_name"], hook["tool_input"], response, overflow is not None)
-    )
+    note = saved_note(tool, hook["tool_name"], hook["tool_input"], response, overflow is not None)
+    if left:
+        note += f" {left} message(s) by people in slack_opted_out were left out of what was saved."
+    return tell_claude(note)
 
 
 def check(config: Config, payload: bytes, now: datetime | None = None) -> int:

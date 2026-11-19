@@ -300,3 +300,84 @@ def to_markdown(text: str, people: dict[str, str], channels: dict[str, str]) -> 
 
     text = SLACK_MARKUP.sub(replace, text)
     return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+
+
+# What an opted-out person's message keeps in a saved read (#105): its place, never its words.
+OPTED_OUT_NAME = "Opted out"
+# The ID at the end of an author, even in a shape AUTHOR doesn't take, such as a name with @.
+AUTHOR_ID = re.compile(r"\((?P<user_id>[A-Z][A-Z0-9]+)\)\s*$")
+
+
+def leave_out(tool_response, user_ids: set[str]) -> tuple[object, dict[str, set[str]]]:
+    """A channel or thread read with each message by these authors cut down to a stub: the
+    author's ID, shown as "Opted out", the Time and Message TS lines, and a Thread line if
+    it had one, so a thread they started is still found and read for others' replies. Their
+    name, email, text, files and reactions are dropped. Returns the result, in the same
+    shape, unchanged if no one was left out, and the names seen for each person left out."""
+    names: dict[str, set[str]] = {}
+    if not user_ids:
+        return tool_response, names
+
+    def fix_string(raw: str) -> str:
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            return leave_out_text(raw, user_ids, names)  # an error or plain text
+        if isinstance(value, dict) and isinstance(value.get("messages"), str):
+            value = {**value, "messages": leave_out_text(value["messages"], user_ids, names)}
+        elif isinstance(value, list):  # a result Claude Code saved to a file: the block list
+            value = [{"type": "text", "text": fix_string(raw_text(value))}]
+        else:
+            return raw
+        return json.dumps(value, ensure_ascii=False)
+
+    # The blocks are joined first: one message, or the JSON itself, can run across two blocks.
+    fixed = fix_string(raw_text(tool_response))
+    if not names:
+        return tool_response, names
+    return ([{"type": "text", "text": fixed}] if isinstance(tool_response, list) else fixed), names
+
+
+def leave_out_text(text: str, user_ids: set[str], names: dict[str, set[str]]) -> str:
+    """The messages text with each block by these authors cut down to its stub."""
+    markers = list(MARKER.finditer(text))
+    parts = [text[: markers[0].start()] if markers else text]
+    for i, marker in enumerate(markers):
+        end = markers[i + 1].start() if i + 1 < len(markers) else len(text)
+        block = text[marker.end() : end]
+        lines = [line for line in block.split("\n") if line.strip()]
+        who = marker["who"]
+        head = []  # the From, Time and Message TS lines before the text, as parse_block reads
+        for line in lines:
+            key = line.partition(": ")[0]
+            if key not in ("From", "Time", "Message TS"):
+                break
+            head.append(line)
+            if key == "Message TS":
+                break
+        if who is None:
+            who = next((line[6:].strip() for line in head if line.startswith("From: ")), None)
+        found = AUTHOR_ID.search(who) if who else None
+        if marker["replies"] or found is None or found["user_id"] not in user_ids:
+            parts.append(text[marker.start() : end])
+            continue
+        user_id = found["user_id"]
+        author = AUTHOR.match(who)
+        names.setdefault(user_id, set()).update([author["name"]] if author else [])
+        stub_author = f"{OPTED_OUT_NAME} ({user_id})"
+        if marker["who"] is None:
+            stub = [marker[0], f"From: {stub_author}"]
+        else:
+            start = marker.start("who") - marker.start()
+            stub = [
+                marker[0][:start] + stub_author + marker[0][marker.end("who") - marker.start() :]
+            ]
+        stub += [line for line in head if line.startswith(("Time: ", "Message TS: "))]
+        details = lines[len(head) :]
+        while details and detail_line(details[-1]):
+            if detail_line(details[-1])[0] == "Thread":
+                stub.append(details[-1].rstrip())
+            details.pop()
+        trailing = len(block) - len(block.rstrip("\n"))
+        parts.append("\n".join(stub) + "\n" * max(trailing, 1))
+    return "".join(parts)
