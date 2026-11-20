@@ -24,12 +24,19 @@ stopped before anything is fetched, as is any Slack read the export never makes.
 set onFailure: block, so a hook that can't start or times out stops the read too.
 `begin` says where each channel's read and search start, from slack_state.py.
 
+Messages by people listed in `slack_opted_out` in config.toml are cut down before a channel or
+thread read is saved: each keeps its author's ID, shown as "Opted out", its time and TS, and a
+Thread line if it had one, so their threads are still found and read for others' replies and
+the page checks still hold. Their name, email, text, files and reactions are never saved
+(#105). Their IDs and names go in slack/left_out.json, for the scrub only.
+
 Layout under the data folder:
   slack/run.json                                   the open run, if any
   slack/runs/<run-id>.json                         every closed run, and why it closed
   slack/state.json                                 each channel's start point (slack_state.py)
   slack/inbox/<channel-id>/<run-id>/<tool>-<call>.json   one raw channel or thread read
   slack/inbox/<channel-id>/<run-id>/search_messages-<call>.json   one message search's threads
+  slack/left_out.json                              who opted out, by ID and name, for the scrub
 """
 
 import hashlib
@@ -38,6 +45,9 @@ import os
 import re
 import sys
 import tempfile
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -48,13 +58,18 @@ from diffdata.common.paths import UnsafeDataDirError
 from diffdata.consent import approvals
 from diffdata.discover import slack_state
 from diffdata.discover.slack_parse import (
+    OPTED_OUT_NAME,
+    id_left,
+    leave_out,
     next_cursor,
     pages_known,
     parse_result,
     raw_text,
+    real_markers,
     result_json,
     result_text,
     search_messages,
+    still_shows,
 )
 
 # A run that crashed or was forgotten must not leave the hook saving, so runs expire.
@@ -219,16 +234,61 @@ def applied_stamp(data: Path) -> str:
     return stamp if isinstance(stamp, str) else ""
 
 
+# How long a save waits for another to finish adding to left_out.json. Each holds it for
+# one read and one small write, so a wait this long means one was cut off mid-way.
+LEFT_OUT_WAIT_SECONDS = 10.0
+
+
+@contextmanager
+def left_out_locked(data: Path) -> Iterator[None]:
+    """Hold slack/left_out.json for one read, add and write. When Claude reads several things
+    at once, two hooks can finish together: without this, each would write back only its own
+    names over the other's, and a name lost there would let plain-text mentions of that
+    person through the scrub. If another holds it, wait for it, briefly."""
+    lock = left_out_path(data).with_name("left_out.json.lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + LEFT_OUT_WAIT_SECONDS
+    while True:
+        try:
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            break
+        except FileExistsError as e:
+            if time.monotonic() > deadline:
+                raise SlackExportError(
+                    "another save held slack/left_out.json for too long. If no Slack export "
+                    "is running, delete slack/left_out.json.lock in the data folder"
+                ) from e
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        lock.unlink(missing_ok=True)
+
+
 def record_left_out(data: Path, seen: dict[str, set[str]]) -> None:
     """Add these people and names to slack/left_out.json. It only grows: someone taken off
-    the list later is still pseudonymised, never shown by name."""
-    known = read_left_out(data)
-    for user_id, names in seen.items():
-        known[user_id] = sorted(set(known.get(user_id, [])) | names)
-    write_atomic(
-        left_out_path(data),
-        json.dumps(dict(sorted(known.items())), indent=2, ensure_ascii=False) + "\n",
-    )
+    the list later is still pseudonymised, never shown by name. Two saves at once each keep
+    the other's names (left_out_locked)."""
+    with left_out_locked(data):
+        known = read_left_out(data)
+        for user_id, names in seen.items():
+            known[user_id] = sorted(set(known.get(user_id, [])) | names)
+        write_atomic(
+            left_out_path(data),
+            json.dumps(dict(sorted(known.items())), indent=2, ensure_ascii=False) + "\n",
+        )
+
+
+def opens_cleanly(tool: str, response) -> bool:
+    """Whether a channel or thread read holds nothing before its first message but what the
+    connector writes there: a channel read's "Channel: #name (C...)" line, a thread read
+    nothing. An empty page is just that, so it passes."""
+    text = result_text(response)
+    markers = real_markers(text, tool == "slack_read_thread")
+    before = (text[: markers[0].start()] if markers else text).strip()
+    if tool == "slack_read_channel" and (header := CHANNEL_HEADER.match(before)):
+        before = before[header.end() :].strip()
+    return not before
 
 
 def open_run(data: Path) -> Run | None:
@@ -466,6 +526,56 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
         except slack_canvas.CanvasError as e:
             return fail(str(e))
         return tell_claude(note)
+    left, left_names = 0, {}
+    if tool in SAVED_TOOLS and config.slack_opted_out:
+        # People who opted out (#105): their messages are cut to a stub before anything is
+        # written, keeping only what finds their threads and checks the pages.
+        opted_out = set(config.slack_opted_out)
+        shaped = result_json(response)
+        if not (isinstance(shaped, dict) and isinstance(shaped.get("messages"), str)) and any(
+            user_id in json.dumps(response) for user_id in opted_out
+        ):
+            # Not the connector's usual shape, so the filter can't find the messages to cut,
+            # and someone who opted out is in it somewhere. A result in this shape never
+            # counts towards the start points anyway (slack_state.a_read).
+            return fail(
+                "This Slack result isn't in the shape diffdata expects, and it includes "
+                "someone in slack_opted_out, so nothing was saved. Stop the export and tell "
+                "the user: they can pass this message to the project team."
+            )
+        before, skipped_before = parse_result(hook["tool_name"], hook["tool_input"], response)
+        if not opens_cleanly(tool, response):
+            # Before the first message, or on a page where the parser finds none, there's more
+            # than the channel line, such as an author line that shows no ID. The filter can't
+            # tell whose words those are, so they're never saved while anyone is opted out.
+            return fail(
+                "This Slack result holds text diffdata couldn't split into messages, and "
+                "someone is in slack_opted_out, so nothing was saved. Stop the export and tell "
+                "the user: they can pass this message to the project team, with any names or "
+                "text replaced, so the filter can be fixed."
+            )
+        response, left_names, theirs_unreadable = leave_out(response, opted_out, hook["tool_name"])
+        after, skipped_after = parse_result(hook["tool_name"], hook["tool_input"], response)
+        others = [{m.ts for m in found if m.user_id not in opted_out} for found in (before, after)]
+        if others[0] != others[1] or skipped_before - theirs_unreadable != skipped_after:
+            # The cut must leave everyone else's messages, and the count of messages diffdata
+            # can't read, exactly as they were: a reply lost, or an unreadable message hidden
+            # from the start-point checks, would be worse than stopping.
+            return fail(
+                "Cutting out someone in slack_opted_out would also have changed other people's "
+                "messages in this Slack result, or someone pasted Slack's own header lines into "
+                "a message, so nothing was saved. Stop the export and tell the user: they can "
+                "pass this message to the project team, so the filter can be fixed."
+            )
+        if still_shows(response, opted_out) or id_left(response, opted_out):
+            return fail(
+                "This Slack result came in a shape diffdata couldn't cut someone in "
+                "slack_opted_out out of, or someone pasted a line naming them as an author, so "
+                "nothing was saved. Stop the export and tell the "
+                "user: they can pass this message to the project team, with any names or text "
+                "replaced, so the filter can be fixed."
+            )
+        left = sum(m.user_name == OPTED_OUT_NAME for m in after)
     record = {
         "saved_at": utc_iso(now),
         "run_id": run.run_id,
@@ -475,6 +585,8 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
     }
     if overflow is not None:
         record["overflow_file"] = overflow.name
+    if left:
+        record["left_out"] = left  # a count, never who
     if tool == slack_canvas.TOOL:
         # To the microsecond, so two reads in the same second keep their order (COL-9).
         record["saved_at"] = now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -505,13 +617,19 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
         )
 
     path = inbox_dir(config.data_dir) / channel_id / run.run_id / f"{tool}-{call}.json"
+    if left_names:  # only once the read has passed its checks and is about to be saved
+        try:
+            record_left_out(config.data_dir, left_names)
+        except (OSError, SlackExportError) as e:
+            return fail(f"Couldn't record who was left out, so nothing was saved: {e}")
     try:
         write_json(path, record)
     except OSError as e:
         return fail(f"Couldn't save a Slack result to the inbox: {e}")
-    return tell_claude(
-        saved_note(tool, hook["tool_name"], hook["tool_input"], response, overflow is not None)
-    )
+    note = saved_note(tool, hook["tool_name"], hook["tool_input"], response, overflow is not None)
+    if left:
+        note += f" {left} message(s) by people in slack_opted_out were left out of what was saved."
+    return tell_claude(note)
 
 
 def check(config: Config, payload: bytes, now: datetime | None = None) -> int:
@@ -534,6 +652,16 @@ def check(config: Config, payload: bytes, now: datetime | None = None) -> int:
         if tool != SEARCH_TOOL:
             field_name = CHECKED_READS[tool]
             read_id = hook["tool_input"][field_name]
+            # Concise results have no message headers, so nothing in them could be cut for
+            # people who opted out (#105). Detailed is the default, and what the export asks.
+            if tool in SAVED_TOOLS and hook["tool_input"].get("response_format", "detailed") != (
+                "detailed"
+            ):
+                return fail(
+                    "/slack-export reads channels and threads with response_format detailed "
+                    "only, so this read was stopped before it ran. Call it again with "
+                    'response_format "detailed".'
+                )
     except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, AttributeError):
         return fail(
             "Couldn't tell what this Slack read is for, so it was stopped. Stop the export."

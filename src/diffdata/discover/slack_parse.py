@@ -300,3 +300,242 @@ def to_markdown(text: str, people: dict[str, str], channels: dict[str, str]) -> 
 
     text = SLACK_MARKUP.sub(replace, text)
     return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+
+
+# What an opted-out person's message keeps in a saved read (#105): its place, never its words.
+OPTED_OUT_NAME = "Opted out"
+# The ID at the end of an author, even in a shape AUTHOR doesn't take, such as a name with @.
+AUTHOR_ID = re.compile(r"\((?P<user_id>[A-Z][A-Z0-9]+)\)\s*$")
+# Any user ID shown as an author: "(U...)", or "(ID: U...)" as the search tool shows it.
+SHOWN_ID = re.compile(r"\((?:ID: )?(?P<user_id>[UW][A-Z0-9]{8,})\)")
+# A channel stub's marker line: "=== Message from Opted out (U...) at <time> ===".
+STUB_HEADER = re.compile(r"=== Message from STUB at [^=\n]* ===[ \t]*")
+REPLY_MARKER = re.compile(r"--- Reply (?P<n>\d+) of (?P<of>\d+) ---")
+REPLIES_TOTAL = re.compile(r"=== THREAD REPLIES \((?P<total>\d+) total\) ===")
+
+
+def leave_out(
+    tool_response, user_ids: set[str], tool_name: str = ""
+) -> tuple[object, dict[str, set[str]], int]:
+    """A channel or thread read with each message by these authors cut down to a stub: the
+    author's ID, shown as "Opted out", the Time and Message TS lines, and a Thread line if
+    it had one, so a thread they started is still found and read for others' replies. Their
+    name, email, text, files and reactions are dropped. Returns the result, in the same
+    shape, unchanged if no one was left out, the names seen for each person left out, and how
+    many of their own messages the parser couldn't read before they were cut."""
+    names: dict[str, set[str]] = {}
+    unreadable = [0]
+    if not user_ids:
+        return tool_response, names, 0
+    in_thread = tool_name.endswith("slack_read_thread")
+
+    def fix_string(raw: str) -> str:
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            return leave_out_text(
+                raw, user_ids, names, in_thread, unreadable
+            )  # an error or plain text
+        if isinstance(value, dict) and isinstance(value.get("messages"), str):
+            messages = leave_out_text(value["messages"], user_ids, names, in_thread, unreadable)
+            value = {**value, "messages": messages}
+        elif isinstance(value, list):  # a result Claude Code saved to a file: the block list
+            value = [{"type": "text", "text": fix_string(raw_text(value))}]
+        else:
+            return raw
+        return json.dumps(value, ensure_ascii=False)
+
+    # The blocks are joined first: one message, or the JSON itself, can run across two blocks.
+    fixed = fix_string(raw_text(tool_response))
+    if not names:
+        return tool_response, names, 0
+    shaped = [{"type": "text", "text": fixed}] if isinstance(tool_response, list) else fixed
+    return shaped, names, unreadable[0]
+
+
+def still_shows(tool_response, user_ids: set[str]) -> bool:
+    """Whether any of these people still shows as an author, on a "=== Message from" or a
+    "From:" line, anywhere in a result beyond their stubs: a shape leave_out didn't take,
+    kept whole. The hook then saves nothing. Only author lines count, so someone else's
+    message that happens to quote "(U...)" doesn't stop the export."""
+    text = "\n".join(strings_in(raw_text(tool_response)))
+    for line in text.split("\n"):
+        line = line.strip()  # indented or with Windows line ends, it still counts
+        if not line.startswith(("=== Message from ", "From: ")):
+            continue
+        for found in SHOWN_ID.finditer(line):
+            user_id = found["user_id"]
+            # Only a whole stub line, as leave_out writes it, is allowed to carry their ID:
+            # "Opted out (U...)" typed into their own text doesn't count.
+            stub = f"{OPTED_OUT_NAME} ({user_id})"
+            if (
+                user_id in user_ids
+                and line != f"From: {stub}"
+                and not STUB_HEADER.fullmatch(line.replace(stub, "STUB", 1))
+            ):
+                return True
+    return False
+
+
+def id_left(tool_response, user_ids: set[str]) -> bool:
+    """The catch-all: whether any of these IDs is still anywhere in a result, in any form or
+    block, other than a stub's "Opted out (U...)", a mention's "<@U...", or a Slack link to a
+    file they uploaded or to their profile, as someone else's message can hold:
+    https://<workspace>.slack.com/files/U.../F.../name or .../team/U.... Those carry no words
+    of theirs, and the scrub replaces the ID in them. A result the filter couldn't cut, in
+    whatever shape, still carries their ID somewhere, so it's refused."""
+    left = json.dumps(tool_response, ensure_ascii=False)
+    for user_id in user_ids:
+        rest = left.replace(f"{OPTED_OUT_NAME} ({user_id})", "").replace(f"<@{user_id}", "")
+        rest = re.sub(
+            rf"https://[A-Za-z0-9.-]*slack\.com/(?:files|team)/{re.escape(user_id)}(?![A-Z0-9])",
+            "",
+            rest,
+        )
+        if re.search(rf"(?<![A-Z0-9]){re.escape(user_id)}(?![A-Z0-9])", rest):
+            return True
+    return False
+
+
+def strings_in(raw: str) -> list[str]:
+    """Every text in a result, JSON decoded, at any depth: what the parser would read."""
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return [raw]
+    found: list[str] = []
+
+    def walk(item) -> None:
+        if isinstance(item, str):
+            inner = strings_in(item) if item.lstrip()[:1] in ("{", "[", '"') else [item]
+            found.extend(inner)
+        elif isinstance(item, dict):
+            for part in item.values():
+                walk(part)
+        elif isinstance(item, list):
+            for part in item:
+                walk(part)
+
+    walk(value)
+    return found
+
+
+def opens_like_a_message(block: str, in_thread: bool) -> bool:
+    """Whether the text after a marker starts the way the tool writes a message: in a thread
+    read, From, Time and Message TS lines; in a channel read, a Message TS line. The TS must
+    be in its own shape."""
+    lines = [line.strip() for line in block.split("\n") if line.strip()]
+    keys = ["From", "Time", "Message TS"] if in_thread else ["Message TS"]
+    if len(lines) < len(keys):
+        return False
+    for line, key in zip(lines, keys, strict=False):
+        if line.partition(": ")[0] != key:
+            return False
+    return TS.fullmatch(lines[len(keys) - 1].partition(": ")[2].strip()) is not None
+
+
+def real_markers(text: str, in_thread: bool) -> list[re.Match]:
+    """The marker lines the tool itself writes, in the order it writes them. A line in
+    someone's text that only looks like one stays part of that text, and is cut with it: a
+    channel read has only "=== Message from" lines; a thread read has one parent line, then
+    one replies line, then "--- Reply n of N ---" counting up from 1. Each must be followed
+    the way the tool follows it: a message marker by its header lines, the replies line by
+    nothing but blank lines."""
+    candidates = list(MARKER.finditer(text))
+    found = []
+    expected, total, parent_seen, replies_seen = 1, None, False, False
+    for i, marker in enumerate(candidates):
+        line = marker[0].strip()
+        end = candidates[i + 1].start() if i + 1 < len(candidates) else len(text)
+        block = text[marker.end() : end]
+        if not in_thread:
+            if marker["who"] is not None and opens_like_a_message(block, False):
+                found.append(marker)
+            continue
+        if line == "=== THREAD PARENT MESSAGE ===":
+            ok = not parent_seen and not found and opens_like_a_message(block, True)
+            parent_seen = parent_seen or ok
+        elif REPLIES_TOTAL.fullmatch(line):
+            ok = parent_seen and not replies_seen and not block.strip()
+            replies_seen = replies_seen or ok
+        elif reply := REPLY_MARKER.fullmatch(line):
+            ok = (
+                replies_seen
+                and int(reply["n"]) == expected
+                and (total is None or int(reply["of"]) == total)
+                and opens_like_a_message(block, True)
+            )
+            if ok:
+                expected, total = expected + 1, int(reply["of"])
+        else:
+            ok = False
+        if ok:
+            found.append(marker)
+    return found
+
+
+def leave_out_text(
+    text: str,
+    user_ids: set[str],
+    names: dict[str, set[str]],
+    in_thread: bool = False,
+    unreadable: list[int] | None = None,
+) -> str:
+    """The messages text with each block by these authors cut down to its stub."""
+    markers = real_markers(text, in_thread)
+    parts = [text[: markers[0].start()] if markers else text]
+    for i, marker in enumerate(markers):
+        end = markers[i + 1].start() if i + 1 < len(markers) else len(text)
+        block = text[marker.end() : end]
+        lines = [line for line in block.split("\n") if line.strip()]
+        head = []  # the From, Time and Message TS lines before the text, as parse_block reads
+        for line in lines:
+            key = line.partition(": ")[0]
+            if key not in ("From", "Time", "Message TS"):
+                break
+            head.append(line)
+            if key == "Message TS":
+                break
+        who = marker["who"]
+        if who is None:
+            who = next((line[6:].strip() for line in head if line.startswith("From: ")), None)
+        # Theirs if their ID is the author, or shows as an author anywhere in the marker or the
+        # From line, in a shape the parser may not take.
+        header = marker[0] + "\n" + "\n".join(line for line in head if line.startswith("From: "))
+        found = AUTHOR_ID.search(who) if who else None
+        user_id = found["user_id"] if found and found["user_id"] in user_ids else None
+        if user_id is None:
+            shown = [m["user_id"] for m in SHOWN_ID.finditer(header) if m["user_id"] in user_ids]
+            user_id = shown[0] if shown else None
+        if marker["replies"] or user_id is None:
+            parts.append(text[marker.start() : end])
+            continue
+        if unreadable is not None and parse_block(block, marker["who"]) is None:
+            unreadable[0] += 1  # theirs, and unreadable as it came: the stub can be read
+        author = AUTHOR.match(who) if who else None
+        if author:
+            name = author["name"]
+        else:  # a shape the parser doesn't take: the text before the email, or the last "("
+            name = (who or "").split("<")[0].rsplit("(", 1)[0].strip()
+        names.setdefault(user_id, set()).update([name] if name else [])
+        stub_author = f"{OPTED_OUT_NAME} ({user_id})"
+        if marker["who"] is None:
+            stub = [marker[0], f"From: {stub_author}"]
+        else:
+            start = marker.start("who") - marker.start()
+            stub = [
+                marker[0][:start] + stub_author + marker[0][marker.end("who") - marker.start() :]
+            ]
+        stub += [line for line in head if line.startswith(("Time: ", "Message TS: "))]
+        details = lines[len(head) :]
+        while details and detail_line(details[-1]):
+            if detail_line(details[-1])[0] == "Thread" and (
+                count := REPLIES.match(detail_line(details[-1])[1])
+            ):
+                # Rebuilt from the count alone: the "latest" part could be their own words.
+                n = int(count[1])
+                stub.append(f"Thread: {n} {'reply' if n == 1 else 'replies'} (latest: -)")
+            details.pop()
+        trailing = len(block) - len(block.rstrip("\n"))
+        parts.append("\n".join(stub) + "\n" * max(trailing, 1))
+    return "".join(parts)
