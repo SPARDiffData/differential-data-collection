@@ -379,11 +379,19 @@ def still_shows(tool_response, user_ids: set[str]) -> bool:
 
 def id_left(tool_response, user_ids: set[str]) -> bool:
     """The catch-all: whether any of these IDs is still anywhere in a result, in any form or
-    block, other than a stub's "Opted out (U...)" or a mention's "<@U...". A result the filter
-    couldn't cut, in whatever shape, still carries their ID somewhere, so it's refused."""
+    block, other than a stub's "Opted out (U...)", a mention's "<@U...", or a Slack link to a
+    file they uploaded or to their profile, as someone else's message can hold:
+    https://<workspace>.slack.com/files/U.../F.../name or .../team/U.... Those carry no words
+    of theirs, and the scrub replaces the ID in them. A result the filter couldn't cut, in
+    whatever shape, still carries their ID somewhere, so it's refused."""
     left = json.dumps(tool_response, ensure_ascii=False)
     for user_id in user_ids:
         rest = left.replace(f"{OPTED_OUT_NAME} ({user_id})", "").replace(f"<@{user_id}", "")
+        rest = re.sub(
+            rf"https://[A-Za-z0-9.-]*slack\.com/(?:files|team)/{re.escape(user_id)}(?![A-Z0-9])",
+            "",
+            rest,
+        )
         if re.search(rf"(?<![A-Z0-9]){re.escape(user_id)}(?![A-Z0-9])", rest):
             return True
     return False

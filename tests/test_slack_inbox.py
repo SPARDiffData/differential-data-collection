@@ -1103,3 +1103,27 @@ def test_a_read_in_concise_format_is_stopped_before_it_runs(config, capsys, tool
     hook["tool_input"]["response_format"] = "concise"
     assert slack_inbox.check(config, json.dumps(hook).encode("utf-8"), now=T0) == 2
     assert 'response_format "detailed"' in capsys.readouterr().err
+
+
+# Paul's must-fix items on #107.
+
+FILE_LINK = "https://example.slack.com/files/U00000001/F00000009/plan.txt"
+PROFILE_LINK = "https://example.slack.com/team/U00000001"
+
+
+@pytest.mark.parametrize(
+    "link",
+    [f"<{FILE_LINK}>", f"<{FILE_LINK}|plan.txt>", f"<{PROFILE_LINK}>", f"<{PROFILE_LINK}|Alex>"],
+)
+def test_someone_elses_link_to_an_opted_out_persons_file_or_profile_is_saved(config, link):
+    # The link holds their ID but none of their words. Refusing it would stop the channel's
+    # export on every run.
+    code, saved = save_thread(config, thread_text(SAM, f"See {link} for it.", [(RILEY, "Ok.")]))
+    assert code == 0
+    assert link.strip("<>").split("|")[0] in saved and "Ok." in saved
+
+
+@pytest.mark.parametrize("typed", ["U00000001", "[U00000001]", "id U00000001."])
+def test_an_opted_out_id_typed_by_hand_still_stops_the_export(config, typed):
+    code, saved = save_thread(config, thread_text(SAM, f"Ask {typed} about it.", [(RILEY, "Ok.")]))
+    assert code == 2 and "Ask" not in saved
