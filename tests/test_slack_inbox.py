@@ -1173,3 +1173,35 @@ def test_a_save_waits_only_briefly_for_a_lock_left_behind(config, monkeypatch, c
     assert save(opted, payload(response=connector_result("read_channel.txt")), now=T0) == 2
     assert inbox_files(config) == []
     assert "left_out.json.lock" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Channel: #example-channel (C00000001)\nAlex Example: SECRET text\n",
+        "Channel: #example-channel (C00000001)\n\nAlex Example: SECRET text\n\n"
+        f"=== Message from {SAM} at 2026-10-01 09:00:00 CDT ===\n"
+        "Message TS: 1790864040.000100\nHello.\n",
+    ],
+)
+def test_text_the_parser_cant_split_into_messages_isnt_saved_while_anyone_opted_out(
+    config, capsys, text
+):
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    assert save(opted, payload(response=wrapped(text)), now=T0) == 2
+    assert inbox_files(config) == []
+    assert "couldn't split into messages" in capsys.readouterr().err
+
+
+def test_a_thread_read_with_text_but_no_messages_isnt_saved_while_anyone_opted_out(config):
+    code, saved = save_thread(config, "Alex Example: SECRET text\n")
+    assert code == 2 and "SECRET" not in saved
+
+
+def test_an_empty_page_still_saves_while_anyone_opted_out(config):
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    assert save(opted, payload(), now=T0) == 0  # the channel line alone
+    assert save(opted, thread_payload(wrapped("")), now=T0) == 0
+    assert len(inbox_files(config)) == 2

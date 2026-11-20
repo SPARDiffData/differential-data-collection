@@ -65,6 +65,7 @@ from diffdata.discover.slack_parse import (
     pages_known,
     parse_result,
     raw_text,
+    real_markers,
     result_json,
     result_text,
     search_messages,
@@ -276,6 +277,18 @@ def record_left_out(data: Path, seen: dict[str, set[str]]) -> None:
             left_out_path(data),
             json.dumps(dict(sorted(known.items())), indent=2, ensure_ascii=False) + "\n",
         )
+
+
+def opens_cleanly(tool: str, response) -> bool:
+    """Whether a channel or thread read holds nothing before its first message but what the
+    connector writes there: a channel read's "Channel: #name (C...)" line, a thread read
+    nothing. An empty page is just that, so it passes."""
+    text = result_text(response)
+    markers = real_markers(text, tool == "slack_read_thread")
+    before = (text[: markers[0].start()] if markers else text).strip()
+    if tool == "slack_read_channel" and (header := CHANNEL_HEADER.match(before)):
+        before = before[header.end() :].strip()
+    return not before
 
 
 def open_run(data: Path) -> Run | None:
@@ -531,6 +544,16 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
                 "the user: they can pass this message to the project team."
             )
         before, skipped_before = parse_result(hook["tool_name"], hook["tool_input"], response)
+        if not opens_cleanly(tool, response):
+            # Before the first message, or on a page where the parser finds none, there's more
+            # than the channel line, such as an author line that shows no ID. The filter can't
+            # tell whose words those are, so they're never saved while anyone is opted out.
+            return fail(
+                "This Slack result holds text diffdata couldn't split into messages, and "
+                "someone is in slack_opted_out, so nothing was saved. Stop the export and tell "
+                "the user: they can pass this message to the project team, with any names or "
+                "text replaced, so the filter can be fixed."
+            )
         response, left_names, theirs_unreadable = leave_out(response, opted_out, hook["tool_name"])
         after, skipped_after = parse_result(hook["tool_name"], hook["tool_input"], response)
         others = [{m.ts for m in found if m.user_id not in opted_out} for found in (before, after)]
