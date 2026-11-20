@@ -37,7 +37,14 @@ from diffdata import __version__
 from diffdata.collect import slack_canvas
 from diffdata.common.config import Config
 from diffdata.common.documents import documents_dir
-from diffdata.discover.slack_inbox import run_channel_names, slack_dir
+from diffdata.discover.slack_export import read_store
+from diffdata.discover.slack_inbox import (
+    SlackExportError,
+    applied_stamp,
+    opt_out_stamp,
+    run_channel_names,
+    slack_dir,
+)
 from diffdata.scrub.people import (
     PEOPLE_FILE,
     People,
@@ -160,6 +167,23 @@ def scrub(config: Config) -> str:
 
 def make_copies(config: Config, earlier: bool) -> str:
     data = config.data_dir
+    opted_out = set(config.slack_opted_out)
+    stores = sorted((slack_dir(data) / "store").glob("*/messages.jsonl"))
+    if stores and applied_stamp(data) != opt_out_stamp(opted_out):
+        # The last finished build applied a different list, or none, or stopped partway.
+        raise ScrubError(
+            "slack_opted_out in config.toml has changed since the last build, or the last "
+            "build didn't finish, so nothing was scrubbed. Run uv run diffdata discover slack "
+            "build first, then scrub again."
+        )
+    for store in stores:
+        if any(record["user_id"] in opted_out for record in read_store(store)):
+            # The build is what leaves them out (#105), so it has to run first.
+            raise ScrubError(
+                "Some people in slack_opted_out in config.toml are still in the saved Slack "
+                "data, so nothing was scrubbed. Run uv run diffdata discover slack build "
+                "first, then scrub again."
+            )
     people_file = data / PEOPLE_FILE
     if people_file.is_file():
         people = read_people(people_file)
@@ -172,7 +196,11 @@ def make_copies(config: Config, earlier: bool) -> str:
     else:
         people = People()
     before = render(people)
-    new = add_seen(people, seen_in_slack(data))
+    try:
+        seen = seen_in_slack(data)
+    except SlackExportError as e:
+        raise ScrubError(str(e)) from e
+    new = add_seen(people, seen)
     if render(people) != before or not people_file.is_file():
         write_file(people_file, render(people))
 
