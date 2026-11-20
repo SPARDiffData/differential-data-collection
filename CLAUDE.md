@@ -66,7 +66,7 @@ src/diffdata/
   discover/references.py   the reference log (DIS-2, DIS-3): every source the saved messages and canvases point to, written at the end of the Slack build; it only grows
   collect/slack_canvas.py   Slack canvases (COL-2), read in /slack-export when a files search or a tab notice says they may have changed: saved reads become versions and clean copies
   collect/google_signin.py   the Google sign-in (COL-4), through Google's Picker with `drive.file` only; the token stays in ~/.diffdata/
-  collect/google_fetch.py    fetches the docs listed in `google_docs` with that sign-in, read-only, and saves each fetch unchanged (COL-4, COL-5)
+  collect/google_fetch.py    fetches the docs listed in `google_docs` or approved at review with that sign-in, read-only, and saves each fetch unchanged (COL-4, COL-5)
   collect/google_doc.py, gdocs_changelog.py   the reader: what any fetch saved, in the shared format, with the changelog replayed
   scrub/            `diffdata scrub` (SCR-2): scrubbed copies in <data>/scrubbed/, built all or nothing (run.py), with the people list in <data>/private/ (people.py) and the replacements and last check in text.py
   common/           shared pieces; paths.py holds the data folder guards, config.py reads config.toml

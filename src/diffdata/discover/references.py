@@ -28,12 +28,15 @@ latest-read marks, but never removes anything, so a reference stays after the da
 is deleted. A log diffdata can't read is left as it was. The log is private, like the store
 it comes from, and is never released or pushed.
 
-A source is opted in when config.toml lists it, or its latest decision in the approvals file
-is "approved" (consent/approvals.py). Its state:
+A source is opted in when config.toml lists it (slack_canvases or google_docs), or its
+latest decision in the approvals file is "approved" (consent/approvals.py). A Google Doc
+counts as read when its newest saved fetch holds the doc, from `diffdata collect
+google-docs`. Its state:
   collected      opted in, and read
   approved       opted in, not read yet
   unreachable    opted in, but a fetcher couldn't reach it, for the reason in `unreachable`
-                 (COL-7). Nothing sets that yet: it's kept for the fetchers.
+                 (COL-7). For a Google Doc, that's the reason its newest saved fetch holds,
+                 such as "no access" or "not found". Nothing sets it for canvases yet.
   withdrawn      collected or opted in before, but not now, or withdrawn at review
   declined       skipped at review
   history-only   referenced only from channels or canvases no longer opted in
@@ -58,7 +61,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from diffdata import __version__
-from diffdata.collect import slack_canvas
+from diffdata.collect import google_doc, slack_canvas
 from diffdata.common.config import Config
 from diffdata.common.documents import documents_dir, keep_changes, stamp, write_if_changed
 from diffdata.consent import approvals
@@ -315,6 +318,31 @@ def canvases_read(data: Path) -> set[str]:
     return {p.name for p in folder.glob("*") if p.is_dir() and any(p.glob("raw/*/*.json"))}
 
 
+def google_docs_fetched(data: Path) -> tuple[set[str], dict[str, str]]:
+    """Google Docs by key: those whose newest saved fetch holds the doc, and the reason saved
+    in those whose newest fetch only says it couldn't be read (COL-7). Reads what
+    `diffdata collect google-docs` saved, and fetches nothing."""
+    read: set[str] = set()
+    reasons: dict[str, str] = {}
+    folder = documents_dir(data) / google_doc.SOURCE
+    for doc in sorted(folder.glob("*")) if folder.is_dir() else []:
+        if not doc.is_dir():
+            continue
+        fetches, _, _ = google_doc.read_fetches(doc)
+        if not fetches:
+            continue
+        key, newest = f"google:{doc.name}", fetches[-1]
+        if "access.json" not in newest.files:
+            read.add(key)
+            continue
+        try:
+            reason = (newest.json("access.json") or {}).get("reason")
+        except (OSError, UnicodeDecodeError, ValueError, AttributeError):
+            reason = None
+        reasons[key] = reason if isinstance(reason, str) else "it couldn't be read"
+    return read, reasons
+
+
 def add(log: dict[str, dict], found: Found, place: dict) -> bool:
     """Merge one reference into the log: its source, then its place. True if the source is
     new to the log."""
@@ -433,10 +461,12 @@ def set_states(
     decisions: dict[str, str],
 ) -> None:
     """Each source's type, state and first time seen, from config.toml, the canvases read
-    (by ID) and the latest decision on each source at review."""
-    listed = {f"slack-file:{canvas}" for canvas in config.slack_canvases}
+    (by ID), the Google Docs fetched and the latest decision on each source at review."""
+    listed_canvases = {f"slack-file:{canvas}" for canvas in config.slack_canvases}
+    listed = listed_canvases | {f"google:{doc}" for doc in config.google_docs}
     chosen = listed | {key for key, decision in decisions.items() if decision == approvals.APPROVED}
-    read_keys = {f"slack-file:{canvas}" for canvas in read}
+    docs_read, unreachable = google_docs_fetched(config.data_dir)
+    read_keys = {f"slack-file:{canvas}" for canvas in read} | docs_read
     canvases = {key.removeprefix("slack-file:") for key in chosen if key.startswith("slack-file:")}
 
     def opted_in(place: dict) -> bool:
@@ -445,8 +475,10 @@ def set_states(
         return channels.get(place["channel_id"]) in config.slack_channels
 
     for key, entry in log.items():
-        if key in listed or key in read_keys:
+        if key.startswith("slack-file:") and (key in listed_canvases or key in read_keys):
             entry["type"] = CANVAS
+        if key.startswith("google:"):
+            entry["unreachable"] = unreachable.get(key)
         entry["state"], entry["reason"] = state(
             entry, chosen, read_keys, decisions.get(key), opted_in
         )

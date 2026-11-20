@@ -65,19 +65,19 @@ Links in a canvas (Docs, images, other canvases) stay links: nothing fetches the
 
 `diffdata` fetches the docs you choose, with your own Google login, on your own computer. A doc is fetched only if you do both of these:
 - **Pick it** in Google's own file picker when you sign in. Your sign-in can reach only the docs you pick, so Google itself enforces this.
-- **List it** in `config.toml`. Listing a doc is your opt-in, and removing it stops collection on the next run.
+- **Opt in to it:** list it in `config.toml`, or approve it at review (see [Approve new canvases and Google files](#approve-new-canvases-and-google-files-con-1)). Either one is your opt-in. Removing it from the list, or withdrawing the approval, stops collection on the next run. A doc that is both listed and approved stays opted in until you remove it and withdraw it.
 
 1. **Get the app's client file** from the project team, and save it as `google-client.json` in your `.diffdata` folder, next to `config.toml` (`C:\Users\<you>\.diffdata\` on Windows). It stays outside the repo. While the app is in testing, the team also has to add your Google account as a test user, and a sign-in lasts 7 days.
-2. **List the docs** under `google_docs` in `config.toml`, by ID or by link (`https://docs.google.com/document/d/<ID>/edit`). The same doc listed twice is refused.
-3. **Sign in:** run `uv run diffdata collect google-docs sign-in`. Your browser opens Google's sign-in, then its picker, showing Google Docs only. Pick the docs and allow access. Run it again to pick more. It says how many docs you picked, and how many of those are listed.
-4. **Fetch:** run `uv run diffdata collect google-docs`. It prints counts only, and names a doc by its place in your list ("Entry 2"), never its ID or title. It writes, in your data folder:
+2. **List the docs** under `google_docs` in `config.toml`, by ID or by link (`https://docs.google.com/document/d/<ID>/edit`). The same doc listed twice is refused. A doc you approved at review doesn't need listing.
+3. **Sign in:** run `uv run diffdata collect google-docs sign-in`. Your browser opens Google's sign-in, then its picker, showing Google Docs only. Pick the docs and allow access. Run it again to pick more. It says how many docs you picked, and how many of those are listed or approved at review.
+4. **Fetch:** run `uv run diffdata collect google-docs`. It prints counts only, and never a doc's ID or title. It names a listed doc by its place in your list ("Entry 2"), and an approved doc by its letter in the current withdraw list ("Approved item b"). That letter can change after the next review. It writes, in your data folder:
    - `documents/current/google-doc_<title>_<id>.md`: each doc's latest text
    - `documents/google-doc/<id>/versions/`, `events.jsonl` and `comments.md`: its history, with its comments and suggestions
    - `documents/google-doc/<id>/raw/`: every fetch, exactly as received
 
 Run it again whenever you like. It always reads a doc's comments, but reads its history only if the doc changed. If a doc's whole changelog can't be fetched, its text and comments are still saved, the run says so, and the changelog is tried again next time: until then the doc has no suggestions. If Google refuses one part of a doc for good, such as the text export of a doc too big to export, the rest is saved and the run names the part. `uv run diffdata collect google-docs build` rebuilds from what's saved, without fetching.
 
-**A doc that can't be read** is saved with the reason, and the run carries on: `no access` or `not found` (a listed doc you didn't pick looks like this), `a folder`, or `not a Google Doc`. Folders are refused, and their contents are never listed or opened, because choosing a folder isn't choosing the files in it.
+**A doc that can't be read** is saved with the reason, and the run carries on: `no access` or `not found` (a listed or approved doc you didn't pick looks like this), `a folder`, or `not a Google Doc`. Folders are refused, and their contents are never listed or opened, because choosing a folder isn't choosing the files in it.
 
 **What the Allow screen means.** Google names the app's developer there, which is the SPARDiffData Google account. That account only registers the app with Google. **It never gets access to anyone's docs.** You sign in with your own account, on your own computer, and the sign-in and the data stay on that computer. Google words the `drive.file` permission as see, edit, create and delete the files you pick, because it has no read-only version. `diffdata` only ever reads them: it sends read requests only, and a test checks that.
 
@@ -95,9 +95,9 @@ The build lists every canvas and Google file your saved Slack data links to. Not
 
 1. **When the build says items are waiting,** open PowerShell or Terminal in the repo folder and run `uv run diffdata consent review`. It explains what approving means, then shows a lettered list: each item's type, its real link, its title, and where and when it was first shared.
 2. **Answer** `all`, `none`, or `all but b, d` to skip some. Skipped items aren't asked about again. Pressing Enter alone records nothing, and the items wait for next time.
-3. **The next `/slack-export`** reads the approved canvases. Approved Google files aren't fetched yet: for now a Google Doc is fetched only if it's listed in `config.toml`. Attachments and ordinary links are never on the list.
+3. **The next `/slack-export`** reads the approved canvases. An approved Google Doc is fetched by `uv run diffdata collect google-docs`, once you've also picked it at Google's sign-in, the same as one listed in `config.toml`. Other Google files (Sheets, Slides, Drive files) aren't fetched. Attachments and ordinary links are never on the list.
 
-**To withdraw an approval,** run `uv run diffdata consent withdraw` the same way, and answer `all`, `none` or letters such as `b, d`. It takes effect from the next export. What was already collected stays in your data folder for now. A canvas listed in `config.toml` is withdrawn by removing it there.
+**To withdraw an approval,** run `uv run diffdata consent withdraw` the same way, and answer `all`, `none` or letters such as `b, d`. A canvas stops being read from the next `/slack-export`, and a Google Doc stops being fetched from the next `uv run diffdata collect google-docs`. What was already collected stays in your data folder for now. An item listed in `config.toml` is withdrawn by removing it there: a canvas from `slack_canvases`, a Google Doc from `google_docs`.
 
 Your decisions go in `approvals.jsonl`, next to `config.toml` in `~/.diffdata/`: keys, decisions, times and your answer, never titles. Both commands refuse to write it inside a git repository or a synced folder.
 

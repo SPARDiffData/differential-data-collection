@@ -146,7 +146,10 @@ def test_a_full_run_saves_the_raw_files_and_builds_the_doc(tmp_path):
     assert fetch.route == "google-login"
     # Saved as Google sent it, prefix and all.
     assert fetch.files["changelog.json"].read_text("utf-8").startswith(")]}'")
-    assert "1 listed doc(s): 1 with new history" in report and "Built 1 doc(s)" in report
+    assert (
+        "1 doc(s) to fetch (1 listed, 0 approved at review): 1 with new history" in report
+        and "Built 1 doc(s)" in report
+    )
     folder = document_dir(tmp_path, "google-doc", DOC)
     assert (folder / "events.jsonl").is_file() and (folder / "comments.md").is_file()
     assert list((documents_dir(tmp_path) / "current").glob(f"*{DOC}.md"))
@@ -320,6 +323,87 @@ def test_must_refuse_1_a_picked_doc_that_isnt_listed_gets_no_request(tmp_path):
     assert not document_dir(tmp_path, "google-doc", UNLISTED).exists()
 
 
+# Approved at review (#97): the approvals file sits next to config.toml, which config_for puts
+# in tmp_path. Every row is made up, and none is ever written outside tmp_path.
+CANVAS_KEY = "slack-file:F00000099"
+
+
+def decide(tmp_path, *rows: tuple[str, str]) -> None:
+    """Add made-up decisions to the approvals file, in order: the latest per key wins."""
+    lines = [
+        json.dumps({"key": key, "decision": decision, "at": "2026-10-10T09:00:00Z", "answer": "x"})
+        for key, decision in rows
+    ]
+    with (tmp_path / "approvals.jsonl").open("a", encoding="utf-8") as f:
+        f.write("".join(line + "\n" for line in lines))
+
+
+def fetch_all(tmp_path, google, *listed) -> str:
+    config = config_for(tmp_path, *listed)
+    return google_fetch.collect(config, opener=google, token=TOKEN, pause=lambda _: None, now=WHEN)
+
+
+def test_a_doc_approved_at_review_is_fetched_without_being_listed(tmp_path):
+    google = fake()
+    decide(tmp_path, (f"google:{DOC}", "approved"))
+    report = fetch_all(tmp_path, google)
+    (fetch,) = fetches(tmp_path)
+    assert "metadata.json" in fetch.files
+    assert "1 doc(s) to fetch (0 listed, 1 approved at review): 1 with new history" in report
+    assert DOC not in report and TITLE not in report
+
+
+@pytest.mark.parametrize("decision", ["skipped", "withdrawn"])
+def test_must_refuse_1_a_picked_doc_skipped_or_withdrawn_at_review_gets_no_request(
+    tmp_path, decision
+):
+    google = fake()
+    google.docs[UNLISTED] = google.doc()  # picked: the token could reach it
+    decide(tmp_path, (f"google:{UNLISTED}", "approved"), (f"google:{UNLISTED}", decision))
+    fetch_all(tmp_path, google, DOC)
+    assert not any(UNLISTED in url for url in google.urls())
+    assert not document_dir(tmp_path, "google-doc", UNLISTED).exists()
+
+
+def test_a_doc_both_listed_and_approved_is_fetched_once_as_its_entry(tmp_path):
+    google = fake()
+    decide(tmp_path, (f"google:{DOC}", "approved"))
+    report = fetch_all(tmp_path, google, DOC)
+    metadata = [u for u in google.urls() if u.split("?")[0].endswith(f"/files/{DOC}")]
+    assert len(metadata) == 1
+    assert "1 doc(s) to fetch (1 listed, 0 approved at review)" in report
+
+
+def test_an_approved_doc_is_named_by_its_letter_in_withdraw(tmp_path):
+    # withdraw lists every approved key in order: google:DOC (a), google:OTHER (b), then the
+    # canvas (c). DOC is listed, so OTHER is the only approved item fetched, as item b.
+    google = fake()  # OTHER isn't in it, so it answers 404, as for a doc not picked at sign-in
+    decide(tmp_path, (f"google:{DOC}", "approved"), (f"google:{OTHER}", "approved"))
+    decide(tmp_path, (CANVAS_KEY, "approved"))
+    report = fetch_all(tmp_path, google, DOC)
+    assert (
+        "Approved item b: not found. If it's a Google Doc and yours to share, pick it at "
+        "sign-in. Other Google files aren't fetched." in report
+    )
+    assert OTHER not in report
+    # Its reason is saved, so the reference log can mark it unreachable (#97).
+    assert google_fetch.last_reason(document_dir(tmp_path, "google-doc", OTHER)) == NOT_FOUND
+    # A canvas isn't a Google file: it's neither counted nor asked for.
+    assert "1 doc(s) to fetch" not in report and "(1 listed, 1 approved at review)" in report
+    assert "Approved item c" not in report
+    assert not any("F00000099" in url for url in google.urls())
+
+
+def test_with_the_approvals_file_unreadable_only_listed_docs_are_fetched(tmp_path):
+    google = fake()
+    google.docs[OTHER] = google.doc()
+    (tmp_path / "approvals.jsonl").write_text("not JSON\n", encoding="utf-8")
+    report = fetch_all(tmp_path, google, DOC)
+    assert not any(OTHER in url for url in google.urls())
+    assert "Couldn't read the approvals file next to config.toml" in report
+    assert "1 doc(s) to fetch (1 listed, 0 approved at review)" in report
+
+
 def test_must_refuse_3_every_request_is_a_get_to_google(tmp_path):
     google = fake()
     google.docs[OTHER] = google.doc()
@@ -424,7 +508,9 @@ def test_must_refuse_8_a_doc_the_login_cant_open_is_recorded_and_the_run_carries
     assert set(fetch.files) == {"access.json"}
     assert json.loads(fetch.files["access.json"].read_text("utf-8")) == {"reason": reason}
     assert "changelog.json" in fetches(tmp_path, OTHER)[0].files
-    assert f"Entry 1: {reason}" in report
+    assert f"Entry 1: {reason}. If it's yours to share, pick it at sign-in." in report
+    # Only an approved item can be a Sheet or Slides file, so a listed doc isn't told that.
+    assert "Other Google files" not in report
 
 
 def test_a_listed_doc_that_wasnt_picked_is_recorded_once(tmp_path):

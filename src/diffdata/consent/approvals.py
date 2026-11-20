@@ -35,6 +35,7 @@ FIELDS = ("key", "decision", "at", "answer")
 # Only canvases and Google files are ever offered for review, so only their keys are kept.
 KEY = re.compile(r"slack-file:F[A-Z0-9]{6,}|google:[A-Za-z0-9_-]{10,}")
 CANVAS_PREFIX = "slack-file:"
+GOOGLE_PREFIX = "google:"
 BUSY = (
     "Another review or withdraw is recording its answer right now, so nothing was recorded. "
     "Run this again. If none is running, delete approvals.jsonl.lock next to config.toml."
@@ -102,17 +103,35 @@ def read_decisions(path: Path | None) -> dict[str, str] | None:
     return decisions
 
 
+def approved_keys(decisions: dict[str, str]) -> list[str]:
+    """Every key whose latest decision is "approved", in the order `consent withdraw` lists
+    them, so a letter there names the same item everywhere."""
+    return sorted(key for key, decision in decisions.items() if decision == APPROVED)
+
+
+def letters(count: int) -> list[str]:
+    """a to z, then aa, ab and so on: how review and withdraw name the items they list."""
+    found = []
+    for number in range(1, count + 1):
+        letter = ""
+        while number:
+            number, rest = divmod(number - 1, 26)
+            letter = chr(ord("a") + rest) + letter
+        found.append(letter)
+    return found
+
+
 def approved_canvases(config: Config) -> list[str] | None:
     """The canvas IDs whose latest decision is "approved", or None if diffdata can't read
     the approvals file."""
     decisions = read_decisions(approvals_file(config))
     if decisions is None:
         return None
-    return sorted(
+    return [
         key.removeprefix(CANVAS_PREFIX)
-        for key, decision in decisions.items()
-        if decision == APPROVED and key.startswith(CANVAS_PREFIX)
-    )
+        for key in approved_keys(decisions)
+        if key.startswith(CANVAS_PREFIX)
+    ]
 
 
 def safe_file(config: Config) -> Path:

@@ -88,7 +88,9 @@ def test_signing_in_saves_the_token_beside_config_and_reports_counts_only(home, 
     google = FakeGoogle(granted())
     listed = ["FAKE-DOC-0001", "FAKE-DOC-0009"]
     report = sign_in(home, opener=google, browser=browser(PICKED), timeout=10, listed=listed)
-    assert report.startswith("Signed in. Docs picked: 2, 1 of them listed in google_docs.")
+    assert report.startswith(
+        "Signed in. Docs picked: 2, 1 of them listed in google_docs or approved at review."
+    )
     saved = json.loads((home / "google-token.json").read_text("utf-8"))
     assert (saved["access_token"], saved["scope"]) == (TOKEN, SCOPE)
     # One request in all: the code swapped for a token, at Google's sign-in server.
