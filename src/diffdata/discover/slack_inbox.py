@@ -45,6 +45,9 @@ import os
 import re
 import sys
 import tempfile
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -230,16 +233,49 @@ def applied_stamp(data: Path) -> str:
     return stamp if isinstance(stamp, str) else ""
 
 
+# How long a save waits for another to finish adding to left_out.json. Each holds it for
+# one read and one small write, so a wait this long means one was cut off mid-way.
+LEFT_OUT_WAIT_SECONDS = 10.0
+
+
+@contextmanager
+def left_out_locked(data: Path) -> Iterator[None]:
+    """Hold slack/left_out.json for one read, add and write. When Claude reads several things
+    at once, two hooks can finish together: without this, each would write back only its own
+    names over the other's, and a name lost there would let plain-text mentions of that
+    person through the scrub. If another holds it, wait for it, briefly."""
+    lock = left_out_path(data).with_name("left_out.json.lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + LEFT_OUT_WAIT_SECONDS
+    while True:
+        try:
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            break
+        except FileExistsError as e:
+            if time.monotonic() > deadline:
+                raise SlackExportError(
+                    "another save held slack/left_out.json for too long. If no Slack export "
+                    "is running, delete slack/left_out.json.lock in the data folder"
+                ) from e
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        lock.unlink(missing_ok=True)
+
+
 def record_left_out(data: Path, seen: dict[str, set[str]]) -> None:
     """Add these people and names to slack/left_out.json. It only grows: someone taken off
-    the list later is still pseudonymised, never shown by name."""
-    known = read_left_out(data)
-    for user_id, names in seen.items():
-        known[user_id] = sorted(set(known.get(user_id, [])) | names)
-    write_atomic(
-        left_out_path(data),
-        json.dumps(dict(sorted(known.items())), indent=2, ensure_ascii=False) + "\n",
-    )
+    the list later is still pseudonymised, never shown by name. Two saves at once each keep
+    the other's names (left_out_locked)."""
+    with left_out_locked(data):
+        known = read_left_out(data)
+        for user_id, names in seen.items():
+            known[user_id] = sorted(set(known.get(user_id, [])) | names)
+        write_atomic(
+            left_out_path(data),
+            json.dumps(dict(sorted(known.items())), indent=2, ensure_ascii=False) + "\n",
+        )
 
 
 def open_run(data: Path) -> Run | None:

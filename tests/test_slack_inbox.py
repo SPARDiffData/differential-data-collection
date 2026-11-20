@@ -1127,3 +1127,49 @@ def test_someone_elses_link_to_an_opted_out_persons_file_or_profile_is_saved(con
 def test_an_opted_out_id_typed_by_hand_still_stops_the_export(config, typed):
     code, saved = save_thread(config, thread_text(SAM, f"Ask {typed} about it.", [(RILEY, "Ok.")]))
     assert code == 2 and "Ask" not in saved
+
+
+def test_two_saves_adding_to_left_out_at_once_both_keep_their_names(config, monkeypatch):
+    # Two hooks finishing together: the first has read the file but not yet written it when
+    # the second starts. Without the lock the first writes back only its own name.
+    import threading
+
+    first_read, go = threading.Event(), threading.Event()
+    real_read = slack_inbox.read_left_out
+
+    def slow_read(data):
+        found = real_read(data)
+        if threading.current_thread().name == "first":
+            first_read.set()
+            go.wait(5)
+        return found
+
+    monkeypatch.setattr(slack_inbox, "read_left_out", slow_read)
+    data = config.data_dir
+    first = threading.Thread(
+        target=slack_inbox.record_left_out, args=(data, {"U00000001": {"Alex"}}), name="first"
+    )
+    second = threading.Thread(
+        target=slack_inbox.record_left_out, args=(data, {"U00000004": {"Jo"}}), name="second"
+    )
+    first.start()
+    assert first_read.wait(5)
+    second.start()
+    second.join(0.5)  # it waits for the first, rather than writing over it
+    go.set()
+    first.join(5)
+    second.join(5)
+    assert real_read(data) == {"U00000001": ["Alex"], "U00000004": ["Jo"]}
+    assert not (data / "slack" / "left_out.json.lock").exists()
+
+
+def test_a_save_waits_only_briefly_for_a_lock_left_behind(config, monkeypatch, capsys):
+    monkeypatch.setattr(slack_inbox, "LEFT_OUT_WAIT_SECONDS", 0.1)
+    lock = config.data_dir / "slack" / "left_out.json.lock"
+    lock.parent.mkdir(parents=True)
+    lock.touch()
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    assert save(opted, payload(response=connector_result("read_channel.txt")), now=T0) == 2
+    assert inbox_files(config) == []
+    assert "left_out.json.lock" in capsys.readouterr().err
