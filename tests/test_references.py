@@ -11,6 +11,7 @@ import pytest
 
 from diffdata import __version__
 from diffdata.collect import slack_canvas
+from diffdata.collect.google_doc import save_fetch
 from diffdata.common.config import Config
 from diffdata.discover.references import in_text, render
 from diffdata.discover.slack_export import build
@@ -391,6 +392,52 @@ def test_a_listed_source_a_fetcher_couldnt_reach_says_why(config, export):
     assert "diffdata can't reach it: the connector said it doesn't exist." in view_file(
         config
     ).read_text(encoding="utf-8")
+
+
+def save_doc_fetch(config, doc: str, fetch_id: str, files: dict[str, str]) -> None:
+    """A made-up fetch of a Google Doc, as `diffdata collect google-docs` saves one."""
+    at = f"{fetch_id[:4]}-{fetch_id[4:6]}-{fetch_id[6:8]}T09:00:00Z"
+    save_fetch(config.data_dir, doc.removeprefix("google:"), fetch_id, at, "google-login", files)
+
+
+READ = {"metadata.json": "{}"}
+NO_ACCESS = {"access.json": json.dumps({"reason": "no access"})}
+
+
+def test_a_listed_google_doc_not_fetched_yet_is_approved_not_new(config, export):
+    export()
+    build(replace(config, google_docs=(DOC.removeprefix("google:"),)))
+    assert states(config)[DOC] == "approved"
+
+
+def test_a_listed_google_doc_that_was_fetched_is_collected(config, export):
+    export()
+    save_doc_fetch(config, DOC, "20261009T090000Z", READ)
+    build(replace(config, google_docs=(DOC.removeprefix("google:"),)))
+    assert states(config)[DOC] == "collected"
+
+
+def test_an_approved_google_doc_the_login_cant_open_is_unreachable_with_its_reason(
+    config, export, tmp_path
+):
+    # Fetched once, then the newest fetch only says it couldn't be read (COL-7).
+    approved = replace(config, path=tmp_path / "config.toml")
+    row = {"key": DOC, "decision": "approved", "at": "2026-10-09T08:00:00Z", "answer": "all"}
+    (tmp_path / "approvals.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    export()
+    save_doc_fetch(config, DOC, "20261009T090000Z", READ)
+    save_doc_fetch(config, DOC, "20261010T090000Z", NO_ACCESS)
+    build(approved)
+    entry = log(config)[DOC]
+    assert (entry["state"], entry["reason"]) == ("unreachable", "no access")
+    assert "diffdata can't reach it: no access." in view_file(config).read_text(encoding="utf-8")
+
+
+def test_a_google_doc_fetched_before_but_no_longer_opted_in_is_withdrawn(config, export):
+    export()
+    save_doc_fetch(config, DOC, "20261009T090000Z", READ)
+    build(config)  # not listed, and nothing approved
+    assert states(config)[DOC] == "withdrawn"
 
 
 def test_a_canvas_collected_or_listed_before_but_unlisted_now_is_withdrawn(config, export):

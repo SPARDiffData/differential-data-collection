@@ -71,8 +71,8 @@ def build_parser() -> argparse.ArgumentParser:
 def add_collect_sources(collect: argparse.ArgumentParser) -> None:
     sources = collect.add_subparsers(dest="source", metavar="<source>", required=True)
     docs_help = (
-        "Fetch and build the Google Docs listed in config.toml, with your own Google login "
-        "(COL-4, COL-5)."
+        "Fetch and build the Google Docs listed in config.toml or approved at review, with "
+        "your own Google login (COL-4, COL-5)."
     )
     docs = sources.add_parser("google-docs", help=docs_help, description=docs_help)
     steps = docs.add_subparsers(dest="step", metavar="<step>")
@@ -167,7 +167,8 @@ def run_google_docs_step(args: argparse.Namespace) -> int:
         # First, so an unsafe data folder stops everything before signing in or fetching.
         config = load_config()
         if args.step == "sign-in":
-            report = google_signin.sign_in(listed=config.google_docs)
+            docs, _ = google_fetch.to_fetch(config)
+            report = google_signin.sign_in(listed=[doc_id for doc_id, _ in docs])
         elif args.step == "build":
             report = google_fetch.build_report(config)
         else:

@@ -35,7 +35,7 @@ from pathlib import Path
 
 from diffdata.common.config import Config
 from diffdata.consent import approvals
-from diffdata.consent.approvals import ApprovalsError
+from diffdata.consent.approvals import ApprovalsError, letters
 from diffdata.discover import references
 from diffdata.discover.slack_inbox import run_channel_names
 
@@ -74,10 +74,11 @@ REVIEW_INTRO = """\
 {count} new canvas(es) and Google file(s) were found in your saved Slack data.
 
 What approving means:
-  - diffdata reads an approved item on every /slack-export from now on,
+  - diffdata reads an approved canvas on every /slack-export from now on,
     and keeps every version of it.
   - Claude reads an approved canvas in full when it collects it. An approved
-    Google file waits for the Google Docs fetcher.
+    Google Doc is fetched by uv run diffdata collect google-docs, once you've
+    also picked it at Google's sign-in. Other Google files aren't fetched.
   - Approve only what your team agreed to share. A doc others wrote may
     need their agreement too (CON-5).
   - A skipped item isn't asked about again. To withdraw an approval later,
@@ -97,10 +98,12 @@ BAD_REVIEW_ANSWER = (
 WITHDRAW_INTRO = """\
 {count} item(s) were approved at review.
 
-Withdrawing one stops diffdata reading it from the next /slack-export. An
-export that's already open keeps its list until it ends. What was already
-collected stays in your data folder for now. A canvas listed in config.toml
-is withdrawn by removing it from slack_canvases there.
+Withdrawing a canvas stops diffdata reading it from the next /slack-export.
+An export that's already open keeps its list until it ends. Withdrawing a
+Google Doc stops diffdata fetching it from the next collect google-docs.
+What was already collected stays in your data folder for now. An item listed
+in config.toml is withdrawn by removing it there: a canvas from
+slack_canvases, a Google Doc from google_docs.
 """
 WITHDRAW_ANSWERS = """
 Type one of these, then press Enter:
@@ -150,18 +153,6 @@ def clean(text, limit: int | None = None) -> str:
     shown = "".join(" " if unicodedata.category(ch).startswith("C") else ch for ch in str(text))
     shown = " ".join(shown.split())
     return shown if limit is None or len(shown) <= limit else shown[: limit - 1] + "…"
-
-
-def letters(count: int) -> list[str]:
-    """a to z, then aa, ab and so on."""
-    found = []
-    for number in range(1, count + 1):
-        letter = ""
-        while number:
-            number, rest = divmod(number - 1, 26)
-            letter = chr(ord("a") + rest) + letter
-        found.append(letter)
-    return found
 
 
 def describe(entry: dict, channels: dict[str, str], titles: dict[str, str]) -> str:
@@ -357,8 +348,9 @@ def run_review(config: Config, stdin=None, stdout=None, now: datetime | None = N
     if approved:
         show(
             stdout,
-            "The next /slack-export reads the approved canvases. Approved Google files wait "
-            "for the Google Docs fetcher.",
+            "The next /slack-export reads the approved canvases. To fetch the approved Google "
+            "Docs, pick them at sign-in (uv run diffdata collect google-docs sign-in), then run: "
+            "uv run diffdata collect google-docs",
         )
     return 0
 
@@ -372,18 +364,18 @@ def run_withdraw(config: Config, stdin=None, stdout=None, now: datetime | None =
         path = approvals.safe_file(config)
         seen, decisions, log, channels = load(config, path)
         log = log or {}  # the log only describes the items, so withdrawing doesn't need it
-        approved = sorted(
-            key for key, decision in decisions.items() if decision == approvals.APPROVED
-        )
+        approved = approvals.approved_keys(decisions)
         if not approved:
             show(
                 stdout,
-                "Nothing was approved at review, so there's nothing to withdraw here. A canvas "
-                "listed in config.toml is withdrawn by removing it from slack_canvases there.",
+                "Nothing was approved at review, so there's nothing to withdraw here. An item "
+                "listed in config.toml is withdrawn by removing it there: a canvas from "
+                "slack_canvases, a Google Doc from google_docs.",
             )
             return 0
         names = letters(len(approved))
-        listed = {f"slack-file:{canvas}" for canvas in config.slack_canvases}
+        listed = {f"{approvals.CANVAS_PREFIX}{canvas}" for canvas in config.slack_canvases}
+        listed |= {f"{approvals.GOOGLE_PREFIX}{doc}" for doc in config.google_docs}
         titles = canvas_titles(log)
         show(stdout, WITHDRAW_INTRO.format(count=len(approved)))
         for name, key in zip(names, approved, strict=True):
@@ -420,12 +412,19 @@ def run_withdraw(config: Config, stdin=None, stdout=None, now: datetime | None =
         return refuse(str(e))
     show(
         stdout,
-        f"Withdrawn: {len(withdrawn)}. diffdata stops reading them from the next /slack-export.",
+        f"Withdrawn: {len(withdrawn)}. diffdata stops reading them from the next /slack-export, "
+        "and stops fetching them from the next collect google-docs.",
     )
-    if also_listed := [name for name, key in withdrawn if key in listed]:
-        show(
-            stdout,
-            f"Also listed in slack_canvases in config.toml: {', '.join(also_listed)}. That's an "
-            "opt-in of its own, so remove them there too, or they'll still be read.",
-        )
+    for setting, prefix in (
+        ("slack_canvases", approvals.CANVAS_PREFIX),
+        ("google_docs", approvals.GOOGLE_PREFIX),
+    ):
+        if also_listed := [
+            name for name, key in withdrawn if key in listed and key.startswith(prefix)
+        ]:
+            show(
+                stdout,
+                f"Also listed in {setting} in config.toml: {', '.join(also_listed)}. That's an "
+                "opt-in of its own, so remove them there too, or they'll still be read.",
+            )
     return 0

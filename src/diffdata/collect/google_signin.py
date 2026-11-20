@@ -193,7 +193,8 @@ def sign_in(
     listed: Iterable[str] = (),
 ) -> str:
     """Sign in through Google's Picker and save the token. Returns a report with counts only:
-    how many docs were picked, and how many of those `listed` names."""
+    how many docs were picked, and how many of those `listed` names: the docs listed in
+    config.toml or approved at review."""
     home = signin_home(home)
     client = load_client(home)
     verifier = secrets.token_urlsafe(64)
@@ -231,7 +232,8 @@ def sign_in(
     picked = [i for i in answer.get("picked_file_ids", "").split(",") if i]
     on_list = len(set(picked) & set(listed))
     return (
-        f"Signed in. Docs picked: {len(picked)}, {on_list} of them listed in google_docs. "
+        f"Signed in. Docs picked: {len(picked)}, {on_list} of them listed in google_docs or "
+        "approved at review. "
         f"The sign-in is saved in {path}."
     )
 
