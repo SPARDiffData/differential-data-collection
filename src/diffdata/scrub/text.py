@@ -150,6 +150,8 @@ def fold_letter(letter: str) -> str:
 
 def folded(text: str) -> tuple[str, list[int]]:
     """The text folded, and for each of its characters, where it came from in `text`."""
+    # Keep invisible separators so they can still mark a name's edge. The pattern reads
+    # past them inside a name.
     pieces, where = [], []
     for at, letter in enumerate(text):
         piece = fold_letter(letter)
