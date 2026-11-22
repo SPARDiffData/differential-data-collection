@@ -54,7 +54,7 @@ from diffdata.discover.slack_inbox import (
     slack_dir,
     write_json,
 )
-from diffdata.discover.slack_parse import parse_result, permalink, to_markdown
+from diffdata.discover.slack_parse import OPTED_OUT_NAME, parse_result, permalink, to_markdown
 
 
 def build(config: Config) -> str:
@@ -74,9 +74,11 @@ def build(config: Config) -> str:
             continue
         names_here: dict[str, set[str]] = defaultdict(set)
         for record in theirs:
-            names_here[record["user_id"]].add(record["user_name"])
+            if record["user_name"] != OPTED_OUT_NAME:  # a stub the save hook already cut
+                names_here[record["user_id"]].add(record["user_name"])
         # Before the store loses them: a build cut short must not lose these names (#105).
-        record_left_out(data, names_here)
+        if names_here:
+            record_left_out(data, names_here)
         totals["removed"] += len(remove_from_store(store_file, opted_out))
     latest: dict[tuple[str, str], dict] = {}  # each message's last saved read
     channel_dirs = sorted(p for p in inbox_dir(data).glob("*") if p.is_dir())
@@ -85,7 +87,8 @@ def build(config: Config) -> str:
         records, counts = read_inbox(channel_dir, channel_id, config.slack_workspace_url)
         for record in records:
             if record["user_id"] in opted_out:
-                left_names[record["user_id"]].add(record["user_name"])
+                if record["user_name"] != OPTED_OUT_NAME:  # a stub the save hook already cut
+                    left_names[record["user_id"]].add(record["user_name"])
                 left_messages.add((channel_id, record["ts"]))
         records = [r for r in records if r["user_id"] not in opted_out]
         latest.update({(channel_id, record["ts"]): record for record in records})

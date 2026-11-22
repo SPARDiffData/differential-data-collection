@@ -398,3 +398,22 @@ def test_a_full_run_starts_every_channel_from_the_beginning(
     assert open_run(config.data_dir).full
     assert "1 of 1 channel(s) moved" in build(config)
     assert read_state(config.data_dir) == {CHANNEL: "2026-10-06T12:00:00Z"}
+
+
+def test_must_refuse_3_a_first_export_with_someone_opted_out_is_still_complete(
+    config, slack_run, slack_response
+):
+    # U00000001 started the only thread. Cut to a stub, its post still lists the thread, the
+    # thread is read, and every page still counts (#105).
+    from dataclasses import replace
+
+    opted = replace(config, slack_opted_out=("U00000001",))
+    reads = [channel(slack_response("read_channel.txt")), thread(slack_response("read_thread.txt"))]
+    slack_run(opted, T0, reads)
+    report = build(opted)
+    assert "1 of 1 channel(s) moved their start point forward." in report
+    assert read_state(config.data_dir) == {CHANNEL: "2026-10-04T12:00:00Z"}
+    # The stub's "Opted out" is never kept as a name, or the scrub would replace those words.
+    from diffdata.discover.slack_inbox import read_left_out
+
+    assert read_left_out(config.data_dir) == {"U00000001": ["Alex Example"]}
