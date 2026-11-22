@@ -1150,3 +1150,19 @@ def test_a_record_that_cant_be_read_stops_the_scrub(config, scrubbed, record):
     with pytest.raises(ScrubError, match="people-numbers.json can't be read"):
         scrub(config)
     assert not (config.data_dir / "scrubbed").exists()
+
+
+def test_text_with_no_latin_letters_is_read_quickly_with_a_long_people_list():
+    # Every place in Chinese text passes the edge check for names that start with a Latin
+    # letter, so without a look at the next letter each of them was tried at every
+    # character. For this list and text that took about 5 seconds, against 0.02 on main.
+    people = [
+        Person(f"[Person {i + 1}]", [], [f"Fake{i:03d} Example", f"Nick{i:03d}"])
+        for i in range(300)
+    ]
+    scrubber = Scrubber(People(people))
+    text = "".join(chr(0x4E00 + (i * 7919) % 20000) for i in range(24_000))
+    started = time.perf_counter()
+    assert scrubber.scrub(text)[0] == text
+    assert scrubber.leftovers(text) == []
+    assert time.perf_counter() - started < 2

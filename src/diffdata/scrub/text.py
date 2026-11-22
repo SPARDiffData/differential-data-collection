@@ -220,7 +220,10 @@ class Scrubber:
                 if bool(re.match(f"[{LATIN}]", k)) == latin
             ]
             if group:
-                names.append(f"{before}(?:{'|'.join(group)})")
+                # A Latin name also needs a Latin letter next, so text without one, such as
+                # Chinese, is passed over at once rather than tried against every name.
+                edge = f"{before}(?=[{LATIN}])" if latin else before
+                names.append(f"{edge}(?:{'|'.join(group)})")
         # Run on folded text, so it finds a name in any case, with or without accents.
         self.names = re.compile("|".join([f"(?P<kept>{KEPT})", *names]), re.IGNORECASE)
 
