@@ -1,8 +1,9 @@
 """The `diffdata` command.
 
-`discover slack` (DIS-1), `consent` (CON-1, CON-3), `collect google-docs` (COL-4, COL-5) and
-`scrub` (SCR-2) are built. The other subcommands are stubs that name the requirement IDs
-(docs/requirements.md) their feature Issues will build.
+`discover slack` (DIS-1), `consent` (CON-1, CON-3), `collect google-docs` (COL-4, COL-5),
+`scrub` (SCR-2) and `push` (STO-1, STO-2, STO-3) are built. Any other subcommand added
+before it's built is a stub that names the requirement IDs (docs/requirements.md) its
+feature Issue will build.
 """
 
 import argparse
@@ -15,6 +16,8 @@ from diffdata.common.paths import UnsafeDataDirError
 from diffdata.consent import review
 from diffdata.discover import slack_export, slack_inbox
 from diffdata.scrub import run as scrub_run
+from diffdata.store import push as store_push
+from diffdata.store.backend import StoreError
 
 # subcommand -> (help text, requirement IDs it will implement)
 COMMANDS = {
@@ -28,9 +31,12 @@ COMMANDS = {
         "Make scrubbed copies, with people, Slack IDs and emails replaced.",
         "SCR-1, SCR-2",
     ),
-    "push": ("Add scrubbed artifacts to central storage.", "STO-1, STO-2, STO-3"),
+    "push": (
+        "Send the scrubbed copies the last scrub passed to your team's folder in the store.",
+        "STO-1, STO-2, STO-3",
+    ),
 }
-STUBS = ("push",)
+STUBS: tuple[str, ...] = ()
 
 SLACK_STEPS = {
     "channels": "List the opted-in channels from config.toml, and which file it read.",
@@ -112,6 +118,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_google_docs_step(args)
     if args.command == "scrub":
         return run_scrub()
+    if args.command == "push":
+        return run_push()
 
     _, requirement_ids = COMMANDS[args.command]
     print(
@@ -193,6 +201,20 @@ def run_scrub() -> int:
             "copies.",
             file=sys.stderr,
         )
+        return 1
+    print(report)
+    return 0
+
+
+def run_push() -> int:
+    try:
+        report = store_push.push(load_config())
+    except (ConfigError, UnsafeDataDirError, store_push.PushError, StoreError) as e:
+        print(f"diffdata push: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        # Its message or a traceback could quote collected text, so only its type is shown.
+        print(f"diffdata push: stopped on an unexpected {type(e).__name__}.", file=sys.stderr)
         return 1
     print(report)
     return 0

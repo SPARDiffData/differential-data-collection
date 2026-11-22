@@ -31,7 +31,12 @@ data_dir = "~/diffdata-data"
 
 [store]
 # STO-1: the pilot store is a Google Cloud Storage bucket (decision D3 in the Second
-# Half Plan). Nothing reads this section yet: the upload isn't built.
+# Half Plan). `uv run diffdata push` sends your scrubbed copies there, and refuses to run
+# until every setting below is filled in. Sign in once first, with the Google account the
+# project team gave access to: gcloud auth application-default login
 backend = "gcs"
-bucket = ""  # the bucket's name, from the project team
-folder = ""  # your team's folder in the bucket
+bucket = ""    # the bucket's name, from the project team
+folder = ""    # your team's folder in the bucket, from the project team
+producer = ""  # a short handle for you, like "team-a-1": not your full name
+project = ""   # your project's short name, like "diffdata"
+# folder, producer and project are plain names: letters, digits, - and _ only.

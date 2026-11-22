@@ -101,6 +101,20 @@ The build lists every canvas and Google file your saved Slack data links to. Not
 
 Your decisions go in `approvals.jsonl`, next to `config.toml` in `~/.diffdata/`: keys, decisions, times and your answer, never titles. Both commands refuse to write it inside a git repository or a synced folder.
 
+## Upload the scrubbed copies (STO-1 to STO-3)
+
+`uv run diffdata push` sends the copies the last scrub passed to your team's folder in the pilot bucket on Google Cloud Storage. Run it after `uv run diffdata scrub`.
+
+**One-time setup.**
+1. Install the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) and sign in with the Google account the project team gave access to: `gcloud auth application-default login`. diffdata never sees or keeps the sign-in: Google's library finds it.
+2. Fill in `[store]` in `config.toml`: `bucket` and `folder` come from the project team, `producer` is a short handle for you (not your full name), and `project` is your project's short name. The push refuses to run while any of them is empty.
+
+**What it sends, and what it never sends.** Only the copies listed as passed in `scrubbed/manifest.json`. Nothing else in your data folder is sent: not the raw Slack data, not `private/` (the people list and the flags), not `slack/left_out.json`, and not a copy the scrub held back. It stops before sending anything if a scrub is running or was cut short, if a copy changed after the scrub, if the manifest lists anything a scrub doesn't make, or if `scrubbed/` holds a link. Run the scrub again and push again.
+
+**It never overwrites.** Each copy goes to `<folder>/<producer>/<project>/<source type>/<date>/<ID>.<hash>.md`, where the hash comes from its content. The same content is skipped, and a changed copy (a day with new messages, say) is added beside the old one. Your account can only add files to your team's folder, so nothing in the bucket can be replaced or deleted from here. Each push also adds a record of what it sent, under `pushes/`.
+
+The copies are marked "not approved for release", in the bucket too: phone numbers, meeting links and secrets aren't checked yet. Only your team's uploaders can read the folder until consumer access is built (STO-5).
+
 ## Two hard rules
 
 - We never modify or delete a producer's original files or data. We read originals and only change our own copies.

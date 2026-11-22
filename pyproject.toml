@@ -4,7 +4,9 @@ version = "0.0.1"
 description = "Finds, collects, scrubs and stores the working data behind AI safety research."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "google-cloud-storage>=3",
+]
 
 [project.scripts]
 diffdata = "diffdata.cli:main"

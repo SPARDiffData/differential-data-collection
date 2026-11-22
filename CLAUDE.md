@@ -58,7 +58,7 @@ These rules keep real data out of the repo and out of other companies' AI tools.
 
 ```
 src/diffdata/
-  cli.py            the `diffdata` command; `discover slack`, `consent`, `collect google-docs` and `scrub` are built, the rest are stubs
+  cli.py            the `diffdata` command; `discover slack`, `consent`, `collect google-docs`, `scrub` and `push` are built
   consent/ discover/ collect/ organize/ scrub/ store/    one package per stage
   consent/approvals.py   the approvals file next to config.toml (CON-1, CON-3): approved, skipped or withdrawn, per canvas or Google file; it only grows
   consent/review.py   `diffdata consent review` and `withdraw`: a person approves new items from the reference log, typed in a terminal; they refuse to run anywhere else, as in Claude's tools
@@ -69,6 +69,7 @@ src/diffdata/
   collect/google_fetch.py    fetches the docs listed in `google_docs` or approved at review with that sign-in, read-only, and saves each fetch unchanged (COL-4, COL-5)
   collect/google_doc.py, gdocs_changelog.py   the reader: what any fetch saved, in the shared format, with the changelog replayed
   scrub/            `diffdata scrub` (SCR-2): scrubbed copies in <data>/scrubbed/, built all or nothing (run.py), with the people list in <data>/private/ (people.py) and the replacements and last check in text.py
+  store/            `diffdata push` (STO-1 to STO-3, STO-9, STO-11): sends the passed scrubbed copies, create-only, through one `Store` interface (backend.py); the Google Cloud Storage version is gcs.py
   common/           shared pieces; paths.py holds the data folder guards, config.py reads config.toml
   common/documents.py   the shared document format (ORG-2): raw, versions, event log, clean copies
 tests/              pytest; fixtures/ holds synthetic data only

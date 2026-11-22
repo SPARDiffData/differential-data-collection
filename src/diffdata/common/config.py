@@ -30,7 +30,7 @@ USER_ID = re.compile(r"[UW](?=[A-Z]*[0-9])[A-Z0-9]{8,}")
 OPT_OUT_KEY = "slack_opted_out"
 # Every setting [local] and [store] take. Anything else is a typo, and stops the run.
 LOCAL_KEYS = {"data_dir"}
-STORE_KEYS = {"backend", "bucket", "folder"}
+STORE_KEYS = {"backend", "bucket", "folder", "producer", "project"}
 # A key that looks like a setting name is safe to print. Anything else may be a pasted ID or
 # name, so it's never shown.
 SETTING_NAME = re.compile(r"(?:top-level )?(?:[a-z_]+\.)*[a-z_]{1,40}")
@@ -98,6 +98,13 @@ class Config:
     # CON-4, CON-5: Slack user IDs of people who opted out. Their messages are left out of
     # everything the build saves. Real IDs, so they live here only, never in code or output.
     slack_opted_out: tuple[str, ...] = ()
+    # STO-1, STO-2: where `diffdata push` sends the scrubbed copies. Checked by the push
+    # itself, so other commands still run while [store] is empty.
+    store_backend: str = ""
+    store_bucket: str = ""
+    store_folder: str = ""
+    store_producer: str = ""
+    store_project: str = ""
     # Which config.toml these settings came from.
     path: Path | None = None
 
@@ -260,6 +267,10 @@ def load_config(path: str | Path | None = None) -> Config:
             f"canvas_refresh_days in {path} must be a whole number of days, 1 or more."
         )
 
+    store = raw.get("store", {})
+    if not isinstance(store, dict) or not all(isinstance(v, str) for v in store.values()):
+        raise ConfigError(f"Every setting under [store] in {path} must be text, in quotes.")
+
     return Config(
         data_dir=data_dir(configured),
         slack_channels=tuple(channel_name(c) for c in channels),
@@ -268,5 +279,10 @@ def load_config(path: str | Path | None = None) -> Config:
         canvas_refresh_days=refresh_days,
         google_docs=tuple(doc_ids),
         slack_opted_out=tuple(user_ids),
+        store_backend=store.get("backend", "").strip(),
+        store_bucket=store.get("bucket", "").strip(),
+        store_folder=store.get("folder", "").strip(),
+        store_producer=store.get("producer", "").strip(),
+        store_project=store.get("project", "").strip(),
         path=path,
     )
