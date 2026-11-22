@@ -2,8 +2,9 @@
 
 The list is private/people.toml in the data folder. It links each placeholder to a real
 person, so it never goes in a scrubbed copy. Every scrub learns who's who from the saved
-Slack data: each author in the message store, and each mention in messages and canvas
-versions, with its label when it has one. A new Slack ID gets the next [Person N], and a
+Slack data: each author in the message store, each mention in messages and canvas versions,
+with its label when it has one, and each person who opted out (slack/left_out.json), so
+mentions of them are replaced too. A new Slack ID gets the next [Person N], and a
 number never changes once given. A Slack ID known only from a mention gets its own number.
 
 The list is meant to be edited by hand:
@@ -36,7 +37,7 @@ from pathlib import Path
 from diffdata.collect import slack_canvas
 from diffdata.common.documents import documents_dir
 from diffdata.discover.slack_export import read_store
-from diffdata.discover.slack_inbox import slack_dir
+from diffdata.discover.slack_inbox import read_left_out, slack_dir
 
 PEOPLE_FILE = "private/people.toml"  # under the data folder, as messages name it
 NUMBERS_FILE = "private/people-numbers.json"
@@ -212,9 +213,12 @@ def strings(value, what: str) -> list[str]:
 
 def seen_in_slack(data: Path) -> dict[str, set[str]]:
     """Each Slack user ID in the saved data, with every name it's shown with: as an author in
-    the message store, and as a mention's label in a message or a canvas version. Bots
-    aren't people, so their names are left out."""
+    the message store, as a mention's label in a message or a canvas version, and as a
+    person left out because they opted out. Bots aren't people, so their names are left out."""
     seen: dict[str, set[str]] = defaultdict(set)
+    for user_id, names in read_left_out(data).items():
+        if SLACK_ID.fullmatch(user_id):
+            seen[user_id].update(names)
     texts = []
     for store in sorted((slack_dir(data) / "store").glob("*/messages.jsonl")):
         for record in read_store(store):

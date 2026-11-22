@@ -55,6 +55,7 @@ We build the **Produce, Collect and Store** layers, dogfooding on our own SPAR t
 | CON-4 | A producer can list exclusions (projects, people, keywords). Scrub uses them. | F |
 | CON-5 | A channel or meeting with other people is collected only if every participant has agreed. Anyone can ask to be excluded. | F |
 | CON-6 | Approved consumers are chosen per producer. A new consumer needs the producer's approval. | F |
+| CON-7 | One-click opt-out notice: after signing up a channel, the producer posts and pins the channel notice in one step, with the opt-out form link and the date the 7-day opt-out window closes already filled in. The producer does the posting: the tool never writes to Slack on its own (a prefilled Slack message or a copy button, not a Slack write scope, unless the team decides otherwise). | L |
 
 ### 5.2 Discover (lane: Paul)
 
@@ -116,17 +117,17 @@ We build the **Produce, Collect and Store** layers, dogfooding on our own SPAR t
 
 | ID | Requirement | Pri |
 |---|---|---|
-| STO-1 | Pilot store: the SPARDiffData Google Drive, with read/write for the team. | M |
+| STO-1 | Pilot store: a Google Cloud Storage bucket in the team's Google Cloud project (decision D3 in the Second Half Plan, Nov 2026), with one folder per producer team, each folder with its own access list. A team's uploaders can add files to their own folder only. No public access. | M |
 | STO-2 | Folder structure: producer, then project, then source type, then date. | M |
 | STO-3 | Pushes run on a schedule and are additive: never overwrite. How to handle conflicts is open. | M |
 | STO-9 | Expect several people to collect the same source. An upload whose content already exists in storage is skipped (content hash). | M |
 | STO-10 | The same source with different content from different collectors is stored as separate versions, linked by source ID, and reconciled later. | F |
-| STO-11 | Storage sits behind one interface, so we can move from Google Drive to another service (likely AWS) without touching the other stages. | M |
+| STO-11 | Storage sits behind one interface, so we can move from Google Cloud Storage to another service without touching the other stages. | M |
 | STO-4 | Encrypted in transit and at rest. Fine to rely on the provider's defaults. | F |
 | STO-5 | Access per consumer, limited to producers who approved them (CON-6). | F |
 | STO-6 | Every access and change is logged. | F |
 | STO-7 | Deletion on request removes the data and notifies consumers who already accessed it. | F |
-| STO-8 | US-only storage (open). | F |
+| STO-8 | US-only storage: the bucket is in a single US region (decision D3). | F |
 | REC-1 | Approved users download scrubbed data. No query interface or UI. | F |
 
 ### 5.8 Engineering (lane: Paul, repo)
@@ -157,6 +158,6 @@ We build the **Produce, Collect and Store** layers, dogfooding on our own SPAR t
 2. Slack channel export to markdown, messages and threads (DIS-1).
 3. Reference log and link extraction (DIS-2, DIS-3, COL-7).
 4. Canvas and Google Doc current versions (COL-2, COL-4).
-5. Push to the shared Drive (STO-1 to STO-3).
+5. Upload to central storage on Google Cloud Storage (STO-1 to STO-3).
 
 **In parallel:** shared tags and the common format (COL-10, ORG-2); Google Docs history from Lachlan's PoC (COL-5); scrubbing v0 for secrets (SCR-1).

@@ -1,21 +1,28 @@
 """The `diffdata` command.
 
-`discover slack` (DIS-1) and `scrub` (SCR-2) are built. The other subcommands are stubs
-that name the requirement IDs (docs/requirements.md) their feature Issues will build.
+`discover slack` (DIS-1), `consent` (CON-1, CON-3), `collect google-docs` (COL-4, COL-5) and
+`scrub` (SCR-2) are built. The other subcommands are stubs that name the requirement IDs
+(docs/requirements.md) their feature Issues will build.
 """
 
 import argparse
 import sys
 
 from diffdata import __version__
+from diffdata.collect import google_fetch, google_signin
 from diffdata.common.config import ConfigError, load_config
 from diffdata.common.paths import UnsafeDataDirError
+from diffdata.consent import review
 from diffdata.discover import slack_export, slack_inbox
 from diffdata.scrub import run as scrub_run
 
 # subcommand -> (help text, requirement IDs it will implement)
 COMMANDS = {
     "discover": ("Find Slack messages and the sources they reference.", "DIS-1, DIS-2, DIS-3"),
+    "consent": (
+        "Approve, skip or withdraw the canvases and Google files found, in your own terminal.",
+        "CON-1, CON-3",
+    ),
     "collect": ("Fetch each referenced source we can access.", "COL-1, COL-2, COL-4, COL-7"),
     "scrub": (
         "Make scrubbed copies, with people, Slack IDs and emails replaced.",
@@ -23,7 +30,7 @@ COMMANDS = {
     ),
     "push": ("Add scrubbed artifacts to central storage.", "STO-1, STO-2, STO-3"),
 }
-STUBS = ("collect", "push")
+STUBS = ("push",)
 
 SLACK_STEPS = {
     "channels": "List the opted-in channels from config.toml, and which file it read.",
@@ -33,6 +40,11 @@ SLACK_STEPS = {
     "canvases-due": "List the canvases this run should read, and why (run by /slack-export).",
     "build": "Build the message store and the markdown view from the inbox, then close the run.",
     "abort": "Close the open export run without building.",
+}
+# Typed by a person in a terminal: both refuse to run anywhere else, as in Claude's tools.
+CONSENT_STEPS = {
+    "review": "Approve or skip the new canvases and Google files the reference log found.",
+    "withdraw": "Withdraw approvals given at review, from the next /slack-export.",
 }
 
 
@@ -47,7 +59,30 @@ def build_parser() -> argparse.ArgumentParser:
         command = subcommands.add_parser(name, help=help_text, description=help_text)
         if name == "discover":
             add_discover_sources(command)
+        if name == "consent":
+            steps = command.add_subparsers(dest="step", metavar="<step>", required=True)
+            for step, step_help in CONSENT_STEPS.items():
+                steps.add_parser(step, help=step_help, description=step_help)
+        if name == "collect":
+            add_collect_sources(command)
     return parser
+
+
+def add_collect_sources(collect: argparse.ArgumentParser) -> None:
+    sources = collect.add_subparsers(dest="source", metavar="<source>", required=True)
+    docs_help = (
+        "Fetch and build the Google Docs listed in config.toml or approved at review, with "
+        "your own Google login (COL-4, COL-5)."
+    )
+    docs = sources.add_parser("google-docs", help=docs_help, description=docs_help)
+    steps = docs.add_subparsers(dest="step", metavar="<step>")
+    sign_in_help = (
+        "Sign in with your Google account and pick the docs to share, in Google's own "
+        "picker. Run it again to pick more."
+    )
+    steps.add_parser("sign-in", help=sign_in_help, description=sign_in_help)
+    build_help = "Rebuild the fetched docs without fetching anything."
+    steps.add_parser("build", help=build_help, description=build_help)
 
 
 def add_discover_sources(discover: argparse.ArgumentParser) -> None:
@@ -71,6 +106,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "discover":
         return run_slack_step(args)
+    if args.command == "consent":
+        return run_consent_step(args)
+    if args.command == "collect":
+        return run_google_docs_step(args)
     if args.command == "scrub":
         return run_scrub()
 
@@ -80,6 +119,21 @@ def main(argv: list[str] | None = None) -> int:
         file=sys.stderr,
     )
     return 1
+
+
+def run_consent_step(args: argparse.Namespace) -> int:
+    # Before config.toml is read: its errors can quote its text and paths, and outside a
+    # terminal nothing but the refusal may be shown.
+    if not review.in_terminal(sys.stdin, sys.stdout):
+        return review.refuse(review.NOT_A_TERMINAL.format(step=args.step))
+    try:
+        config = load_config()
+    except (ConfigError, UnsafeDataDirError) as e:
+        print(f"diffdata: {e}", file=sys.stderr)
+        return 1
+    if args.step == "review":
+        return review.run_review(config)
+    return review.run_withdraw(config)
 
 
 def run_slack_step(args: argparse.Namespace) -> int:
@@ -102,6 +156,24 @@ def run_slack_step(args: argparse.Namespace) -> int:
         else:
             report = slack_export.build(config)
     except (ConfigError, UnsafeDataDirError, slack_inbox.SlackExportError) as e:
+        print(f"diffdata: {e}", file=sys.stderr)
+        return 1
+    print(report)
+    return 0
+
+
+def run_google_docs_step(args: argparse.Namespace) -> int:
+    try:
+        # First, so an unsafe data folder stops everything before signing in or fetching.
+        config = load_config()
+        if args.step == "sign-in":
+            docs, _ = google_fetch.to_fetch(config)
+            report = google_signin.sign_in(listed=[doc_id for doc_id, _ in docs])
+        elif args.step == "build":
+            report = google_fetch.build_report(config)
+        else:
+            report = google_fetch.collect(config)
+    except (ConfigError, UnsafeDataDirError, google_signin.SignInError) as e:
         print(f"diffdata: {e}", file=sys.stderr)
         return 1
     print(report)

@@ -47,8 +47,10 @@ import json
 import re
 from dataclasses import dataclass
 
+# The author is everything up to the LAST "(ID) at" on the line, so a display name such as
+# "Alex (UK) at home" can't end it early and pass as user "UK" (#105).
 MARKER = re.compile(
-    r"^(?:=== Message from (?P<who>.*?\([A-Z][A-Z0-9]+\)) at .*? ==="
+    r"^(?:=== Message from (?P<who>.*\([A-Z][A-Z0-9]+\)) at .*? ==="
     r"|=== THREAD PARENT MESSAGE ==="
     r"|--- Reply \d+ of \d+ ---"
     r"|(?P<replies>=== THREAD REPLIES \(\d+ total\) ===))[ \t]*$",

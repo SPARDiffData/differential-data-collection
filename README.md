@@ -4,7 +4,7 @@
 
 ## Status
 
-**v0.0.1: repo skeleton.** The `diffdata` command and its stages exist. Slack export (DIS-1) works through Claude Code; the other stages are stubs. Next come the reference log, canvas and Google Doc current versions, and pushing to the shared Drive. See [CHANGELOG.md](CHANGELOG.md).
+**v0.0.1: repo skeleton.** The `diffdata` command and its stages exist. Slack export (DIS-1) works through Claude Code; the other stages are stubs. Next come the reference log, canvas and Google Doc current versions, and uploading to central storage on Google Cloud Storage. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick start
 
@@ -22,16 +22,18 @@ To configure it, copy `config.example.toml` to `config.toml` and `.env.example` 
 
 ## Export a Slack channel (DIS-1)
 
-For the pilot there's no Slack app: Claude Code reads Slack for you through its Slack connector, as you. Nothing writes to Slack. This repo's `.claude/settings.json` removes every Slack write tool from Claude while it works in this folder. During `/slack-export`, a hook also stops any read of a channel or canvas that the export run doesn't name, and any search other than a files or message search of one of the run's channels, before it runs. The run takes its channels and canvases from `config.toml`. If that check can't run, the read is stopped too. The check stays on for the rest of that Claude session, so start a new session for each export, and for any other Slack work afterwards. This needs Claude Code 2.1.295 or later (`claude --version`).
+For the pilot there's no Slack app: Claude Code reads Slack for you through its Slack connector, as you. Nothing writes to Slack. This repo's `.claude/settings.json` removes every Slack write tool from Claude while it works in this folder. During `/slack-export`, a hook also stops any read of a channel or canvas that the export run doesn't name, any search other than a files or message search of one of the run's channels, and any Slack read the export never makes, such as a file download, before it runs. The run takes its channels from `config.toml`, and its canvases from `config.toml` and your approvals. If that check can't run, the read is stopped too. The check stays on for the rest of that Claude session, so start a new session for each export, and for any other Slack work afterwards. This needs Claude Code 2.1.295 or later (`claude --version`).
 
-1. **Set up `config.toml`** in `~/.diffdata/`. List the channels to export under `slack_channels`; listing a channel is your opt-in. Set `slack_workspace_url` to your workspace's address. Keep `data_dir` outside the repo and outside OneDrive, Dropbox, Google Drive and iCloud: `diffdata` refuses those.
+1. **Set up `config.toml`** in `~/.diffdata/`. List the channels to export under `slack_channels`; listing a channel is your opt-in. Edit the file yourself, in a text editor: this repo's settings stop Claude from changing it. Set `slack_workspace_url` to your workspace's address. Keep `data_dir` outside the repo and outside OneDrive, Dropbox, Google Drive and iCloud: `diffdata` refuses those.
 2. **Try it.** Open Claude Code in the repo folder and type `/slack-export test`. It reads only the 5 newest messages of the first channel, and skips threads.
 3. **Run it.** Type `/slack-export`. Claude reads each channel, searches it for late replies, and reads the threads. A hook saves each result unchanged to your data folder, so Claude never retypes it, and then `diffdata` builds:
    - `slack/export/<channel>/<date>.md`: one readable file per day (UTC), with thread replies under their post
    - `slack/store/<channel-id>/messages.jsonl`: every version of every message, for the later steps
-   - `references/references.md`: every doc, canvas, attachment and link the saved messages and canvases point to, once each, with where and when it was shared, and whether it's collected. Nothing in it is fetched, and attachments are never downloaded.
+   - `references/references.md`: every doc, canvas, attachment and link the saved messages and canvases point to, once each, with where and when it was shared, and whether it's collected. Nothing in it is fetched, and attachments are never downloaded. New canvases and Google files in it wait for your review: see below.
 
 Claude reports counts only. The raw results, including authors' emails, stay in your data folder until scrubbing (SCR-2).
+
+**People who opted out.** When the 7-day opt-out window closes, the project team sends you their Slack user IDs to paste under `slack_opted_out` in `config.toml`. The build then leaves their messages out of the message store, the daily files and the reference log, and removes any of their lines the store already had. Replies others wrote to their posts stay, shown as posts of their own. Mentions of them in others' messages are pseudonymised by the scrub like everyone else's: their ID and display name are kept in `slack/left_out.json` in your data folder for that alone. The build reports how many messages it left out, never whose. After you change `slack_opted_out`, run `uv run diffdata discover slack build` before scrubbing: the scrub refuses to run while the saved data still holds their messages. The list must sit under `[sources]`: anywhere else, or misspelt, it stops the run rather than being ignored. For now, their messages still reach Claude while it reads the channel, and the raw results in your data folder; the save hook will leave them out of the raw results next (#105). Canvases can't be filtered by author, so skip any canvas an opted-out person helped write.
 
 By hand: `uv run diffdata discover slack build` rebuilds the export from what's saved, and `uv run diffdata discover slack abort` stops a run. A run also closes on its own after an hour. If Claude says `uv` isn't found, restart VS Code.
 
@@ -58,6 +60,46 @@ By hand: `uv run diffdata discover slack build` rebuilds the export from what's 
 The first run after updating reads every canvas once, since their earlier reads have no size on record.
 
 Links in a canvas (Docs, images, other canvases) stay links: nothing fetches them, and they're listed in `references/references.md`. Canvas comments aren't collected yet (COL-3).
+
+## Collect Google Docs (COL-4, COL-5)
+
+`diffdata` fetches the docs you choose, with your own Google login, on your own computer. A doc is fetched only if you do both of these:
+- **Pick it** in Google's own file picker when you sign in. Your sign-in can reach only the docs you pick, so Google itself enforces this.
+- **Opt in to it:** list it in `config.toml`, or approve it at review (see [Approve new canvases and Google files](#approve-new-canvases-and-google-files-con-1)). Either one is your opt-in. Removing it from the list, or withdrawing the approval, stops collection on the next run. A doc that is both listed and approved stays opted in until you remove it and withdraw it.
+
+1. **Get the app's client file** from the project team, and save it as `google-client.json` in your `.diffdata` folder, next to `config.toml` (`C:\Users\<you>\.diffdata\` on Windows). It stays outside the repo. While the app is in testing, the team also has to add your Google account as a test user, and a sign-in lasts 7 days.
+2. **List the docs** under `google_docs` in `config.toml`, by ID or by link (`https://docs.google.com/document/d/<ID>/edit`). The same doc listed twice is refused. A doc you approved at review doesn't need listing.
+3. **Sign in:** run `uv run diffdata collect google-docs sign-in`. Your browser opens Google's sign-in, then its picker, showing Google Docs only. Pick the docs and allow access. Run it again to pick more. It says how many docs you picked, and how many of those are listed or approved at review.
+4. **Fetch:** run `uv run diffdata collect google-docs`. It prints counts only, and never a doc's ID or title. It names a listed doc by its place in your list ("Entry 2"), and an approved doc by its letter in the current withdraw list ("Approved item b"). That letter can change after the next review. It writes, in your data folder:
+   - `documents/current/google-doc_<title>_<id>.md`: each doc's latest text
+   - `documents/google-doc/<id>/versions/`, `events.jsonl` and `comments.md`: its history, with its comments and suggestions
+   - `documents/google-doc/<id>/raw/`: every fetch, exactly as received
+
+Run it again whenever you like. It always reads a doc's comments, but reads its history only if the doc changed. If a doc's whole changelog can't be fetched, its text and comments are still saved, the run says so, and the changelog is tried again next time: until then the doc has no suggestions. If Google refuses one part of a doc for good, such as the text export of a doc too big to export, the rest is saved and the run names the part. `uv run diffdata collect google-docs build` rebuilds from what's saved, without fetching.
+
+**A doc that can't be read** is saved with the reason, and the run carries on: `no access` or `not found` (a listed or approved doc you didn't pick looks like this), `a folder`, or `not a Google Doc`. Folders are refused, and their contents are never listed or opened, because choosing a folder isn't choosing the files in it.
+
+**What the Allow screen means.** Google names the app's developer there, which is the SPARDiffData Google account. That account only registers the app with Google. **It never gets access to anyone's docs.** You sign in with your own account, on your own computer, and the sign-in and the data stay on that computer. Google words the `drive.file` permission as see, edit, create and delete the files you pick, because it has no read-only version. `diffdata` only ever reads them: it sends read requests only, and a test checks that.
+
+**Where the sign-in lives:** `google-token.json`, next to `google-client.json` in your `.diffdata` folder. `diffdata` refuses to keep it inside a git repo or a folder a cloud service syncs. It's sent only to Google. To take away access completely, remove the app at [myaccount.google.com/permissions](https://myaccount.google.com/permissions).
+
+Removing a doc from the list stops collection, but what was already collected stays in your data folder for now.
+
+## Approve new canvases and Google files (CON-1)
+
+The build lists every canvas and Google file your saved Slack data links to. Nothing new is collected until you approve it, **typed in your own terminal**. Claude is stopped from answering for you, and told never to touch the files that hold your choices:
+
+- The command refuses to run anywhere but a terminal a person types in, and this repo's `.claude/settings.json` stops Claude's shell tools from running it.
+- The same settings stop Claude's file tools from writing the approvals file or `config.toml`.
+- **These checks have limits.** A program written on purpose to fake typing could get past the first. A PowerShell command, or a script that opens the file itself, could still write either file. So `/slack-export` and the repo's instructions for Claude also tell it never to run the command or change those files.
+
+1. **When the build says items are waiting,** open PowerShell or Terminal in the repo folder and run `uv run diffdata consent review`. It explains what approving means, then shows a lettered list: each item's type, its real link, its title, and where and when it was first shared.
+2. **Answer** `all`, `none`, or `all but b, d` to skip some. Skipped items aren't asked about again. Pressing Enter alone records nothing, and the items wait for next time.
+3. **The next `/slack-export`** reads the approved canvases. An approved Google Doc is fetched by `uv run diffdata collect google-docs`, once you've also picked it at Google's sign-in, the same as one listed in `config.toml`. Other Google files (Sheets, Slides, Drive files) aren't fetched. Attachments and ordinary links are never on the list.
+
+**To withdraw an approval,** run `uv run diffdata consent withdraw` the same way, and answer `all`, `none` or letters such as `b, d`. A canvas stops being read from the next `/slack-export`, and a Google Doc stops being fetched from the next `uv run diffdata collect google-docs`. What was already collected stays in your data folder for now. An item listed in `config.toml` is withdrawn by removing it there: a canvas from `slack_canvases`, a Google Doc from `google_docs`.
+
+Your decisions go in `approvals.jsonl`, next to `config.toml` in `~/.diffdata/`: keys, decisions, times and your answer, never titles. Both commands refuse to write it inside a git repository or a synced folder.
 
 ## Two hard rules
 

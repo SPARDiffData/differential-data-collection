@@ -723,6 +723,98 @@ def test_must_refuse_12_a_second_scrub_stops_while_the_lock_is_taken(config, scr
     assert lock.exists() and copies(config) == before
 
 
+# The opt-out filter (#105): mentions of people who opted out are still replaced.
+
+
+def test_must_refuse_4_mentions_of_opted_out_people_are_replaced_in_the_scrubbed_copies(
+    config, export
+):
+    # José (U00000006) is only ever named in plain text by others; Alex (U00000001) is
+    # mentioned by ID. Both opted out, so their own messages are left out.
+    opted = replace(config, slack_opted_out=("U00000006", "U00000001"))
+    export()
+    build(opted)
+    scrub(opted)
+    shown = "\n".join(copies(config).values())
+    assert "Thanks riley" not in shown and "Kickoff notes" not in shown  # their own messages
+    assert re.search(r"Q&A notes from \[Person \d+\] are in the doc", shown)
+    assert re.search(r"Added my comments, @\[Person \d+\]", shown)
+    for value in ("José", "Ejemplo", "Alex Example", "U00000006", "U00000001"):
+        assert value not in shown
+
+
+def test_must_refuse_1_the_scrub_wont_run_until_a_build_has_left_opted_out_people_out(
+    config, export
+):
+    export()
+    opted = replace(config, slack_opted_out=("U00000001",))
+    with pytest.raises(ScrubError, match="Run uv run diffdata discover slack build first"):
+        scrub(opted)
+    assert not (config.data_dir / "scrubbed").exists()
+    build(opted)
+    scrub(opted)  # now it runs
+
+
+def test_a_damaged_list_of_opted_out_people_stops_the_scrub_and_the_build(config, export):
+    from diffdata.discover.slack_inbox import SlackExportError
+
+    opted = replace(config, slack_opted_out=("U00000006",))
+    export()
+    build(opted)
+    left = config.data_dir / "slack" / "left_out.json"
+    left.write_text(left.read_text(encoding="utf-8")[:10], encoding="utf-8")
+    with pytest.raises(ScrubError, match="left_out.json in the data folder can't be read"):
+        scrub(opted)
+    assert not (config.data_dir / "scrubbed").exists()
+    with pytest.raises(SlackExportError, match="left_out.json"):
+        build(opted)
+    # Before anything changes, even when this build would leave no one out.
+    store = config.data_dir / "slack" / "store" / CHANNEL / "messages.jsonl"
+    before = store.read_bytes()
+    with pytest.raises(SlackExportError, match="left_out.json"):
+        build(config)
+    assert store.read_bytes() == before
+
+
+def test_must_refuse_1_a_build_cut_short_after_the_store_clean_up_holds_the_scrub_back(
+    config, export, monkeypatch
+):
+    # The store is cleaned first and the day files are rewritten after, so a build that
+    # stops in between leaves day files the store check alone wouldn't catch.
+    from diffdata.discover import slack_export
+
+    export()
+    opted = replace(config, slack_opted_out=("U00000001",))
+
+    def cut_short(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(slack_export, "write_view", cut_short)
+    with pytest.raises(OSError):
+        build(opted)
+    monkeypatch.undo()
+    with pytest.raises(ScrubError, match="or the last build didn't finish"):
+        scrub(opted)
+    assert not (config.data_dir / "scrubbed").exists()
+    build(opted)
+    scrub(opted)
+    assert "Kickoff notes" not in "\n".join(copies(config).values())
+
+
+def test_must_refuse_1_a_channel_whose_inbox_folder_is_gone_has_its_day_files_rewritten(
+    config, export, tmp_path
+):
+    export()
+    inbox = config.data_dir / "slack" / "inbox" / CHANNEL
+    shutil.move(inbox, tmp_path / "moved-inbox")
+    opted = replace(config, slack_opted_out=("U00000001",))
+    build(opted)
+    scrub(opted)
+    shown = "\n".join(copies(config).values())
+    assert "Kickoff notes" not in shown and "Meeting moved" not in shown
+    assert "Same doc as yesterday" in shown
+
+
 # Edge cases from the reviews of PR #79 (Issue #85)
 
 
@@ -1012,6 +1104,22 @@ def test_a_list_from_before_the_record_gets_one_on_the_next_scrub(config, scrubb
     assert json.loads(numbers_file(config).read_text(encoding="utf-8")) == {
         "numbers": numbers(config)
     }
+
+
+def test_a_later_opt_out_keeps_existing_people_numbers(config, scrubbed):
+    before = placeholders(config)
+    recorded = numbers_file(config).read_bytes()
+    user_id = "U00000001"
+    opted = replace(config, slack_opted_out=(user_id,))
+
+    build(opted)
+    scrub(opted)
+
+    assert placeholders(config) == before
+    assert numbers_file(config).read_bytes() == recorded
+    shown = "\n".join(copies(config).values())
+    assert "Kickoff notes" not in shown
+    assert f"Added my comments, @{before[user_id]}" in shown
 
 
 @pytest.mark.parametrize(

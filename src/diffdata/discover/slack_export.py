@@ -16,6 +16,13 @@ notices in the channel reads saved so far. See collect/slack_canvas.py.
 
 Last, it adds every source the messages and canvases point to into the reference log
 (DIS-2, DIS-3). See references.py.
+
+Messages by people listed in `slack_opted_out` in config.toml are left out of all of it (CON-4,
+CON-5): the store, the view and the reference log. Their earlier lines in the store are
+removed, so a list added after a run still takes effect. Replies others wrote to their posts
+stay. Each opted-out person's ID and display names go in slack/left_out.json, which never
+leaves the data folder, so the scrub can still replace mentions of them (scrub/people.py).
+The report gives counts only.
 """
 
 import json
@@ -33,10 +40,14 @@ from diffdata.discover import references, slack_state
 from diffdata.discover.slack_inbox import (
     SAVED_TOOLS,
     SlackExportError,
+    applied_path,
     close_run,
     inbox_dir,
     is_expired,
     open_run,
+    opt_out_stamp,
+    read_left_out,
+    record_left_out,
     require_workspace,
     run_channel_names,
     run_path,
@@ -53,11 +64,30 @@ def build(config: Config) -> str:
     names = run_channel_names(data)
     run = open_run(data)
     totals: Counter = Counter()
+    opted_out = set(config.slack_opted_out)
+    left_names: dict[str, set[str]] = defaultdict(set)  # each opted-out person's names seen
+    left_messages: set[tuple[str, str]] = set()  # (channel, ts) of each message left out
+    read_left_out(data)  # a damaged list of names stops the build before anything changes
+    for store_file in sorted((slack_dir(data) / "store").glob("*/messages.jsonl")):
+        theirs = [r for r in read_store(store_file) if r["user_id"] in opted_out]
+        if not theirs:
+            continue
+        names_here: dict[str, set[str]] = defaultdict(set)
+        for record in theirs:
+            names_here[record["user_id"]].add(record["user_name"])
+        # Before the store loses them: a build cut short must not lose these names (#105).
+        record_left_out(data, names_here)
+        totals["removed"] += len(remove_from_store(store_file, opted_out))
     latest: dict[tuple[str, str], dict] = {}  # each message's last saved read
     channel_dirs = sorted(p for p in inbox_dir(data).glob("*") if p.is_dir())
     for channel_dir in channel_dirs:
         channel_id = channel_dir.name
         records, counts = read_inbox(channel_dir, channel_id, config.slack_workspace_url)
+        for record in records:
+            if record["user_id"] in opted_out:
+                left_names[record["user_id"]].add(record["user_name"])
+                left_messages.add((channel_id, record["ts"]))
+        records = [r for r in records if r["user_id"] not in opted_out]
         latest.update({(channel_id, record["ts"]): record for record in records})
         store_file = slack_dir(data) / "store" / channel_id / "messages.jsonl"
         totals.update(counts)
@@ -67,6 +97,23 @@ def build(config: Config) -> str:
         totals["days"] += write_view(
             folder, channel_id, name, names, config.slack_workspace_url, read_store(store_file)
         )
+    # A channel whose store outlived its inbox folder gets its view rewritten too, so a day
+    # file can't keep a message the store no longer has.
+    done = {d.name for d in channel_dirs}
+    for store_file in sorted((slack_dir(data) / "store").glob("*/messages.jsonl")):
+        channel_id = store_file.parent.name
+        if channel_id not in done:
+            name = names.get(channel_id, channel_id)
+            folder = slack_dir(data) / "export" / re.sub(r"[^a-z0-9_-]", "-", name.lower())
+            totals["days"] += write_view(
+                folder, channel_id, name, names, config.slack_workspace_url, read_store(store_file)
+            )
+
+    if left_names:
+        record_left_out(data, left_names)
+    # Only now is the list applied to every store and day file. The scrub checks this stamp,
+    # so a build cut short partway can't let it copy a day file not yet rewritten.
+    write_json(applied_path(data), {"applied": opt_out_stamp(opted_out)})
 
     stores = {
         store_file.parent.name: read_store(store_file)
@@ -91,6 +138,16 @@ def build(config: Config) -> str:
         )
     if totals["empty"]:
         report.append(f"{totals['empty']} result file(s) had no messages in them.")
+    if left_messages:
+        report.append(
+            f"{len(left_messages)} message(s) left out, because their authors are listed in "
+            "slack_opted_out in config.toml."
+        )
+    if totals["removed"]:
+        report.append(
+            f"Removed {totals['removed']} earlier line(s) by people in slack_opted_out from the "
+            "message store."
+        )
     if canvases["canvases"]:
         report.append(
             f"{canvases['canvases']} canvas(es): {canvases['reads']} read(s), "
@@ -128,12 +185,12 @@ def build(config: Config) -> str:
             if run.due is None:
                 report.append(
                     f"This run saved reads for {saved(run.canvases)} of {len(run.canvases)} "
-                    "listed canvas(es)."
+                    "listed or approved canvas(es)."
                 )
             else:
                 report.append(
                     f"This run saved reads for {saved(run.due)} of {len(run.due)} due "
-                    f"canvas(es), {len(run.canvases)} listed."
+                    f"canvas(es), {len(run.canvases)} listed or approved."
                 )
         report += start_point_report(run.run_id, list(run.channels), outcomes)
         close_run(data, run, "built")
@@ -155,10 +212,15 @@ def reference_report(refs: Counter) -> list[str]:
         f"{refs['google']} Google file(s), {refs[references.ATTACHMENT]} attachment(s), "
         f"{refs[references.LINK]} other link(s)."
     ]
-    if refs["new"]:
+    if refs["approvals_unreadable"]:
         report.append(
-            f"{refs['new']} canvas(es) or Google file(s) aren't listed in config.toml: see "
-            "references/references.md in your data folder."
+            "Couldn't read the approvals file next to config.toml, so the reference log's "
+            "states count config.toml only, and review and withdraw won't run until it's fixed."
+        )
+    elif refs["new"]:
+        report.append(
+            f"{refs['new']} canvas(es) or Google file(s) are waiting for review. To approve or "
+            "skip them, the user runs this in their own terminal: uv run diffdata consent review"
         )
     return report
 
@@ -178,8 +240,9 @@ def start_point_report(run_id: str, channels: list[str], outcomes: dict) -> list
 
 
 def canvases_due(config: Config, now: datetime | None = None) -> str:
-    """Say which listed canvases this run should read (COL-8), and keep the list in run.json
-    for the build's report. Returns the report: the IDs to read, and the reasons as counts."""
+    """Say which of the run's canvases, listed or approved, it should read (COL-8), and keep
+    the list in run.json for the build's report. Returns the report: the IDs to read, and the
+    reasons as counts."""
     now = now or datetime.now(UTC)
     require_workspace(config)
     data = config.data_dir
@@ -202,7 +265,7 @@ def canvases_due(config: Config, now: datetime | None = None) -> str:
     run.due = [canvas for canvas, why in found.items() if why]
     write_json(run_path(data), asdict(run))
 
-    report = [f"{len(run.due)} of {len(run.canvases)} listed canvas(es) to read."]
+    report = [f"{len(run.due)} of {len(run.canvases)} listed or approved canvas(es) to read."]
     counts = Counter(reason for why in found.values() for reason in why)
     if counts:
         listed = ", ".join(f"{counts[r]} {r}" for r in slack_canvas.REASONS if counts[r])
@@ -287,6 +350,19 @@ def add_to_store(path: Path, records: list[dict]) -> int:
         with path.open("a", encoding="utf-8", newline="\n") as f:
             f.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in new)
     return len(new)
+
+
+def remove_from_store(path: Path, user_ids: set[str]) -> list[dict]:
+    """Rewrite a store without the lines by these authors, through a temporary file, so a write
+    cut short leaves the old store whole. Returns the lines removed."""
+    if not user_ids:
+        return []
+    records = read_store(path)
+    removed = [r for r in records if r["user_id"] in user_ids]
+    if removed:
+        kept = [r for r in records if r["user_id"] not in user_ids]
+        references.write_log(path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in kept))
+    return removed
 
 
 def ts_key(record: dict) -> tuple[int, ...]:
@@ -376,5 +452,11 @@ def write_view(
         if not path.is_file() or path.read_text(encoding="utf-8") != text:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8", newline="\n")
+            changed += 1
+    # A day whose posts were all removed from the store, as when everyone who posted that day
+    # opted out (#105), mustn't keep its old file, or the scrub would copy it.
+    for path in folder.glob("*.md") if folder.is_dir() else []:
+        if path.stem not in days and re.fullmatch(r"\d{4}-\d{2}-\d{2}", path.stem):
+            path.unlink()
             changed += 1
     return changed

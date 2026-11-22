@@ -10,7 +10,17 @@
 slack_channels = ["example-channel"]  # channel names, without the '#'
 slack_workspace_url = "https://example.slack.com"  # your workspace's address, for message links
 slack_canvases = []                   # canvas IDs ("F...") or canvas links; read when they may have changed
+# CON-4, CON-5: Slack user IDs ("U...") of people who opted out of this channel. The project
+# team sends you these lines when the 7-day opt-out window closes. Their messages are left
+# out of everything diffdata builds. They're real IDs, so keep them here, never in the repo.
+slack_opted_out = []
+# Canvases and Google files found in your Slack data are approved or skipped in your own
+# terminal with `uv run diffdata consent review`, and withdrawn with
+# `uv run diffdata consent withdraw`. Those decisions go in approvals.jsonl, next to this file.
 canvas_refresh_days = 7               # read each listed canvas at least this often, changed or not
+# A Google Doc is fetched only if it's listed here and you picked it at sign-in
+# (uv run diffdata collect google-docs sign-in). Remove it and collection stops on the next run.
+google_docs = []                      # Google Doc IDs or links
 folders = []                          # fixed places to check, e.g. ["~/Documents/transcripts"]
 
 [local]
@@ -20,6 +30,8 @@ folders = []                          # fixed places to check, e.g. ["~/Document
 data_dir = "~/diffdata-data"
 
 [store]
-# STO-1: the pilot store is the SPARDiffData shared Google Drive.
-backend = "google-drive"
-folder = ""  # the shared Drive folder to push to
+# STO-1: the pilot store is a Google Cloud Storage bucket (decision D3 in the Second
+# Half Plan). Nothing reads this section yet: the upload isn't built.
+backend = "gcs"
+bucket = ""  # the bucket's name, from the project team
+folder = ""  # your team's folder in the bucket

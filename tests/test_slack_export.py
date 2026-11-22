@@ -1,6 +1,7 @@
 """Building the Slack store and markdown view from the inbox (DIS-1). Synthetic fixtures only."""
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -31,7 +32,7 @@ def export_run(config, slack_response, slack_hook):
     """One /slack-export run as the hook saves it, then the build: a channel read, then
     a read of the one thread with replies."""
 
-    def run(when=T0, channel_fixture="read_channel.txt"):
+    def run(when=T0, channel_fixture="read_channel.txt", settings=None):
         begin(config, ["example-channel=C00000001"], now=when)
         reads = [
             ("slack_read_channel", {"channel_id": CHANNEL}, channel_fixture),
@@ -42,7 +43,7 @@ def export_run(config, slack_response, slack_hook):
                 tool, tool_input, slack_response(fixture), f"toolu_{when:%d%H%M}{i}"
             )
             assert save(config, payload, now=when + timedelta(minutes=i)) == 0
-        return build(config)
+        return build(settings or config)
 
     return run
 
@@ -276,3 +277,141 @@ def test_a_malformed_message_ts_is_counted_and_the_build_finishes(config, export
     report = export_run(channel_fixture=str(broken))
     assert "8 message(s) read" in report
     assert "Couldn't read 1 message(s) and 0 result file(s)" in report
+
+
+# The opt-out filter (#105). U00000001 (Alex) opted out: he started the thread, replied in
+# it, and others mention him.
+
+OPTED_OUT = "U00000001"
+
+
+def everything_built(config) -> str:
+    """Every file the build writes, as one text: store, view, reference log, start points."""
+    slack = config.data_dir / "slack"
+    paths = [*(slack / "store").rglob("*.jsonl"), *(slack / "export").rglob("*.md")]
+    paths += [*(config.data_dir / "references").glob("*"), slack / "state.json"]
+    return "\n".join(p.read_text(encoding="utf-8") for p in paths if p.is_file())
+
+
+def test_must_refuse_1_an_opted_out_persons_messages_are_left_out_of_what_the_build_writes(
+    config, export_run
+):
+    report = export_run(settings=replace(config, slack_opted_out=(OPTED_OUT,)))
+    built = everything_built(config)
+    for theirs in ("Meeting moved", "Kickoff notes", "Thanks! Notes", "call-notes.txt"):
+        assert theirs not in built
+    assert not any(json.loads(line)["user_id"] == OPTED_OUT for line in store_lines(config))
+    assert "3 message(s) left out, because their authors are listed in slack_opted_out" in report
+    assert OPTED_OUT not in report and "Alex" not in report  # counts only
+
+
+def test_must_refuse_3_replies_others_wrote_to_an_opted_out_persons_post_stay(config, export_run):
+    export_run(settings=replace(config, slack_opted_out=(OPTED_OUT,)))
+    shown = "\n".join(view(config).values())
+    assert "Added my comments" in shown  # Sam's reply to Alex's post
+    assert "One more thought on this" in shown  # Riley's reply
+    # With the parent left out, a reply shows as a post of its own, not under a quote.
+    assert "> Added my comments" not in shown
+
+
+def test_must_refuse_5_store_lines_saved_before_the_list_existed_are_removed(config, export_run):
+    export_run()
+    assert any(json.loads(line)["user_id"] == OPTED_OUT for line in store_lines(config))
+    report = build(replace(config, slack_opted_out=(OPTED_OUT,)))
+    assert not any(json.loads(line)["user_id"] == OPTED_OUT for line in store_lines(config))
+    assert "Removed 3 earlier line(s) by people in slack_opted_out" in report
+    assert "Kickoff notes" not in "\n".join(view(config).values())
+    # A second build has nothing left to remove.
+    assert "Removed" not in build(replace(config, slack_opted_out=(OPTED_OUT,)))
+
+
+def test_an_opted_out_persons_names_are_kept_for_the_scrub_only(config, export_run):
+    export_run(settings=replace(config, slack_opted_out=(OPTED_OUT,)))
+    left = json.loads((config.data_dir / "slack" / "left_out.json").read_text(encoding="utf-8"))
+    assert left == {OPTED_OUT: ["Alex Example"]}
+
+
+def test_with_no_one_opted_out_nothing_is_left_out(config, export_run):
+    report = export_run()
+    assert "left out" not in report
+    assert not (config.data_dir / "slack" / "left_out.json").exists()
+
+
+def test_must_refuse_5_a_day_only_an_opted_out_person_posted_on_loses_its_file(
+    config, export_run, tmp_path
+):
+    channel = tmp_path / "read_channel_lonely_day.txt"
+    channel.write_text(
+        "Channel: #example-channel (C00000001)\n\n"
+        "=== Message from Alex Example <alex@example.com> (U00000001) "
+        "at 2026-10-09 09:00:00 CDT ===\n"
+        "Message TS: 1791554400.000900\n"
+        "A day with only my post on it.\n\n"
+        "=== Message from Sam Sample <sam@example.com> (U00000002) "
+        "at 2026-10-08 09:00:00 CDT ===\n"
+        "Message TS: 1791468000.000800\n"
+        "Another day.\n",
+        encoding="utf-8",
+    )
+    export_run(channel_fixture=str(channel))
+    assert "2026-10-09.md" in view(config)
+    build(replace(config, slack_opted_out=(OPTED_OUT,)))
+    assert "2026-10-09.md" not in view(config)
+    assert "A day with only my post" not in everything_built(config)
+    assert "2026-10-08.md" in view(config)
+
+
+def test_must_refuse_1_a_display_name_with_brackets_and_at_is_still_matched_by_its_id(
+    config, export_run, tmp_path
+):
+    # The author is the last "(ID) at" on the header line, so a name like "Alex (UK) at home"
+    # can't pass as user "UK" and slip past the filter (#105).
+    channel = tmp_path / "read_channel_odd_name.txt"
+    channel.write_text(
+        "Channel: #example-channel (C00000001)\n\n"
+        "=== Message from Alex (UK) at home <alex@example.com> (U00000001) "
+        "at 2026-10-08 09:00:00 CDT ===\n"
+        "Message TS: 1791468000.000800\n"
+        "Words that must be left out.\n",
+        encoding="utf-8",
+    )
+    opted = replace(config, slack_opted_out=(OPTED_OUT,))
+    export_run(channel_fixture=str(channel), settings=opted)
+    assert "Words that must be left out" not in everything_built(config)
+
+
+def test_names_from_removed_store_lines_are_kept_before_any_day_file_is_written(
+    config, export_run, monkeypatch
+):
+    # Once the store no longer holds a name, it must already be in left_out.json, or a build
+    # cut short while writing day files would lose it for good.
+    from diffdata.discover import slack_export
+    from diffdata.discover.slack_inbox import read_left_out
+
+    export_run()
+
+    def cut_short(*args, **kwargs):
+        raise OSError("a day file is locked")
+
+    monkeypatch.setattr(slack_export, "write_view", cut_short)
+    with pytest.raises(OSError):
+        build(replace(config, slack_opted_out=(OPTED_OUT,)))
+    assert read_left_out(config.data_dir) == {OPTED_OUT: ["Alex Example"]}
+
+
+def test_a_store_clean_up_cut_short_keeps_the_names_from_stores_already_cleaned(
+    config, export_run, monkeypatch
+):
+    # Names go in left_out.json before each store is rewritten, not after them all.
+    from diffdata.discover import slack_export
+    from diffdata.discover.slack_inbox import read_left_out
+
+    export_run()
+
+    def locked(*args, **kwargs):
+        raise OSError("the store file is locked")
+
+    monkeypatch.setattr(slack_export, "remove_from_store", locked)
+    with pytest.raises(OSError):
+        build(replace(config, slack_opted_out=(OPTED_OUT,)))
+    assert read_left_out(config.data_dir) == {OPTED_OUT: ["Alex Example"]}
