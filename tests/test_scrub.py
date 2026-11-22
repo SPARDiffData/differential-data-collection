@@ -826,14 +826,29 @@ def test_must_refuse_1_a_channel_whose_inbox_folder_is_gone_has_its_day_files_re
         ("alex@school.example.org+jdoe@school.example.org", "[email]+[email]"),
         ("a@x.example.org|b@y.example.org|c@z.example.org", "[email]|[email]|[email]"),
         ("alex+tag@school.example.org", "[email]"),  # a + inside one address
+        ("user%40sub.example@123mail.example.org", "[email]"),  # a literal %40 in the local part
         # Other symbols an address can hold: bold emails in a table, braces, a tilde.
         (
             "|*alex@school.example.org*|*jdoe@school.example.org*|",
             "|*[email]*|*[email]*|",
         ),
+        (
+            f"|*alex@school.example.org*|*{'a' * 64}@school.example.org*|",
+            "|*[email]*|*[email]*|",
+        ),
         ("alex@school.example.org}{jdoe@school.example.org", "[email]}{[email]"),
         ("alex@school.example.org~jdoe@school.example.org", "[email]~[email]"),
+        ("alex@school.example.org-jdoe@school.example.org", "[email]-[email]"),
+        ("alex@school.example.org.jdoe@school.example.org", "[email].[email]"),
+        ("alex%40school.example.org-jdoe%40school.example.org", "[email]-[email]"),
+        ("alex@school.example.org---jdoe%40school.example.org", "[email]---[email]"),
+        (f"alex@school.example.org---{'a' * 64}@school.example.org", "[email]---[email]"),
+        ("alex@school.example.org--%40school.example.org", "[email]--[email]"),
+        # With more than one possible split, both addresses are still removed.
+        ("alex@school.example.org-j.doe@school.example.org", "[email].[email]"),
+        ("alex@school.example.org-jdoe+tag@school.example.org", "[email]+[email]"),
         ("alex@school.example-org-*jdoe@school.example.org", "[email]*[email]"),
+        ("alex@first-school.example.org", "[email]"),
         ("'alex@school.example.org'", "'[email]'"),
     ],
 )
@@ -1060,13 +1075,18 @@ def test_two_entries_merged_on_purpose_keep_both_numbers(config, scrubbed):
     people = read_people(people_file(config))
     first, last = people.people[0], people.people[-1]
     # The last person's Slack ID turns out to be the first person's second account.
+    last.nicknames.append("Big Al")
     first.slack_ids += last.slack_ids
+    first.names += last.names
+    first.nicknames += last.nicknames
     last.slack_ids, last.names, last.nicknames = [], [], []
     people_file(config).write_text(render(people), encoding="utf-8")
     scrub(config)
     after = read_people(people_file(config))
     assert last.placeholder in [p.placeholder for p in after.people]
     assert after.people[0].slack_ids == first.slack_ids
+    assert after.people[0].nicknames == first.nicknames
+    assert Scrubber(after).scrub("Big Al") == (first.placeholder, [])
     assert json.loads(numbers_file(config).read_text(encoding="utf-8")) == {
         "numbers": numbers(config)
     }

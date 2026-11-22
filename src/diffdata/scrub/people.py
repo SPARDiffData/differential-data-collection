@@ -18,9 +18,9 @@ missing one may have been cut short or edited by mistake, so the scrub stops: th
 would come back with new numbers, and without their nicknames. Every entry has all four
 fields, as `render()` writes them, so a list cut inside its last entry stops the scrub too:
 it would keep every number but lose that person's nicknames. To merge two entries for one
-person, as when they have two Slack accounts, the Slack IDs and names move onto one, and the
-other keeps its [[person]] entry with its lists empty, so its number is never given to
-anyone else. Anyone whose Slack ID is still in the saved data can't be removed: the next
+person, as when they have two Slack accounts, the Slack IDs, names and nicknames move onto
+one. The other keeps its [[person]] entry with its lists empty, so its number is never given
+to anyone else. Anyone whose Slack ID is still in the saved data can't be removed: the next
 scrub would add them back.
 
 Python reads TOML but can't write it, so `render()` writes this one simple shape itself.
@@ -60,7 +60,7 @@ HEADER = """\
 # Each [[person]] needs all four lines, placeholder, slack_ids, names and nicknames, with []
 # for an empty list. A scrub stops if one is missing: the list may have been cut short.
 # To merge two entries for one person, as when they have two Slack accounts, move the Slack
-# IDs and names onto one, and keep the other [[person]] entry with its lists empty.
+# IDs, names and nicknames onto one, and keep the other [[person]] entry with its lists empty.
 # Comments you add are lost when a scrub adds someone.
 # To start a new list, delete the whole private/ folder: everyone gets a new number."""
 
@@ -123,8 +123,9 @@ def check_whole(people: People, given: set[int]) -> None:
         raise PeopleError(
             f"{PEOPLE_FILE} has lost [Person {lost[0]}]{more}, given by an earlier scrub, so "
             "it may have been cut short or edited by mistake. Put back a whole copy. If you "
-            "merged two entries for one person, keep the other [[person]] entry with its lists "
-            "empty, so its number is never given to anyone else. To start a new list on "
+            "merged two entries for one person, move the Slack IDs, names and nicknames onto "
+            "one. Keep the other [[person]] entry with its lists empty, so its number is "
+            "never given to anyone else. To start a new list on "
             "purpose, delete the whole private/ folder."
         )
 

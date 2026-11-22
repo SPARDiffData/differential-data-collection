@@ -50,14 +50,26 @@ from diffdata.scrub.people import PLACEHOLDER, SLACK_ID, People, Person, nfc
 # with no @, like a pasted image, is read once rather than once per letter.
 LOCAL = r"[\w.!#$%'*+^`{|}~-]"
 SYMBOL = r"[.!#$%'*+^`{|}~-]"
-# A link can spell the @ as %40. Two emails with only symbols between them, as in a table
+JOINED_LOCAL = rf"(?:{SYMBOL}*\w{LOCAL}{{0,63}}?|{LOCAL}{{1,64}}?)"
+ADDRESS_AT = r"(?:@|%40)"
+DOMAIN = r"(?:[\w-]+(?:\.[\w-]+)+|\[(?:IPv6:)?[0-9A-Fa-f.:]+\])"
+DOMAIN_JOIN = r"[.-](?:[.-]*\w[\w.-]{0,63}|[.-]{1,64})"
+# A link can spell the @ as %40. Match the first usable @ or %40 after a local part.
+# Two emails with only symbols between them, as in a table
 # row typed without spaces (a|b) or with bold ones (*a*|*b*), are two: the second can also
 # start after the first symbol that follows the first one's domain, and run up to 64
 # characters, the most an address holds before its @. The 64 keeps a long run with many
-# such starts, like x+%40x+%40..., quick to read.
+# such starts, like x+%40x+%40..., quick to read. Formatting symbols before the first word
+# character of a joined address don't count toward that limit.
+# A dot or hyphen can also be part of a domain. Prefer to end before that separator if
+# what follows is another address, so the first match doesn't consume its local part.
+# If several splits fit, prefer the longest first domain. A symbol that clearly ends
+# the domain, such as a table pipe, takes precedence over splitting inside the domain.
+# If the domain ends at a literal @ and there is no join, %40 can be local-part text.
 EMAIL = re.compile(
-    rf'(?:(?<!{LOCAL})(?:{LOCAL}+|"[^"\n]+")|(?<=[\w\]]{SYMBOL}){LOCAL}{{1,64}})(?:@|%40)'
-    r"(?:[\w-]+(?:\.[\w-]+)+|\[(?:IPv6:)?[0-9A-Fa-f.:]+\])"
+    rf'(?P<local>(?<!{LOCAL})(?:{LOCAL}+?|"[^"\n]+")|(?<=[\w\]]{SYMBOL}){JOINED_LOCAL})'
+    rf"(?:@|(?P<encoded>%40))(?:{DOMAIN}(?<=[\w\]])(?={DOMAIN_JOIN}{ADDRESS_AT}{DOMAIN})"
+    rf"|(?>{DOMAIN})(?(encoded)(?!@{DOMAIN})))"
 )
 # An address can start with symbols, so the ones between two emails are read as part of the
 # second. They're kept, so a row keeps its | and *.
@@ -225,7 +237,7 @@ class Scrubber:
         return self.targets[found]
 
     def emails(self, text: str, flags: list[Flag]) -> str:
-        return EMAIL.sub(lambda match: JOIN.match(match[0])[0] + "[email]", text)
+        return EMAIL.sub(lambda match: JOIN.match(match["local"])[0] + "[email]", text)
 
     def slack_ids(self, text: str, flags: list[Flag]) -> str:
         def replace(match: re.Match) -> str:
