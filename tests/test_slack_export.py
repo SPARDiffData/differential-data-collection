@@ -147,14 +147,20 @@ BROADCAST = (
 )
 
 
+def channel_read_with_broadcast(tmp_path: Path) -> Path:
+    """A copy of the channel read, outside the fixtures, with BROADCAST before the kickoff."""
+    channel_read = (SLACK_FIXTURES / "read_channel.txt").read_text(encoding="utf-8")
+    kickoff = "=== Message from Alex Example <alex@example.com> (U00000001) at 2026-10-01 09:14"
+    path = tmp_path / "read_channel_broadcast.txt"
+    path.write_text(channel_read.replace(kickoff, BROADCAST + kickoff), encoding="utf-8")
+    return path
+
+
 @pytest.mark.parametrize("thread_copy_first", [False, True])
 def test_a_reply_also_sent_to_the_channel_stays_in_its_thread(
     config, export_run, tmp_path, thread_copy_first
 ):
-    channel_read = (SLACK_FIXTURES / "read_channel.txt").read_text(encoding="utf-8")
-    kickoff = "=== Message from Alex Example <alex@example.com> (U00000001) at 2026-10-01 09:14"
-    with_broadcast = tmp_path / "read_channel_broadcast.txt"  # a copy outside the fixtures
-    with_broadcast.write_text(channel_read.replace(kickoff, BROADCAST + kickoff), encoding="utf-8")
+    with_broadcast = channel_read_with_broadcast(tmp_path)
 
     if thread_copy_first:  # an earlier run stored the thread's copy before the channel's
         export_run()
@@ -331,11 +337,10 @@ def test_an_opted_out_persons_reply_also_sent_to_the_channel_is_left_out_of_both
 ):
     # The channel read's copy of a broadcast reply has no thread ID. The opt-out goes by
     # author, so that copy must be left out as well as the thread read's.
+    # The reads are saved with no one opted out, so this covers the build's filter, not the
+    # save hook's.
     sam = "U00000002"
-    channel_read = (SLACK_FIXTURES / "read_channel.txt").read_text(encoding="utf-8")
-    kickoff = "=== Message from Alex Example <alex@example.com> (U00000001) at 2026-10-01 09:14"
-    with_broadcast = tmp_path / "read_channel_broadcast.txt"
-    with_broadcast.write_text(channel_read.replace(kickoff, BROADCAST + kickoff), encoding="utf-8")
+    with_broadcast = channel_read_with_broadcast(tmp_path)
     settings = replace(config, slack_opted_out=(sam,))
 
     if thread_copy_first:
