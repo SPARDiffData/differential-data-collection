@@ -358,3 +358,10 @@ def test_review_pr_reads_a_contributing_section_that_exists():
     assert f'including "{section}"' in review_pr
     assert f"\n### {section}\n" in contributing
     assert "(#human-review-for-consent-scrub-and-store)" in contributing
+
+
+def test_review_pr_never_offers_a_verdict_that_waits_for_paul():
+    # Since 2026-11-23 PRs don't wait for Paul's review (#121): the author reviews and merges.
+    review_pr = (ROOT / ".claude" / "commands" / "review-pr.md").read_text(encoding="utf-8")
+    verdict = next(line for line in review_pr.splitlines() if line.startswith("**Verdict:**"))
+    assert "Paul" not in verdict
