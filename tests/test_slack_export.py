@@ -325,6 +325,28 @@ def test_must_refuse_5_store_lines_saved_before_the_list_existed_are_removed(con
     assert "Removed" not in build(replace(config, slack_opted_out=(OPTED_OUT,)))
 
 
+@pytest.mark.parametrize("thread_copy_first", [False, True])
+def test_an_opted_out_persons_reply_also_sent_to_the_channel_is_left_out_of_both_copies(
+    config, export_run, tmp_path, thread_copy_first
+):
+    # The channel read's copy of a broadcast reply has no thread ID. The opt-out goes by
+    # author, so that copy must be left out as well as the thread read's.
+    sam = "U00000002"
+    channel_read = (SLACK_FIXTURES / "read_channel.txt").read_text(encoding="utf-8")
+    kickoff = "=== Message from Alex Example <alex@example.com> (U00000001) at 2026-10-01 09:14"
+    with_broadcast = tmp_path / "read_channel_broadcast.txt"
+    with_broadcast.write_text(channel_read.replace(kickoff, BROADCAST + kickoff), encoding="utf-8")
+    settings = replace(config, slack_opted_out=(sam,))
+
+    if thread_copy_first:
+        export_run(settings=settings)
+        export_run(T0 + timedelta(days=1), str(with_broadcast), settings=settings)
+    else:
+        export_run(channel_fixture=str(with_broadcast), settings=settings)
+    assert "Added my comments" not in everything_built(config)
+    assert not any(json.loads(line)["user_id"] == sam for line in store_lines(config))
+
+
 def test_an_opted_out_persons_names_are_kept_for_the_scrub_only(config, export_run):
     export_run(settings=replace(config, slack_opted_out=(OPTED_OUT,)))
     left = json.loads((config.data_dir / "slack" / "left_out.json").read_text(encoding="utf-8"))
