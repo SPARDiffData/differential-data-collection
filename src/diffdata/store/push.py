@@ -94,6 +94,9 @@ KEY_NAME = "store-key.json"
 KEY_SHOWN = f"~/.diffdata/{KEY_NAME}"
 # The push records this computer keeps, under the data folder.
 LOCAL_PUSHES = "pushes"
+# Where a key may send its signed sign-in request: Google's own, and nowhere else.
+TOKEN_URI = "https://oauth2.googleapis.com/token"
+UNIVERSE = "googleapis.com"
 NOTHING_SENT = "Nothing was sent."
 # Settings Google's library reads that would send the copies somewhere other than Google.
 REDIRECTS = ("STORAGE_EMULATOR_HOST", "GOOGLE_CLOUD_UNIVERSE_DOMAIN")
@@ -191,7 +194,7 @@ def read_key(path: Path) -> dict:
                 "shared by mistake. Move it to ~/.diffdata/, outside any repository or synced "
                 f"folder. {NOTHING_SENT}"
             )
-    if not path.is_file():
+    if not path.is_file() and not is_link(path):
         raise PushError(
             f"There's no store key at {KEY_SHOWN}. Save the key file the project team sent you "
             f"there, next to config.toml, then run again. {NOTHING_SENT}"
@@ -200,10 +203,16 @@ def read_key(path: Path) -> dict:
         f"{KEY_SHOWN} isn't a Google service account key. Ask the project team for a new one. "
         f"{NOTHING_SENT}"
     )
+    # One plain file with no second hard link, so it can't also sit in a repository.
+    raw = read_plain(path.parent, path.name)
+    if raw is None:
+        raise PushError(
+            f"{KEY_SHOWN} is a link, has a second hard link, or isn't a plain file, so it could "
+            f"be shared by mistake. Save the key there as a plain file. {NOTHING_SENT}"
+        )
     try:
-        raw = path.read_bytes()
         info = json.loads(raw.decode("utf-8")) if len(raw) < 64_000 else None
-    except (OSError, UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError):
         raise PushError(not_a_key) from None
     if not (
         isinstance(info, dict)
@@ -211,6 +220,16 @@ def read_key(path: Path) -> dict:
         and all(isinstance(info.get(k), str) and info[k] for k in ("private_key", "client_email"))
     ):
         raise PushError(not_a_key)
+    # The key says where its signed sign-in request goes. Only Google's own address will do,
+    # or the request, which can stand in for the key for an hour, could go anywhere.
+    if (
+        info.get("token_uri", TOKEN_URI) != TOKEN_URI
+        or info.get("universe_domain", UNIVERSE) != UNIVERSE
+    ):
+        raise PushError(
+            f"{KEY_SHOWN} would sign in somewhere other than Google. Ask the project team for a "
+            f"new key. {NOTHING_SENT}"
+        )
     return info
 
 
@@ -471,10 +490,14 @@ def check_local_records(data: Path) -> None:
     """The data folder's pushes/ folder must be a plain folder, so a record can't be written
     through a link to somewhere else."""
     folder = data / LOCAL_PUSHES
-    if is_link(folder) or (folder.exists() and not folder.is_dir()):
+    if (
+        is_link(folder)
+        or (folder.exists() and not folder.is_dir())
+        or (folder.is_dir() and find_git_root(folder) is not None)
+    ):
         raise PushError(
-            f"{LOCAL_PUSHES}/ in your data folder is a link or isn't a folder, so this push "
-            f"couldn't keep its record there. {NOTHING_SENT}"
+            f"{LOCAL_PUSHES}/ in your data folder is a link, isn't a folder, or is inside a git "
+            f"repository, so this push couldn't keep its record there. {NOTHING_SENT}"
         )
 
 
@@ -504,30 +527,26 @@ def push(config: Config, opener: Callable[[str, dict], Store] | None = None) -> 
             )
         check_local_records(config.data_dir)
         key = read_key(key_path(config))
-        store = (opener or open_gcs)(found.bucket, key)  # signs in: after every check passed
         prefix = found.prefix(manifest["approved_for_release"])
         pushed_at = datetime.now(UTC)
         # Named by its time and a random part, so every push gets its own record.
         record_name = f"{pushed_at.strftime('%Y-%m-%dT%H-%M-%SZ')}-{uuid.uuid4().hex[:12]}.json"
+        local_record = config.data_dir / LOCAL_PUSHES / record_name
         results: list[str] = []
-        failure = None
-        for upload in uploads:
-            try:
-                results.append(store.add(upload.name, upload.data, MARKDOWN))
-            except Exception as e:
-                failure = (
-                    f"{stopped(e)} {results.count('added')} copy(ies) were added before it "
-                    "stopped. Run again to send the rest: those already sent are skipped."
-                )
-                break
         record = {
             "tool": f"diffdata {__version__}",
             "pushed_at": pushed_at.isoformat(timespec="seconds").replace("+00:00", "Z"),
             "producer": found.producer,
             "project": found.project,
             "approved_for_release": manifest["approved_for_release"],
-            "complete": failure is None,
-            "copies": [
+            "complete": False,
+            "copies": [],
+        }
+
+        def keep(**changes) -> str:
+            """Write this computer's record as it stands. Returns the body."""
+            record.update(changes)
+            record["copies"] = [
                 {
                     "source": u.copy["source"],
                     "id": u.copy["id"],
@@ -537,13 +556,38 @@ def push(config: Config, opener: Callable[[str, dict], Store] | None = None) -> 
                     "result": result,
                 }
                 for u, result in zip(uploads, results, strict=False)
-            ],
-        }
-        body = json.dumps(record, indent=2) + "\n"
-        # This computer's own record, kept even when the push stopped partway, so the producer
-        # can see what left it and compare it with what's stored.
-        write_file(config.data_dir / LOCAL_PUSHES / record_name, body)
+            ]
+            body = json.dumps(record, indent=2) + "\n"
+            write_file(local_record, body)
+            return body
+
+        # Kept before signing in, so a folder it can't write stops the push with nothing sent.
+        try:
+            keep()
+        except OSError:
+            raise PushError(
+                f"Couldn't write this push's record in {LOCAL_PUSHES}/ in your data folder. "
+                f"Check that folder, then run again. {NOTHING_SENT}"
+            ) from None
         kept = f"This push's record is in {LOCAL_PUSHES}/{record_name} in your data folder."
+        store = (opener or open_gcs)(found.bucket, key)  # signs in: after every check passed
+        failure = None
+        try:
+            for upload in uploads:
+                try:
+                    results.append(store.add(upload.name, upload.data, MARKDOWN))
+                except Exception as e:
+                    # Google may have saved it before the answer was lost, so it's unknown.
+                    results.append("unknown")
+                    failure = (
+                        f"{stopped(e)} {results.count('added')} copy(ies) were added before it "
+                        "stopped, and the last one may or may not have been. Run again to send "
+                        "the rest: those already sent are skipped."
+                    )
+                    break
+        finally:
+            # Kept however the loop ends, Ctrl+C included, so the producer sees what left.
+            body = keep(complete=failure is None and len(results) == len(uploads))
         if failure is not None:
             raise PushError(f"{failure} {kept}")
         try:
@@ -551,6 +595,7 @@ def push(config: Config, opener: Callable[[str, dict], Store] | None = None) -> 
             if store.add(name, body.encode("utf-8"), "application/json") != "added":
                 raise StoreError("The store already had a record by this push's name.")
         except Exception as e:
+            keep(record_sent=False)
             raise PushError(
                 f"{stopped(e)} {results.count('added')} copy(ies) were added, but this push's "
                 f"record wasn't. Run again: the copies are skipped and the record is added. {kept}"

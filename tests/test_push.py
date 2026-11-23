@@ -772,11 +772,12 @@ def test_a_store_setting_with_a_trailing_space_is_refused_not_trimmed(tmp_path, 
     path.write_text(
         f'[local]\ndata_dir = "{(tmp_path / "data").as_posix()}"\n\n'
         '[store]\nbackend = "gcs"\nbucket = "fake-pilot-bucket"\nfolder = "fake-team "\n'
-        'producer = "fake-producer"\nproject = "fake-project"\n',
+        'producer = "fake-producer"\nproject = "fake-project"\nsend_not_approved = "yes"\n',
         encoding="utf-8",
     )
+    (tmp_path / "store-key.json").write_text(json.dumps(KEY), encoding="utf-8")
     make_scrub(tmp_path / "data", {DAY: DAY_TEXT})
-    refused(load_config(path), "folder")
+    refused(load_config(path), "folder under [store]", "must be one plain name")
 
 
 def test_a_store_setting_that_isnt_text_is_named(tmp_path):
@@ -1017,11 +1018,14 @@ def test_copies_made_before_an_opt_out_are_never_sent(data):
 
 
 def test_copies_made_before_the_last_build_are_never_sent(data):
-    # The manifest was made under another list than the one the last build applied.
+    # The manifest and config.toml agree, but the last build applied another list (none), so
+    # only the check against the build stops it.
     manifest = json.loads((data / "scrubbed" / "manifest.json").read_text())
     manifest["opt_out_stamp"] = opt_out_stamp([SECRETS[1]])
     write(data / "scrubbed" / "manifest.json", json.dumps(manifest))
-    refused(config(data), "slack_opted_out")
+    cfg = config(data)
+    cfg = Config(**{**vars(cfg), "slack_opted_out": (SECRETS[1],)})
+    refused(cfg, "slack_opted_out")
 
 
 @pytest.mark.parametrize(
@@ -1138,7 +1142,12 @@ def test_the_key_is_passed_to_the_store_and_never_shown(data, capsys):
     opener = Opener()
     report = push(config(data), opener)
     assert opener.key == KEY
-    assert "FAKE-NOT-A-KEY" not in report
+    out = capsys.readouterr()
+    stored = b"".join(opener.store.objects.values()).decode("utf-8") + "".join(opener.store.objects)
+    kept = "".join(f.read_text("utf-8") for f in (data / "pushes").glob("*.json"))
+    for value in (KEY["private_key"], KEY["client_email"]):
+        for text in (report, out.out, out.err, stored, kept):
+            assert value not in text
 
 
 def test_copies_not_approved_are_refused_without_the_setting(data):
@@ -1188,7 +1197,8 @@ def test_a_push_that_stops_partway_still_keeps_its_record(data):
         push(config(data), Opener(FakeStore(fail_after=1)))
     (kept,) = local_records(data)
     assert kept["complete"] is False
-    assert [c["result"] for c in kept["copies"]] == ["added"]
+    # The second may have reached Google before the answer was lost, so it's "unknown".
+    assert [c["result"] for c in kept["copies"]] == ["added", "unknown"]
     assert "pushes/" in str(e.value) and "Nothing was sent" not in str(e.value)
 
 
@@ -1245,3 +1255,88 @@ def test_the_adapter_refuses_a_key_google_cant_read(gcs, monkeypatch):
         gcs.GCSStore("fake-pilot-bucket", KEY)
     assert "isn't a Google service account key" in str(e.value)
     assert "FAKE-NOT-A-KEY" not in str(e.value)
+
+
+# Codex's third review of #114.
+
+
+@pytest.mark.parametrize(
+    "routing",
+    [
+        {"token_uri": "https://auth.example.test/token"},
+        {"universe_domain": "example.test"},
+    ],
+)
+def test_a_key_that_would_sign_in_somewhere_else_stops_the_push(data, routing):
+    message = refused(config(data, key={**KEY, **routing}), "somewhere other than Google")
+    assert "example.test" not in message
+
+
+def test_a_key_naming_googles_own_token_address_is_accepted(data):
+    push(config(data, key={**KEY, "token_uri": "https://oauth2.googleapis.com/token"}), Opener())
+
+
+def test_a_key_with_a_second_hard_link_stops_the_push(data, tmp_path):
+    cfg = config(data)
+    hard_link(tmp_path / "copy-in-a-repo.json", cfg.path.parent / "store-key.json")
+    refused(cfg, "second hard link")
+
+
+def test_a_key_that_is_a_link_stops_the_push(data, tmp_path):
+    cfg = config(data, key=None)
+    (tmp_path / "elsewhere.json").write_text(json.dumps(KEY), encoding="utf-8")
+    symlink(cfg.path.parent / "store-key.json", tmp_path / "elsewhere.json")
+    refused(cfg, "is a link")
+
+
+def test_a_pushes_folder_inside_a_git_checkout_stops_the_push(data):
+    (data / "pushes" / ".git").mkdir(parents=True)
+    refused(config(data), "inside a git repository")
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="needs POSIX permissions")
+def test_a_pushes_folder_it_cant_write_stops_the_push_before_signing_in(data):
+    (data / "pushes").mkdir()
+    (data / "pushes").chmod(0o500)
+    try:
+        refused(config(data), "Couldn't write this push's record")
+    finally:
+        (data / "pushes").chmod(0o700)
+
+
+class Interrupted(FakeStore):
+    def add(self, name, data, content_type):
+        if self.sent:
+            raise KeyboardInterrupt
+        return super().add(name, data, content_type)
+
+
+def test_ctrl_c_partway_still_keeps_the_record(data):
+    with pytest.raises(KeyboardInterrupt):
+        push(config(data), Opener(Interrupted()))
+    (kept,) = local_records(data)
+    assert kept["complete"] is False
+    assert [c["result"] for c in kept["copies"]] == ["added"]
+
+
+def test_a_record_the_store_turned_down_is_marked_not_sent_here(data):
+    with pytest.raises(PushError):
+        push(config(data), Opener(RecordFails()))
+    (kept,) = local_records(data)
+    assert kept["complete"] is True and kept["record_sent"] is False
+
+
+def test_the_scrub_stamps_the_list_it_checked_not_one_a_build_wrote_since(tmp_path, monkeypatch):
+    # A build that finishes while the scrub runs: the second read of the stamp would see it.
+    from diffdata.scrub import run as scrub_run
+
+    data = tmp_path / "data"
+    make_scrub(data, {DAY: DAY_TEXT})
+    shutil.rmtree(data / "scrubbed")
+    shutil.rmtree(data / "slack")
+    stamps = iter([opt_out_stamp([]), opt_out_stamp([SECRETS[1]])])
+    monkeypatch.setattr(scrub_run, "applied_stamp", lambda folder: next(stamps))
+    cfg = config(data)
+    scrub(cfg)
+    manifest = json.loads((data / "scrubbed" / "manifest.json").read_text("utf-8"))
+    assert manifest["opt_out_stamp"] == opt_out_stamp([])
