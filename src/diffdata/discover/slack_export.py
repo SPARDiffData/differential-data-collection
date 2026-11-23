@@ -54,7 +54,7 @@ from diffdata.discover.slack_inbox import (
     slack_dir,
     write_json,
 )
-from diffdata.discover.slack_joins import late_joiners, left_out_stamp
+from diffdata.discover.slack_joins import is_held, late_joiners, left_out_stamp
 from diffdata.discover.slack_parse import OPTED_OUT_NAME, parse_result, permalink, to_markdown
 
 
@@ -74,16 +74,19 @@ def build(config: Config) -> str:
     inbox = {d.name: read_inbox(d, d.name, config.slack_workspace_url) for d in channel_dirs}
     # Who joined each channel after its notice (#118). A channel with no entry in
     # slack_notices stops the build here, before anything changes.
-    late, unchecked = late_joiners(config, {c: found[0] for c, found in inbox.items()}, names)
+    points, outcomes = slack_state.start_points(inbox_dir(data))
+    late, held, unchecked = late_joiners(
+        config, {c: found[0] for c, found in inbox.items()}, names, points
+    )
+    held_messages: set[tuple[str, str]] = set()  # newer than any complete run has read
 
     def leave_out(channel_id: str) -> set[str]:
         return opted_out | late.get(channel_id, set())
 
     for store_file in sorted((slack_dir(data) / "store").glob("*/messages.jsonl")):
-        gone = leave_out(store_file.parent.name)
+        channel_id = store_file.parent.name
+        gone = leave_out(channel_id)
         theirs = [r for r in read_store(store_file) if r["user_id"] in gone]
-        if not theirs:
-            continue
         names_here: dict[str, set[str]] = defaultdict(set)
         for record in theirs:
             if record["user_name"] != OPTED_OUT_NAME:  # a stub the save hook already cut
@@ -91,7 +94,10 @@ def build(config: Config) -> str:
         # Before the store loses them: a build cut short must not lose these names (#105).
         if names_here:
             record_left_out(data, names_here)
-        totals["removed"] += len(remove_from_store(store_file, gone))
+        # Also lines newer than what's been read in full, as after a notice link changed.
+        removed = remove_from_store(store_file, gone, lambda r, c=channel_id: is_held(r, held, c))
+        totals["removed"] += sum(r["user_id"] in gone for r in removed)
+        totals["unread_removed"] += sum(r["user_id"] not in gone for r in removed)
     latest: dict[tuple[str, str], dict] = {}  # each message's last saved read
     for channel_dir in channel_dirs:
         channel_id = channel_dir.name
@@ -105,6 +111,8 @@ def build(config: Config) -> str:
                 if record["user_id"] in late[channel_id] and record["user_id"] not in opted_out:
                     late_messages.add((channel_id, record["ts"]))
         records = [r for r in records if r["user_id"] not in gone]
+        held_messages |= {(channel_id, r["ts"]) for r in records if is_held(r, held, channel_id)}
+        records = [r for r in records if not is_held(r, held, channel_id)]
         latest.update({(channel_id, record["ts"]): record for record in records})
         store_file = slack_dir(data) / "store" / channel_id / "messages.jsonl"
         totals.update(counts)
@@ -139,7 +147,6 @@ def build(config: Config) -> str:
     people = {r["user_id"]: r["user_name"] for s in stores.values() for r in s if r["user_id"]}
     canvases = slack_canvas.build(data, config.slack_workspace_url, people, names)
     refs = references.build(config, stores, latest, names)
-    points, outcomes = slack_state.start_points(inbox_dir(data))
     slack_state.write_state(data, points)
 
     report = [
@@ -160,11 +167,17 @@ def build(config: Config) -> str:
             f"{len(left_messages - late_messages)} message(s) left out, because their authors "
             "are listed in slack_opted_out in config.toml."
         )
-    joined_late = sum(len(users - opted_out) for users in late.values())
+    joined_late = set().union(*late.values()) - opted_out if late else set()
     if joined_late:
         report.append(
-            f"{joined_late} person(s) joined a channel after its notice, so their "
+            f"{len(joined_late)} person(s) joined a channel after its notice, so their "
             f"{len(late_messages)} message(s) there were left out."
+        )
+    if held_messages:
+        report.append(
+            f"{len(held_messages)} message(s) held back, because they're newer than the last "
+            "complete export of their channel, so it isn't known yet whether their authors "
+            "joined after the notice. The next complete /slack-export adds them."
         )
     if unchecked:
         report.append(
@@ -173,8 +186,13 @@ def build(config: Config) -> str:
         )
     if totals["removed"]:
         report.append(
-            f"Removed {totals['removed']} earlier line(s) by people in slack_opted_out from the "
-            "message store."
+            f"Removed {totals['removed']} earlier line(s) by people in slack_opted_out, or who "
+            "joined a channel after its notice, from the message store."
+        )
+    if totals["unread_removed"]:
+        report.append(
+            f"Removed {totals['unread_removed']} earlier line(s) newer than the last complete "
+            "export from the message store. The next complete /slack-export adds them back."
         )
     if canvases["canvases"]:
         report.append(
@@ -380,15 +398,20 @@ def add_to_store(path: Path, records: list[dict]) -> int:
     return len(new)
 
 
-def remove_from_store(path: Path, user_ids: set[str]) -> list[dict]:
-    """Rewrite a store without the lines by these authors, through a temporary file, so a write
-    cut short leaves the old store whole. Returns the lines removed."""
-    if not user_ids:
+def remove_from_store(path: Path, user_ids: set[str], also=None) -> list[dict]:
+    """Rewrite a store without the lines by these authors, or that `also` picks, through a
+    temporary file, so a write cut short leaves the old store whole. Returns the lines
+    removed."""
+    if not user_ids and also is None:
         return []
+
+    def goes(r: dict) -> bool:
+        return r["user_id"] in user_ids or (also is not None and also(r))
+
     records = read_store(path)
-    removed = [r for r in records if r["user_id"] in user_ids]
+    removed = [r for r in records if goes(r)]
     if removed:
-        kept = [r for r in records if r["user_id"] not in user_ids]
+        kept = [r for r in records if not goes(r)]
         references.write_log(path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in kept))
     return removed
 

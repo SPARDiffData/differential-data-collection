@@ -357,6 +357,12 @@ def begin(config: Config, pairs: list[str], now: datetime | None = None, full: b
                 'pinned notice (Copy link), or "none" if the channel has no notice because '
                 "everyone in it agreed directly."
             )
+        linked = dict(config.slack_notices)[name].partition("/")[0]
+        if linked != "none" and linked != channel_id:
+            raise SlackExportError(
+                f"The slack_notices link for #{name} in config.toml points to a different "
+                "channel. Use Copy link on the notice pinned in that channel."
+            )
         channels[channel_id] = name
 
     notes = []

@@ -215,18 +215,19 @@ def test_must_refuse_the_scrub_stops_on_a_late_joiners_line_in_the_store(
     line = dict(store(config)[0], user_id=LATE, ts="1790990001.000451")
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(line) + "\n")
-    with pytest.raises(ScrubError, match="joined a channel after its notice"):
+    with pytest.raises(ScrubError, match="still has messages the build leaves out"):
         scrub(config)
     assert not (config.data_dir / "scrubbed").exists()
 
 
-def test_with_no_late_joiners_the_stamp_matches_an_opt_out_only_build(
-    config, export_run, channel_read
-):
+def test_a_channel_set_to_none_keeps_the_opt_out_lists_own_stamp(config, export_run, channel_read):
     from diffdata.discover.slack_inbox import applied_stamp, opt_out_stamp
 
-    export_run(channel_read(SAM_JOINED_EARLY))
-    assert applied_stamp(config.data_dir) == opt_out_stamp([])
+    export_run(
+        channel_read(SAM_JOINED_EARLY),
+        settings=replace(config, slack_notices=(("example-channel", "none"),)),
+    )
+    assert applied_stamp(config.data_dir) == opt_out_stamp([])  # existing data still matches
 
 
 # Reading the setting from config.toml
@@ -267,9 +268,38 @@ def test_must_refuse_a_notice_that_isnt_a_message_link(tmp_path, value):
     assert value not in str(e.value) or not value
 
 
-def test_must_refuse_a_notice_for_a_channel_that_isnt_listed(tmp_path):
-    with pytest.raises(ConfigError, match="isn't in slack_channels"):
-        load_config(write(tmp_path, f'slack_notices = {{ "exampel-channel" = "{NOTICE}" }}'))
+def test_must_refuse_a_misspelt_notice_entry_leaves_its_channel_without_one(
+    config, export_run, channel_read
+):
+    export_run(channel_read(JORDAN_POSTS, JORDAN_JOINS))
+    two = replace(
+        config,
+        slack_channels=("example-channel", "other-channel"),
+        slack_notices=(("exampel-channel", NOTICED), ("other-channel", "none")),
+    )
+    with pytest.raises(SlackExportError, match="no entry for channel 1 in slack_channels"):
+        build(two)
+
+
+def test_a_channel_taken_off_slack_channels_still_builds_with_its_entry(
+    config, export_run, channel_read
+):
+    export_run(channel_read(JORDAN_POSTS, JORDAN_JOINS))
+    build(replace(config, slack_channels=("other-channel",)))
+    assert all(r["user_id"] != LATE for r in store(config))
+    with pytest.raises(SlackExportError, match="that isn't in slack_channels"):
+        build(replace(config, slack_channels=("other-channel",), slack_notices=()))
+
+
+def test_an_entry_for_a_channel_not_in_slack_channels_is_read(tmp_path):
+    config = load_config(write(tmp_path, f'slack_notices = {{ "old-channel" = "{NOTICE}" }}'))
+    assert config.slack_notices == (("old-channel", NOTICED),)
+
+
+def test_an_enterprise_grid_link_is_read(tmp_path):
+    link = NOTICE.replace("example.slack.com", "example-org.enterprise.slack.com")
+    config = load_config(write(tmp_path, f'slack_notices = {{ "example-channel" = "{link}" }}'))
+    assert config.slack_notices == (("example-channel", NOTICED),)
 
 
 def test_must_refuse_notices_that_arent_a_table(tmp_path):
@@ -281,3 +311,79 @@ def test_must_refuse_an_export_of_a_channel_with_no_notice_entry_stops_before_an
     with pytest.raises(SlackExportError, match="no entry in slack_notices"):
         begin(replace(config, slack_notices=()), [f"example-channel={CHANNEL}"], now=T0)
     assert not (config.data_dir / "slack" / "run.json").exists()
+
+
+def test_must_refuse_an_export_whose_notice_link_is_another_channels(config):
+    other = (("example-channel", "C00000099/1790900000.000000"),)
+    with pytest.raises(SlackExportError, match="points to a different channel"):
+        begin(replace(config, slack_notices=other), [f"example-channel={CHANNEL}"], now=T0)
+    assert not (config.data_dir / "slack" / "run.json").exists()
+
+
+# Reads that don't reach back to a join
+
+
+@pytest.fixture
+def short_read(config, slack_response, slack_hook):
+    """A run that reads the channel but not its thread, so it isn't complete: like a test
+    run, or a read cut short."""
+
+    def run(channel_fixture, when=T0):
+        begin(config, [f"example-channel={CHANNEL}"], now=when)
+        payload = slack_hook(
+            "slack_read_channel",
+            {"channel_id": CHANNEL},
+            slack_response(channel_fixture),
+            f"toolu_{when:%d%H%M}1",
+        )
+        assert save(config, payload, now=when + timedelta(minutes=1)) == 0
+        return build(config)
+
+    return run
+
+
+def test_must_refuse_a_read_that_misses_the_join_holds_back_everything_after_the_notice(
+    config, short_read, channel_read
+):
+    report = short_read(channel_read(JORDAN_POSTS))  # Jordan's post, but not his join
+    assert "Jordan" not in everything_built(config)
+    kept = store(config)
+    assert kept and all(r["ts"] <= "1790900000.000000" for r in kept)  # before the notice
+    assert "message(s) held back" in report
+    assert "Slack day file(s)" in scrub(config)
+    copied = "".join(
+        p.read_text(encoding="utf-8") for p in (config.data_dir / "scrubbed").rglob("*.md")
+    )
+    assert "Jordan" not in copied
+
+
+def test_a_complete_run_later_adds_the_held_back_messages_and_finds_the_late_joiner(
+    config, short_read, export_run, channel_read
+):
+    short_read(channel_read(JORDAN_POSTS))
+    export_run(channel_read(JORDAN_POSTS, JORDAN_JOINS), when=T0 + timedelta(days=1))
+    assert all(r["user_id"] != LATE for r in store(config))
+    assert any(r["ts"] == "1791021600.000500" for r in store(config))  # Alex's Oct 3 post
+
+
+def test_must_refuse_a_test_run_after_a_complete_one_holds_back_only_whats_newer(
+    config, export_run, short_read, channel_read
+):
+    export_run(channel_read(SAM_JOINED_EARLY))
+    newer = message("Jordan Join", LATE, "1791200000.000600", "Jordan's newer message")
+    report = short_read(channel_read(newer), when=T0 + timedelta(days=3))
+    assert "Jordan" not in everything_built(config)
+    assert any(r["ts"] == "1791021600.000500" for r in store(config))  # covered: kept
+    assert "1 message(s) held back" in report
+
+
+def test_must_refuse_the_scrub_stops_on_a_held_back_line_in_the_store(
+    config, short_read, channel_read
+):
+    short_read(channel_read(JORDAN_POSTS))
+    path = config.data_dir / "slack" / "store" / CHANNEL / "messages.jsonl"
+    line = dict(store(config)[0], ts="1790990002.000452")
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(line) + "\n")
+    with pytest.raises(ScrubError, match="newer than the last complete export"):
+        scrub(config)

@@ -12,17 +12,23 @@ someone else a late joiner by typing it. Someone with no join message (in the ch
 its visible history starts, or its creator) isn't one.
 
 The joins come from the channel reads saved in the inbox, which every build reads in full,
-so a join saved by an earlier run still counts. Each channel being built needs an entry in
-`slack_notices`: its notice link, or "none" on purpose. The save hook doesn't use this:
-a channel read comes newest first, so it sees a late joiner's messages before their join.
-Their raw messages stay in the producer's data folder, but never reach the store, the day
-files, the reference log or the scrubbed copies.
+so a join saved by an earlier run still counts. A join is only seen if a read reached back
+to it, so the list is trusted only up to the start of the channel's newest complete run
+(slack_state.py), which read everything up to then. Messages newer than that, or newer than
+the notice if no run has been complete yet, are held back until a complete run covers them:
+a test run, or a read cut short, could have saved someone's posts without their join.
+
+Each channel being built needs an entry in `slack_notices`: its notice link, or "none" on
+purpose. The save hook doesn't use this: a channel read comes newest first, so it sees a
+late joiner's messages before their join. Their raw messages stay in the producer's data
+folder, but never reach the store, the day files, the reference log or the scrubbed copies.
 """
 
 import re
 
 from diffdata.common.config import NO_NOTICE, Config
 from diffdata.discover.slack_inbox import SlackExportError, opt_out_stamp
+from diffdata.discover.slack_state import start_time
 
 JOIN = re.compile(r"<@([UW][A-Z0-9]{8,})(?:\|[^>\n]*)?> has joined the channel")
 
@@ -54,7 +60,7 @@ def notice_for(config: Config, channel_id: str, name: str | None) -> str | None:
     shown = (
         f"channel {listed.index(name) + 1} in slack_channels"
         if name in listed
-        else ("a channel in the saved data")
+        else ("a channel in the saved data that isn't in slack_channels")
     )
     if name is None or name not in notices:
         raise SlackExportError(
@@ -76,11 +82,17 @@ def notice_for(config: Config, channel_id: str, name: str | None) -> str | None:
 
 
 def late_joiners(
-    config: Config, records: dict[str, list[dict]], names: dict[str, str]
-) -> tuple[dict[str, set[str]], list[str]]:
-    """For each channel in `records` (channel ID to its saved messages), the people who joined
-    after its notice. Also returns the IDs of channels set to "none", for the report."""
+    config: Config,
+    records: dict[str, list[dict]],
+    names: dict[str, str],
+    points: dict[str, str],
+) -> tuple[dict[str, set[str]], dict[str, tuple[int, int]], list[str]]:
+    """For each channel in `records` (channel ID to its saved messages): the people who joined
+    after its notice, and the ts after which its messages are held back, because no complete
+    run has read that far yet (`points`: each channel's newest complete run, slack_state.py).
+    Also returns the IDs of channels set to "none", for the report."""
     late: dict[str, set[str]] = {}
+    held: dict[str, tuple[int, int]] = {}
     unchecked: list[str] = []
     for channel_id, messages in sorted(records.items()):
         name = names.get(channel_id)
@@ -92,12 +104,21 @@ def late_joiners(
         late[channel_id] = {
             user_id for user_id, ts in joins(messages).items() if ts_key(ts) > ts_key(notice)
         }
-    return late, unchecked
+        covered = start_time(points[channel_id]) if channel_id in points else None
+        held[channel_id] = max(ts_key(notice), (int(covered.timestamp()), 0) if covered else (0, 0))
+    return late, held, unchecked
 
 
 def left_out_stamp(opted_out: set[str], late: dict[str, set[str]]) -> str:
     """A fingerprint of everyone left out: the opt-out list and each channel's late joiners.
-    With no late joiners it's the opt-out list's own stamp, so earlier builds still match."""
+    With no late joiners it's the opt-out list's own stamp, so earlier builds still match.
+    Held-back messages aren't in it: the scrub checks the store for them directly, and a
+    complete export since the last build only means the store has fewer, never more."""
     return opt_out_stamp(
         list(opted_out) + [f"{channel}/{user}" for channel, users in late.items() for user in users]
     )
+
+
+def is_held(record: dict, held: dict[str, tuple[int, int]], channel_id: str) -> bool:
+    """Whether a message is newer than what complete runs have read in its channel."""
+    return channel_id in held and ts_key(record["ts"]) > held[channel_id]

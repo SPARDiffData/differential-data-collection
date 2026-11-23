@@ -38,6 +38,7 @@ from diffdata import __version__
 from diffdata.collect import slack_canvas
 from diffdata.common.config import Config
 from diffdata.common.documents import documents_dir
+from diffdata.discover import slack_state
 from diffdata.discover.slack_export import read_inbox, read_store
 from diffdata.discover.slack_inbox import (
     SlackExportError,
@@ -46,7 +47,7 @@ from diffdata.discover.slack_inbox import (
     run_channel_names,
     slack_dir,
 )
-from diffdata.discover.slack_joins import late_joiners, left_out_stamp
+from diffdata.discover.slack_joins import is_held, late_joiners, left_out_stamp
 from diffdata.scrub.people import (
     NUMBERS_FILE,
     PEOPLE_FILE,
@@ -179,10 +180,11 @@ def make_copies(config: Config, earlier: bool) -> str:
     # last build, or a changed notice link, is caught here too (#118).
     channel_dirs = sorted(p for p in inbox_dir(data).glob("*") if p.is_dir())
     try:
-        late, _ = late_joiners(
+        late, held, _ = late_joiners(
             config,
             {d.name: read_inbox(d, d.name, config.slack_workspace_url)[0] for d in channel_dirs},
             run_channel_names(data),
+            slack_state.start_points(inbox_dir(data))[0],
         )
     except SlackExportError as e:
         raise ScrubError(str(e)) from e
@@ -195,12 +197,17 @@ def make_copies(config: Config, earlier: bool) -> str:
             "first, then scrub again."
         )
     for store in stores:
-        gone = opted_out | late.get(store.parent.name, set())
-        if any(record["user_id"] in gone for record in read_store(store)):
+        channel_id = store.parent.name
+        gone = opted_out | late.get(channel_id, set())
+        if any(
+            record["user_id"] in gone or is_held(record, held, channel_id)
+            for record in read_store(store)
+        ):
             # The build is what leaves them out (#105), so it has to run first.
             raise ScrubError(
-                "Some people in slack_opted_out in config.toml, or who joined a channel after "
-                "its notice, are still in the saved Slack data, so nothing was scrubbed. Run "
+                "The saved Slack data still has messages the build leaves out (by people in "
+                "slack_opted_out, by people who joined after a notice, or newer than the last "
+                "complete export), so nothing was scrubbed. Run "
                 "uv run diffdata discover slack build first, then scrub again."
             )
     people_file, numbers_file = data / PEOPLE_FILE, data / NUMBERS_FILE

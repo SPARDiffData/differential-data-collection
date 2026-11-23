@@ -33,7 +33,7 @@ NOTICES_KEY = "slack_notices"
 # https://<workspace>.slack.com/archives/<channel ID>/p<16 digits>. Only the post itself, not a
 # reply in a thread, since a reply isn't what the channel sees pinned.
 NOTICE_LINK = re.compile(
-    r"https://[a-z0-9-]+\.slack\.com/archives/([CG][A-Z0-9]{6,})/p(\d{10})(\d{6})/?"
+    r"https://[a-z0-9-]+(?:\.enterprise)?\.slack\.com/archives/([CG][A-Z0-9]{6,})/p(\d{10})(\d{6})/?"
 )
 # A channel where everyone agreed directly, so there's no notice to check joins against.
 NO_NOTICE = "none"
@@ -267,7 +267,7 @@ def load_config(path: str | Path | None = None) -> Config:
                 "are the same person. Remove one, or replace it with the ID you meant."
             )
         user_ids.append(found)
-    notices = read_notices(sources.get(NOTICES_KEY, {}), channels, path)
+    notices = read_notices(sources.get(NOTICES_KEY, {}), path)
     refresh_days = sources.get("canvas_refresh_days", CANVAS_REFRESH_DAYS)
     # bool is a kind of int in Python, so true would otherwise pass as 1.
     if isinstance(refresh_days, bool) or not isinstance(refresh_days, int) or refresh_days < 1:
@@ -288,7 +288,7 @@ def load_config(path: str | Path | None = None) -> Config:
     )
 
 
-def read_notices(table, channels: list, path: Path) -> tuple[tuple[str, str], ...]:
+def read_notices(table, path: Path) -> tuple[tuple[str, str], ...]:
     """slack_notices: each listed channel's notice link, or "none". Checked here for shape
     only. Whether a channel being built has an entry, and whether its link is that channel's,
     is checked at build time, when the channel's ID is known (discover/slack_joins.py). A link
@@ -299,16 +299,12 @@ def read_notices(table, channels: list, path: Path) -> tuple[tuple[str, str], ..
             'slack_notices = { "example-channel" = "https://<workspace>.slack.com/archives/'
             'C.../p..." }.'
         )
-    listed = {channel_name(c) for c in channels if isinstance(c, str)}
+    # An entry for a channel no longer in slack_channels is allowed: its saved data is still
+    # built, so it still needs one. A typo still stops the build, since the channel it was
+    # meant for then has no entry (discover/slack_joins.py).
     found: dict[str, str] = {}
     for key, value in table.items():
         name = channel_name(key)
-        if name not in listed:
-            # Probably a typo, which would leave the channel it was meant for unchecked.
-            raise ConfigError(
-                f"slack_notices in {path} has an entry for a channel that isn't in "
-                "slack_channels. Check the spelling. Nothing was collected."
-            )
         if name in found:
             raise ConfigError(
                 f"slack_notices in {path} has two entries for the same channel. Keep one."
