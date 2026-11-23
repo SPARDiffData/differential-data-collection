@@ -37,7 +37,7 @@ You can also open Claude Code in an empty folder and say: "Walk me through the o
 
 ## Each piece of work
 
-1. **Claim an Issue.** Open it on GitHub and assign yourself (right-hand side, "Assignees"). If there's no Issue for what you want to do, ask Paul to open one.
+1. **Claim an Issue.** Open it on GitHub and assign yourself (right-hand side, "Assignees"). If there's no Issue for what you want to do, open one (Claude's `/plan-issue` can help), and name it in that day's update to Paul.
 2. **Start a branch from the latest `main`.** Branches are named `<lane>/<short-name>`, for example `discover/slack-export`. Tell Claude: *"Pull main and make a branch called discover/slack-export."*
 3. **Work with Claude.** Start with: *"Read Issue #12 and propose a plan."* Claude reads `CLAUDE.md` for our rules. Check the plan before saying go. If you'd like a more structured plan, run `/plan-issue 12` instead. Claude asks its open questions first, then writes the plan in plan mode, and once you approve, posts it on the Issue so it isn't lost when the session ends. It's optional: plan whichever way suits you.
 4. **Run the tests:** *"Run the tests and the linter."* (That's `uv run pytest` and `uv run ruff check`.)
