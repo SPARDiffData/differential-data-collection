@@ -268,8 +268,12 @@ def load_config(path: str | Path | None = None) -> Config:
         )
 
     store = raw.get("store", {})
-    if not isinstance(store, dict) or not all(isinstance(v, str) for v in store.values()):
-        raise ConfigError(f"Every setting under [store] in {path} must be text, in quotes.")
+    if not isinstance(store, dict):
+        raise ConfigError(f"[store] in {path} must be a section of settings.")
+    for key, value in store.items():
+        if not isinstance(value, str):
+            # Named, since only our own keys get this far, but its value isn't quoted.
+            raise ConfigError(f"{key} under [store] in {path} must be text, in quotes.")
 
     return Config(
         data_dir=data_dir(configured),
@@ -279,10 +283,10 @@ def load_config(path: str | Path | None = None) -> Config:
         canvas_refresh_days=refresh_days,
         google_docs=tuple(doc_ids),
         slack_opted_out=tuple(user_ids),
-        store_backend=store.get("backend", "").strip(),
-        store_bucket=store.get("bucket", "").strip(),
-        store_folder=store.get("folder", "").strip(),
-        store_producer=store.get("producer", "").strip(),
-        store_project=store.get("project", "").strip(),
+        store_backend=store.get("backend", ""),
+        store_bucket=store.get("bucket", ""),
+        store_folder=store.get("folder", ""),
+        store_producer=store.get("producer", ""),
+        store_project=store.get("project", ""),
         path=path,
     )

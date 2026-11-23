@@ -156,8 +156,8 @@ def scrub(config: Config) -> str:
         (private / LOCK).touch(exist_ok=False)
     except FileExistsError:
         raise ScrubError(
-            f"Another scrub is running, or one stopped without finishing. If none is "
-            f"running, delete {PRIVATE}/{LOCK} in your data folder and run again."
+            f"Another scrub or a push is running, or a scrub stopped without finishing. If "
+            f"neither is running, delete {PRIVATE}/{LOCK} in your data folder and run again."
         ) from None
     try:
         return make_copies(config, earlier)

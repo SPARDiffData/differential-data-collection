@@ -23,10 +23,18 @@ SIGN_IN = (
 )
 
 
+# Google's own address, set here so no setting in the environment can send uploads elsewhere.
+ENDPOINT = "https://storage.googleapis.com"
+# Adding files to a bucket needs no Cloud project, and a producer's sign-in may not name one.
+# This is the library's own placeholder (as in its create_anonymous_client), so it doesn't
+# go looking for one.
+NO_PROJECT = "<none>"
+
+
 class GCSStore:
     def __init__(self, bucket: str):
         try:
-            client = storage.Client()
+            client = storage.Client(project=NO_PROJECT, client_options={"api_endpoint": ENDPOINT})
         except auth.DefaultCredentialsError:
             raise SignInError(SIGN_IN) from None
         self.bucket = client.bucket(bucket)
