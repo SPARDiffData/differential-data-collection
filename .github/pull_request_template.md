@@ -24,12 +24,13 @@ Closes #
 
 <!-- Every PR gets /review-pr before merge: ask Claude to run the pr-reviewer agent and post
      the review, or run /review-pr <number> in a separate Claude session.
-     A human must also review anything touching consent, scrub or store.
+     A Codex review on top is recommended. PRs don't wait for Paul: the author reviews,
+     merges, and lists the PR in the daily update to Paul.
      See "Review policy" in CONTRIBUTING.md. -->
 
 - [ ] `/review-pr`'s review is posted as a comment below
-- [ ] Touches consent, scrub or store, so a human reviews it too: @
-- [ ] Paul's own consent, scrub or store PR: Paul approved the plan's must-refuse list and checks it by hand, Lachlan reads the code, and Codex's review is posted too
+- [ ] Codex's review is posted too, or skipped because: 
+- [ ] Consent, scrub or store: I approved the plan's must-refuse list, saw each refusal happen by hand, and read the code
 
 ## Checklist
 
