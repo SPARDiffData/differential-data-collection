@@ -23,6 +23,7 @@ def config(tmp_path):
     return Config(
         data_dir=tmp_path / "data",
         slack_channels=("example-channel",),
+        slack_notices=(("example-channel", "none"), ("other-channel", "none")),
         slack_workspace_url="https://example.slack.com",
     )
 
@@ -266,7 +267,13 @@ def test_everything_is_written_under_the_data_folder(config, export_run, tmp_pat
 
 def test_build_needs_the_workspace_address(tmp_path):
     with pytest.raises(SlackExportError, match="slack_workspace_url"):
-        build(Config(data_dir=tmp_path / "data", slack_channels=("example-channel",)))
+        build(
+            Config(
+                data_dir=tmp_path / "data",
+                slack_channels=("example-channel",),
+                slack_notices=(("example-channel", "none"), ("other-channel", "none")),
+            )
+        )
 
 
 def test_a_malformed_message_ts_is_counted_and_the_build_finishes(config, export_run, tmp_path):

@@ -22,7 +22,8 @@ CON-5): the store, the view and the reference log. Their earlier lines in the st
 removed, so a list added after a run still takes effect. Replies others wrote to their posts
 stay. Each opted-out person's ID and display names go in slack/left_out.json, which never
 leaves the data folder, so the scrub can still replace mentions of them (scrub/people.py).
-The report gives counts only.
+Anyone who joined a channel after its notice is left out of that channel the same way
+(#118, slack_joins.py). The report gives counts only.
 """
 
 import json
@@ -45,7 +46,6 @@ from diffdata.discover.slack_inbox import (
     inbox_dir,
     is_expired,
     open_run,
-    opt_out_stamp,
     read_left_out,
     record_left_out,
     require_workspace,
@@ -54,6 +54,7 @@ from diffdata.discover.slack_inbox import (
     slack_dir,
     write_json,
 )
+from diffdata.discover.slack_joins import late_joiners, left_out_stamp
 from diffdata.discover.slack_parse import OPTED_OUT_NAME, parse_result, permalink, to_markdown
 
 
@@ -67,9 +68,20 @@ def build(config: Config) -> str:
     opted_out = set(config.slack_opted_out)
     left_names: dict[str, set[str]] = defaultdict(set)  # each opted-out person's names seen
     left_messages: set[tuple[str, str]] = set()  # (channel, ts) of each message left out
+    late_messages: set[tuple[str, str]] = set()  # those left out only for joining late
     read_left_out(data)  # a damaged list of names stops the build before anything changes
+    channel_dirs = sorted(p for p in inbox_dir(data).glob("*") if p.is_dir())
+    inbox = {d.name: read_inbox(d, d.name, config.slack_workspace_url) for d in channel_dirs}
+    # Who joined each channel after its notice (#118). A channel with no entry in
+    # slack_notices stops the build here, before anything changes.
+    late, unchecked = late_joiners(config, {c: found[0] for c, found in inbox.items()}, names)
+
+    def leave_out(channel_id: str) -> set[str]:
+        return opted_out | late.get(channel_id, set())
+
     for store_file in sorted((slack_dir(data) / "store").glob("*/messages.jsonl")):
-        theirs = [r for r in read_store(store_file) if r["user_id"] in opted_out]
+        gone = leave_out(store_file.parent.name)
+        theirs = [r for r in read_store(store_file) if r["user_id"] in gone]
         if not theirs:
             continue
         names_here: dict[str, set[str]] = defaultdict(set)
@@ -79,18 +91,20 @@ def build(config: Config) -> str:
         # Before the store loses them: a build cut short must not lose these names (#105).
         if names_here:
             record_left_out(data, names_here)
-        totals["removed"] += len(remove_from_store(store_file, opted_out))
+        totals["removed"] += len(remove_from_store(store_file, gone))
     latest: dict[tuple[str, str], dict] = {}  # each message's last saved read
-    channel_dirs = sorted(p for p in inbox_dir(data).glob("*") if p.is_dir())
     for channel_dir in channel_dirs:
         channel_id = channel_dir.name
-        records, counts = read_inbox(channel_dir, channel_id, config.slack_workspace_url)
+        records, counts = inbox[channel_id]
+        gone = leave_out(channel_id)
         for record in records:
-            if record["user_id"] in opted_out:
+            if record["user_id"] in gone:
                 if record["user_name"] != OPTED_OUT_NAME:  # a stub the save hook already cut
                     left_names[record["user_id"]].add(record["user_name"])
                 left_messages.add((channel_id, record["ts"]))
-        records = [r for r in records if r["user_id"] not in opted_out]
+                if record["user_id"] in late[channel_id] and record["user_id"] not in opted_out:
+                    late_messages.add((channel_id, record["ts"]))
+        records = [r for r in records if r["user_id"] not in gone]
         latest.update({(channel_id, record["ts"]): record for record in records})
         store_file = slack_dir(data) / "store" / channel_id / "messages.jsonl"
         totals.update(counts)
@@ -116,7 +130,7 @@ def build(config: Config) -> str:
         record_left_out(data, left_names)
     # Only now is the list applied to every store and day file. The scrub checks this stamp,
     # so a build cut short partway can't let it copy a day file not yet rewritten.
-    write_json(applied_path(data), {"applied": opt_out_stamp(opted_out)})
+    write_json(applied_path(data), {"applied": left_out_stamp(opted_out, late)})
 
     stores = {
         store_file.parent.name: read_store(store_file)
@@ -141,10 +155,21 @@ def build(config: Config) -> str:
         )
     if totals["empty"]:
         report.append(f"{totals['empty']} result file(s) had no messages in them.")
-    if left_messages:
+    if left_messages - late_messages:
         report.append(
-            f"{len(left_messages)} message(s) left out, because their authors are listed in "
-            "slack_opted_out in config.toml."
+            f"{len(left_messages - late_messages)} message(s) left out, because their authors "
+            "are listed in slack_opted_out in config.toml."
+        )
+    joined_late = sum(len(users - opted_out) for users in late.values())
+    if joined_late:
+        report.append(
+            f"{joined_late} person(s) joined a channel after its notice, so their "
+            f"{len(late_messages)} message(s) there were left out."
+        )
+    if unchecked:
+        report.append(
+            f"{len(unchecked)} channel(s) not checked for people who joined after the notice, "
+            'because slack_notices says "none" for them.'
         )
     if totals["removed"]:
         report.append(

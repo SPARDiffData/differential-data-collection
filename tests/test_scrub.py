@@ -42,6 +42,7 @@ def config(tmp_path):
     return Config(
         data_dir=tmp_path / "data",
         slack_channels=("example-channel",),
+        slack_notices=(("example-channel", "none"), ("other-channel", "none")),
         slack_workspace_url="https://example.slack.com",
         slack_canvases=(CANVAS,),
     )
@@ -121,7 +122,8 @@ def write_config(path: Path, data: Path) -> None:
         f"[local]\ndata_dir = '{data.as_posix()}'\n\n[sources]\n"
         'slack_channels = ["example-channel"]\n'
         'slack_workspace_url = "https://example.slack.com"\n'
-        f'slack_canvases = ["{CANVAS}"]\n',
+        f'slack_canvases = ["{CANVAS}"]\n'
+        'slack_notices = { "example-channel" = "none" }\n',
         encoding="utf-8",
     )
 

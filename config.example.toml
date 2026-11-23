@@ -14,6 +14,12 @@ slack_canvases = []                   # canvas IDs ("F...") or canvas links; rea
 # team sends you these lines when the 7-day opt-out window closes. Their messages are left
 # out of everything diffdata builds. They're real IDs, so keep them here, never in the repo.
 slack_opted_out = []
+# CON-5: the link to each channel's pinned notice (Copy link on the notice itself, not a reply
+# to it). Anyone whose latest join of a channel is after its notice is left out of that
+# channel, like someone in slack_opted_out: they never got the notice or its 7 days. Every
+# channel you export needs an entry. Write "none" for a channel with no notice, such as one
+# where everyone agreed directly, and the build will say it wasn't checked.
+slack_notices = { "example-channel" = "none" }
 # Canvases and Google files found in your Slack data are approved or skipped in your own
 # terminal with `uv run diffdata consent review`, and withdrawn with
 # `uv run diffdata consent withdraw`. Those decisions go in approvals.jsonl, next to this file.

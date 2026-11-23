@@ -349,6 +349,14 @@ def begin(config: Config, pairs: list[str], now: datetime | None = None, full: b
                 f"#{name} isn't in slack_channels in config.toml. Listing a channel there "
                 "is the opt-in to collecting it (CON-1)."
             )
+        if name not in dict(config.slack_notices):
+            # Checked here too, so the export stops before reading anything rather than at
+            # the build (#118).
+            raise SlackExportError(
+                f"#{name} has no entry in slack_notices in config.toml. Add the link to its "
+                'pinned notice (Copy link), or "none" if the channel has no notice because '
+                "everyone in it agreed directly."
+            )
         channels[channel_id] = name
 
     notes = []

@@ -38,14 +38,15 @@ from diffdata import __version__
 from diffdata.collect import slack_canvas
 from diffdata.common.config import Config
 from diffdata.common.documents import documents_dir
-from diffdata.discover.slack_export import read_store
+from diffdata.discover.slack_export import read_inbox, read_store
 from diffdata.discover.slack_inbox import (
     SlackExportError,
     applied_stamp,
-    opt_out_stamp,
+    inbox_dir,
     run_channel_names,
     slack_dir,
 )
+from diffdata.discover.slack_joins import late_joiners, left_out_stamp
 from diffdata.scrub.people import (
     NUMBERS_FILE,
     PEOPLE_FILE,
@@ -174,20 +175,33 @@ def make_copies(config: Config, earlier: bool) -> str:
     data = config.data_dir
     opted_out = set(config.slack_opted_out)
     stores = sorted((slack_dir(data) / "store").glob("*/messages.jsonl"))
-    if stores and applied_stamp(data) != opt_out_stamp(opted_out):
+    # Worked out from the saved data the same way the build does, so a join saved since the
+    # last build, or a changed notice link, is caught here too (#118).
+    channel_dirs = sorted(p for p in inbox_dir(data).glob("*") if p.is_dir())
+    try:
+        late, _ = late_joiners(
+            config,
+            {d.name: read_inbox(d, d.name, config.slack_workspace_url)[0] for d in channel_dirs},
+            run_channel_names(data),
+        )
+    except SlackExportError as e:
+        raise ScrubError(str(e)) from e
+    if stores and applied_stamp(data) != left_out_stamp(opted_out, late):
         # The last finished build applied a different list, or none, or stopped partway.
         raise ScrubError(
-            "slack_opted_out in config.toml has changed since the last build, or the last "
-            "build didn't finish, so nothing was scrubbed. Run uv run diffdata discover slack "
-            "build first, then scrub again."
+            "slack_opted_out or slack_notices in config.toml has changed since the last "
+            "build, someone joined a channel after its notice since then, or the last build "
+            "didn't finish, so nothing was scrubbed. Run uv run diffdata discover slack build "
+            "first, then scrub again."
         )
     for store in stores:
-        if any(record["user_id"] in opted_out for record in read_store(store)):
+        gone = opted_out | late.get(store.parent.name, set())
+        if any(record["user_id"] in gone for record in read_store(store)):
             # The build is what leaves them out (#105), so it has to run first.
             raise ScrubError(
-                "Some people in slack_opted_out in config.toml are still in the saved Slack "
-                "data, so nothing was scrubbed. Run uv run diffdata discover slack build "
-                "first, then scrub again."
+                "Some people in slack_opted_out in config.toml, or who joined a channel after "
+                "its notice, are still in the saved Slack data, so nothing was scrubbed. Run "
+                "uv run diffdata discover slack build first, then scrub again."
             )
     people_file, numbers_file = data / PEOPLE_FILE, data / NUMBERS_FILE
     given = read_given(numbers_file)
