@@ -13,7 +13,6 @@ This module is imported only when a real push runs, so tests never load it.
 from google.api_core import exceptions as api
 from google.auth import exceptions as auth
 from google.cloud import storage
-from requests import exceptions as http
 
 from diffdata.store.backend import Added, SignInError, StoreError
 
@@ -54,7 +53,6 @@ class GCSStore:
             api.GoogleAPICallError,
             api.RetryError,
             auth.TransportError,
-            http.RequestException,
         ) as e:
             # Retries ran out, or the network failed: the run reports how many were added.
             raise StoreError(
