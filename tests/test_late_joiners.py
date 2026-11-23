@@ -387,3 +387,38 @@ def test_must_refuse_the_scrub_stops_on_a_held_back_line_in_the_store(
         f.write(json.dumps(line) + "\n")
     with pytest.raises(ScrubError, match="newer than the last complete export"):
         scrub(config)
+
+
+def test_must_refuse_the_scrub_after_a_build_cut_short_once_the_notice_moved_earlier(
+    config, slack_response, slack_hook, channel_read, monkeypatch
+):
+    from diffdata.discover import slack_export
+
+    too_late = replace(config, slack_notices=(("example-channel", f"{CHANNEL}/1791000000.000000"),))
+    begin(too_late, [f"example-channel={CHANNEL}"], now=T0)
+    read = slack_response(channel_read(JORDAN_POSTS))  # his post, not his join
+    payload = slack_hook("slack_read_channel", {"channel_id": CHANNEL}, read, "toolu_041200")
+    assert save(too_late, payload, now=T0 + timedelta(minutes=1)) == 0
+    build(too_late)  # no complete run: held back only after the (wrong) notice
+    assert "Jordan's late message" in everything_built(config)
+
+    def cut_short(*args, **kwargs):
+        raise OSError("the disk is full")
+
+    monkeypatch.setattr(slack_export, "write_view", cut_short)
+    with pytest.raises(OSError):
+        build(config)  # the corrected, earlier notice: the store is cleaned, the days aren't
+    with pytest.raises(ScrubError, match="has changed since the last build"):
+        scrub(config)
+    assert not (config.data_dir / "scrubbed").exists()
+
+
+def test_a_message_just_before_the_last_complete_runs_start_is_still_held_back(
+    config, export_run, short_read, channel_read
+):
+    export_run(channel_read(SAM_JOINED_EARLY))  # complete, begun at T0 by this computer's clock
+    just_before = str(int(T0.timestamp()) - 1800) + ".000700"  # 30 minutes before T0
+    late_post = message("Jordan Join", LATE, just_before, "Jordan's post near the run")
+    report = short_read(channel_read(late_post), when=T0 + timedelta(days=3))
+    assert "Jordan" not in everything_built(config)
+    assert "1 message(s) held back" in report

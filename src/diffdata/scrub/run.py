@@ -188,11 +188,11 @@ def make_copies(config: Config, earlier: bool) -> str:
         )
     except SlackExportError as e:
         raise ScrubError(str(e)) from e
-    if stores and applied_stamp(data) != left_out_stamp(opted_out, late):
+    if stores and applied_stamp(data) != left_out_stamp(opted_out, late, held):
         # The last finished build applied a different list, or none, or stopped partway.
         raise ScrubError(
             "slack_opted_out or slack_notices in config.toml has changed since the last "
-            "build, someone joined a channel after its notice since then, or the last build "
+            "build, a new export or a join has been saved since then, or the last build "
             "didn't finish, so nothing was scrubbed. Run uv run diffdata discover slack build "
             "first, then scrub again."
         )

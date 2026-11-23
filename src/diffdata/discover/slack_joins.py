@@ -28,7 +28,7 @@ import re
 
 from diffdata.common.config import NO_NOTICE, Config
 from diffdata.discover.slack_inbox import SlackExportError, opt_out_stamp
-from diffdata.discover.slack_state import start_time
+from diffdata.discover.slack_state import planned_start
 
 JOIN = re.compile(r"<@([UW][A-Z0-9]{8,})(?:\|[^>\n]*)?> has joined the channel")
 
@@ -104,18 +104,25 @@ def late_joiners(
         late[channel_id] = {
             user_id for user_id, ts in joins(messages).items() if ts_key(ts) > ts_key(notice)
         }
-        covered = start_time(points[channel_id]) if channel_id in points else None
-        held[channel_id] = max(ts_key(notice), (int(covered.timestamp()), 0) if covered else (0, 0))
+        # The newest complete run's start, less the same overlap the next run reads back by,
+        # since the start time comes from this computer's clock (slack_state.py).
+        covered = planned_start(points.get(channel_id))
+        held[channel_id] = max(ts_key(notice), (covered, 0) if covered is not None else (0, 0))
     return late, held, unchecked
 
 
-def left_out_stamp(opted_out: set[str], late: dict[str, set[str]]) -> str:
-    """A fingerprint of everyone left out: the opt-out list and each channel's late joiners.
-    With no late joiners it's the opt-out list's own stamp, so earlier builds still match.
-    Held-back messages aren't in it: the scrub checks the store for them directly, and a
-    complete export since the last build only means the store has fewer, never more."""
+def left_out_stamp(
+    opted_out: set[str], late: dict[str, set[str]], held: dict[str, tuple[int, int]]
+) -> str:
+    """A fingerprint of everything left out: the opt-out list, each channel's late joiners and
+    where its held-back messages start. The held-back point can move earlier with no export,
+    as when a notice link is corrected, and a build cut short after the store but before the
+    day files would then leave copies the scrub must not take. With every channel set to
+    "none" it's the opt-out list's own stamp, so earlier builds still match."""
     return opt_out_stamp(
-        list(opted_out) + [f"{channel}/{user}" for channel, users in late.items() for user in users]
+        list(opted_out)
+        + [f"{channel}/{user}" for channel, users in late.items() for user in users]
+        + [f"{channel}@{after[0]}.{after[1]:06d}" for channel, after in held.items()]
     )
 
 

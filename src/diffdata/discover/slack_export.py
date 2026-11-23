@@ -138,7 +138,7 @@ def build(config: Config) -> str:
         record_left_out(data, left_names)
     # Only now is the list applied to every store and day file. The scrub checks this stamp,
     # so a build cut short partway can't let it copy a day file not yet rewritten.
-    write_json(applied_path(data), {"applied": left_out_stamp(opted_out, late)})
+    write_json(applied_path(data), {"applied": left_out_stamp(opted_out, late, held)})
 
     stores = {
         store_file.parent.name: read_store(store_file)
