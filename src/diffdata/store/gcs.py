@@ -34,7 +34,9 @@ ENDPOINT = "https://storage.googleapis.com"
 NO_PROJECT = "<none>"
 
 
-# Enough to add files to a bucket.
+# The narrowest scope Google offers that can upload. It would also allow overwriting and
+# deleting: what stops those is the folder's "Storage Object Creator" role, plus the
+# create-only condition on every upload.
 SCOPES = ["https://www.googleapis.com/auth/devstorage.read_write"]
 
 

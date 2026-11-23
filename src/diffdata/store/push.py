@@ -171,8 +171,8 @@ def holding_lock(data: Path) -> Iterator[None]:
     except FileExistsError:
         raise PushError(
             f"A scrub or another push is running, or a scrub stopped without finishing "
-            f"({PRIVATE}/{LOCK} is in your data folder). Let it finish, or run uv run diffdata "
-            f"scrub again, then push. {NOTHING_SENT}"
+            f"({PRIVATE}/{LOCK} is in your data folder). Let it finish. If neither is running, "
+            f"delete {PRIVATE}/{LOCK}, run uv run diffdata scrub again, then push. {NOTHING_SENT}"
         ) from None
     try:
         yield
