@@ -33,7 +33,8 @@ from pathlib import Path
 from diffdata import __version__
 from diffdata.common.config import Config
 from diffdata.scrub.run import IN_PROGRESS, LOCK, PRIVATE, SCRUBBED, holds_link, is_link
-from diffdata.store.backend import Store, StoreError
+from diffdata.scrub.text import CHECKS
+from diffdata.store.backend import SignInError, Store, StoreError
 
 MANIFEST = "manifest.json"
 BACKENDS = ("gcs",)
@@ -149,7 +150,9 @@ def read_manifest(data: Path) -> dict:
     for copy in manifest["copies"]:
         if not (
             all(isinstance(copy.get(k), str) for k in ("source", "id", "path", "sha256"))
+            # The checks go into the push record, so only the scrub's own names are allowed.
             and isinstance(copy.get("checks"), list)
+            and all(isinstance(c, str) and c in CHECKS for c in copy["checks"])
             and SHA256.fullmatch(copy["sha256"])
         ):
             raise PushError(broken)
@@ -231,9 +234,12 @@ def push(config: Config, opener: Callable[[str], Store] | None = None) -> str:
             results.append(store.add(upload.name, upload.data, MARKDOWN))
         except StoreError as e:
             added = results.count("added")
+            said = str(e)
+            if isinstance(e, SignInError):  # its "Nothing was sent." isn't true partway
+                said = said.removesuffix(" Nothing was sent.")
             raise PushError(
-                f"{e} {added} copy(ies) were added before it stopped. Run again to send the rest: "
-                "those already sent are skipped."
+                f"{said} {added} copy(ies) were added before it stopped. Run again to send "
+                "the rest: those already sent are skipped."
             ) from None
     pushed_at = datetime.now(UTC)
     record = {
@@ -242,7 +248,6 @@ def push(config: Config, opener: Callable[[str], Store] | None = None) -> str:
         "producer": found.producer,
         "project": found.project,
         "approved_for_release": manifest["approved_for_release"],
-        "note": manifest.get("note", ""),
         "copies": [
             {
                 "source": u.copy["source"],

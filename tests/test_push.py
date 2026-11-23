@@ -48,7 +48,7 @@ def entry(path: str, text: str) -> dict:
         "id": copy_id,
         "path": path,
         "sha256": sha(text),
-        "checks": ["names", "slack_ids", "emails"],
+        "checks": ["emails", "Slack IDs", "known names"],
         "flags": 0,
     }
 
@@ -362,6 +362,33 @@ def test_scrubbed_being_a_link_stops_the_push(tmp_path):
     refused(config(tmp_path / "data"), "is a link")
 
 
+def test_scrubbed_being_a_file_stops_the_push(tmp_path):
+    (tmp_path / "data").mkdir()
+    write(tmp_path / "data" / "scrubbed", "not a folder")
+    refused(config(tmp_path / "data"))
+
+
+@pytest.mark.parametrize("checks", [["anything I like"], [{"a": 1}], "emails"])
+def test_a_check_name_the_scrub_doesnt_make_stops_the_push(tmp_path, checks):
+    def edit(manifest):
+        manifest["copies"][0]["checks"] = checks
+
+    make_scrub(tmp_path / "data", {DAY: DAY_TEXT}, manifest_edit=edit)
+    refused(config(tmp_path / "data"), "manifest.json")
+
+
+def test_the_push_record_leaves_out_the_manifests_note(tmp_path):
+    def edit(manifest):
+        manifest["note"] = "Fakey Realname"
+
+    make_scrub(tmp_path / "data", {DAY: DAY_TEXT}, manifest_edit=edit)
+    store = FakeStore()
+    push(config(tmp_path / "data"), Opener(store))
+    (record,) = records(store)
+    assert "note" not in record
+    assert_no_secrets(store)
+
+
 # Never overwrite
 
 
@@ -426,6 +453,47 @@ def test_a_failed_sign_in_stops_the_push_and_sends_nothing(data):
     with pytest.raises(SignInError):
         push(config(data), opener)
     assert opener.store.objects == {}
+
+
+def test_a_failed_sign_in_shows_the_fix_and_no_token(data, monkeypatch, capsys):
+    message = "Couldn't sign in. Run `gcloud auth application-default login`. Nothing was sent."
+    opener = Opener(error=SignInError(message))
+    monkeypatch.setattr(cli, "load_config", lambda: config(data))
+    monkeypatch.setattr("diffdata.store.push.open_gcs", opener)
+    assert cli.run_push() == 1
+    out = capsys.readouterr()
+    assert "gcloud auth application-default login" in out.err
+    assert "ya29." not in out.err + out.out  # the shape of a Google access token
+    assert opener.store.objects == {}
+    assert_no_secrets(opener.store, out.err, out.out)
+
+
+class SignInFailsAfterOne(FakeStore):
+    def add(self, name: str, data: bytes, content_type: str):
+        if self.sent:
+            raise SignInError("Couldn't sign in. Run gcloud. Nothing was sent.")
+        return super().add(name, data, content_type)
+
+
+def test_a_sign_in_that_fails_partway_doesnt_say_nothing_was_sent(data):
+    store = SignInFailsAfterOne()
+    with pytest.raises(PushError) as e:
+        push(config(data), Opener(store))
+    assert "Nothing was sent" not in str(e.value)
+    assert "1 copy(ies) were added before it stopped" in str(e.value)
+
+
+def test_an_unexpected_error_shows_only_its_type(data, monkeypatch, capsys):
+    class Leaky(FakeStore):
+        def add(self, name, data, content_type):
+            raise ValueError(f"Fakey Realname wrote {data!r}")
+
+    monkeypatch.setattr(cli, "load_config", lambda: config(data))
+    monkeypatch.setattr("diffdata.store.push.open_gcs", Opener(Leaky()))
+    assert cli.run_push() == 1
+    out = capsys.readouterr()
+    assert "unexpected ValueError" in out.err
+    assert "Fakey" not in out.err + out.out and "Person 1" not in out.err + out.out
 
 
 def test_a_store_that_stops_partway_says_how_many_were_added(data):
