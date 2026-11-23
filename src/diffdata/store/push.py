@@ -19,10 +19,17 @@ The push holds the scrub's lock throughout, so no scrub can replace the copies w
 checked and sent.
 
 In the store, each copy goes to
-    <folder>/<producer>/<project>/<source type>/<date>/<ID>.<first 16 of its SHA-256>.md
-(STO-2). Identical content gets the same name and is skipped; changed content gets a new name,
+    <folder>/<part>/<producer>/<project>/<source type>/<date>/<ID>.<first 16 of its SHA-256>.md
+(STO-2), where <part> is "not-approved" or "approved", so consumers can be given the approved
+part only. Copies not approved for release are refused unless [store]'s send_not_approved is
+"yes". Identical content gets the same name and is skipped; changed content gets a new name,
 beside the old one. Every add is create-only, so nothing is ever overwritten (STO-3, STO-9).
-Each push then adds a record of what it sent: <folder>/<producer>/<project>/pushes/<time>.json.
+Each push then adds a record of what it sent, <prefix>/pushes/<time>-<random>.json, and keeps
+the same record in the data folder's pushes/, even when it stops partway.
+
+It signs in with the team's upload-only service account key, store-key.json next to
+config.toml, refused if it's missing, isn't a key, or sits in a git repository or a synced
+folder. The key's contents are never printed.
 
 Reports give counts. An error names a copy only by its place in the manifest.
 """
@@ -41,9 +48,18 @@ from pathlib import Path
 
 from diffdata import __version__
 from diffdata.common.config import Config
+from diffdata.common.paths import find_git_root, synced_by
 from diffdata.discover.slack_inbox import applied_stamp, opt_out_stamp
 from diffdata.scrub.people import PEOPLE_FILE, PeopleError, nfc, read_people
-from diffdata.scrub.run import CHANNEL_LINE, IN_PROGRESS, LOCK, PRIVATE, SCRUBBED, is_link
+from diffdata.scrub.run import (
+    CHANNEL_LINE,
+    IN_PROGRESS,
+    LOCK,
+    PRIVATE,
+    SCRUBBED,
+    is_link,
+    write_file,
+)
 from diffdata.scrub.text import CHECKS, Scrubber
 from diffdata.store.backend import SignInError, Store, StoreError
 
@@ -71,6 +87,13 @@ IP_ADDRESS = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}")
 # A canvas copy's date is the day it last changed, from its header.
 LAST_CHANGED = re.compile(r"^last_changed: (\d{4}-\d{2}-\d{2})", re.MULTILINE)
 MARKDOWN = "text/markdown; charset=utf-8"
+APPROVED, NOT_APPROVED = "approved", "not-approved"
+# The team's upload-only service account key, next to config.toml (normally ~/.diffdata/).
+# A fixed name, so Claude's deny rules can name it exactly.
+KEY_NAME = "store-key.json"
+KEY_SHOWN = f"~/.diffdata/{KEY_NAME}"
+# The push records this computer keeps, under the data folder.
+LOCAL_PUSHES = "pushes"
 NOTHING_SENT = "Nothing was sent."
 # Settings Google's library reads that would send the copies somewhere other than Google.
 REDIRECTS = ("STORAGE_EMULATOR_HOST", "GOOGLE_CLOUD_UNIVERSE_DOMAIN")
@@ -88,9 +111,13 @@ class Settings:
     producer: str
     project: str
 
-    @property
-    def prefix(self) -> str:
-        return f"{self.folder}/{self.producer}/{self.project}"
+    def prefix(self, approved: bool) -> str:
+        """Where this producer's copies go. Approved and not-approved copies go under
+        different parts of the team folder, so a consumer can be given the approved part
+        only: Cloud Storage can't enforce a label inside a file."""
+        return (
+            f"{self.folder}/{APPROVED if approved else NOT_APPROVED}/{self.producer}/{self.project}"
+        )
 
 
 @dataclass(frozen=True)
@@ -143,7 +170,48 @@ def settings(config: Config) -> Settings:
                 f"{key} {where} must be one plain name: letters, digits, - and _ only, with no "
                 f"/ or spaces. {NOTHING_SENT}"
             )
+    if config.store_send_not_approved not in ("", "yes", "no"):
+        raise PushError(f'send_not_approved {where} must be "yes" or "no". {NOTHING_SENT}')
     return found
+
+
+def key_path(config: Config) -> Path:
+    """Where the team's store key is: next to config.toml."""
+    home = config.path.parent if config.path else Path.home() / ".diffdata"
+    return home / KEY_NAME
+
+
+def read_key(path: Path) -> dict:
+    """The team's service account key, checked. Its contents are never printed or sent
+    anywhere but to Google's library, not even in an error."""
+    for candidate in (path.absolute(), path.resolve()):
+        if find_git_root(candidate.parent) is not None or synced_by(candidate) is not None:
+            raise PushError(
+                "The store key is inside a git repository or a synced folder, where it could be "
+                "shared by mistake. Move it to ~/.diffdata/, outside any repository or synced "
+                f"folder. {NOTHING_SENT}"
+            )
+    if not path.is_file():
+        raise PushError(
+            f"There's no store key at {KEY_SHOWN}. Save the key file the project team sent you "
+            f"there, next to config.toml, then run again. {NOTHING_SENT}"
+        )
+    not_a_key = (
+        f"{KEY_SHOWN} isn't a Google service account key. Ask the project team for a new one. "
+        f"{NOTHING_SENT}"
+    )
+    try:
+        raw = path.read_bytes()
+        info = json.loads(raw.decode("utf-8")) if len(raw) < 64_000 else None
+    except (OSError, UnicodeDecodeError, ValueError):
+        raise PushError(not_a_key) from None
+    if not (
+        isinstance(info, dict)
+        and info.get("type") == "service_account"
+        and all(isinstance(info.get(k), str) and info[k] for k in ("private_key", "client_email"))
+    ):
+        raise PushError(not_a_key)
+    return info
 
 
 def check_environment() -> None:
@@ -323,11 +391,12 @@ def last_check(data: Path) -> Scrubber:
         ) from None
 
 
-def plan(data: Path, prefix: str, opted_out=()) -> tuple[dict, list[Upload], int]:
+def plan(data: Path, found: Settings, opted_out=()) -> tuple[dict, list[Upload], int]:
     """Every check on the copies, before anything is sent. Returns the manifest, what to send,
     and how many canvas copies were left out for having no date. A copy is named by its place
     in the manifest, never by its path: the manifest could have been edited."""
     manifest = read_manifest(data)
+    prefix = found.prefix(manifest["approved_for_release"])
     if not (manifest["opt_out_stamp"] == applied_stamp(data) == opt_out_stamp(opted_out)):
         # The copies were made under a different opt-out list than the one in config.toml
         # now, or than the last build applied: they could hold someone who has opted out.
@@ -392,10 +461,21 @@ def plan(data: Path, prefix: str, opted_out=()) -> tuple[dict, list[Upload], int
     return manifest, uploads, undated
 
 
-def open_gcs(bucket: str) -> Store:
-    from diffdata.store.gcs import GCSStore  # only here, so tests never load Google's library
+def open_gcs(bucket: str, key: dict) -> Store:
+    from diffdata.store.gcs import GCSStore  # only here, so push's tests never load it
 
-    return GCSStore(bucket)
+    return GCSStore(bucket, key)
+
+
+def check_local_records(data: Path) -> None:
+    """The data folder's pushes/ folder must be a plain folder, so a record can't be written
+    through a link to somewhere else."""
+    folder = data / LOCAL_PUSHES
+    if is_link(folder) or (folder.exists() and not folder.is_dir()):
+        raise PushError(
+            f"{LOCAL_PUSHES}/ in your data folder is a link or isn't a folder, so this push "
+            f"couldn't keep its record there. {NOTHING_SENT}"
+        )
 
 
 def stopped(e: Exception) -> str:
@@ -409,29 +489,44 @@ def stopped(e: Exception) -> str:
     return said
 
 
-def push(config: Config, opener: Callable[[str], Store] | None = None) -> str:
+def push(config: Config, opener: Callable[[str, dict], Store] | None = None) -> str:
     """Send every passed copy, create-only, then the push record. Returns the report."""
     found = settings(config)
     check_environment()
     with holding_lock(config.data_dir):
-        manifest, uploads, undated = plan(config.data_dir, found.prefix, config.slack_opted_out)
-        store = (opener or open_gcs)(found.bucket)  # signs in: only after every check passed
-        results = []
+        manifest, uploads, undated = plan(config.data_dir, found, config.slack_opted_out)
+        if not manifest["approved_for_release"] and config.store_send_not_approved != "yes":
+            raise PushError(
+                "These copies are marked not approved for release: phone numbers, meeting links "
+                "and secrets aren't checked yet. To send them anyway, to a part of your team's "
+                'folder that consumers are never given, set send_not_approved = "yes" under '
+                f"[store] in config.toml. Read them first. {NOTHING_SENT}"
+            )
+        check_local_records(config.data_dir)
+        key = read_key(key_path(config))
+        store = (opener or open_gcs)(found.bucket, key)  # signs in: after every check passed
+        prefix = found.prefix(manifest["approved_for_release"])
+        pushed_at = datetime.now(UTC)
+        # Named by its time and a random part, so every push gets its own record.
+        record_name = f"{pushed_at.strftime('%Y-%m-%dT%H-%M-%SZ')}-{uuid.uuid4().hex[:12]}.json"
+        results: list[str] = []
+        failure = None
         for upload in uploads:
             try:
                 results.append(store.add(upload.name, upload.data, MARKDOWN))
             except Exception as e:
-                raise PushError(
+                failure = (
                     f"{stopped(e)} {results.count('added')} copy(ies) were added before it "
                     "stopped. Run again to send the rest: those already sent are skipped."
-                ) from None
-        pushed_at = datetime.now(UTC)
+                )
+                break
         record = {
             "tool": f"diffdata {__version__}",
             "pushed_at": pushed_at.isoformat(timespec="seconds").replace("+00:00", "Z"),
             "producer": found.producer,
             "project": found.project,
             "approved_for_release": manifest["approved_for_release"],
+            "complete": failure is None,
             "copies": [
                 {
                     "source": u.copy["source"],
@@ -441,20 +536,24 @@ def push(config: Config, opener: Callable[[str], Store] | None = None) -> str:
                     "checks": u.copy["checks"],
                     "result": result,
                 }
-                for u, result in zip(uploads, results, strict=True)
+                for u, result in zip(uploads, results, strict=False)
             ],
         }
-        body = (json.dumps(record, indent=2) + "\n").encode("utf-8")
-        # Named by its time and a random part, so every push gets its own record.
-        stamp = pushed_at.strftime("%Y-%m-%dT%H-%M-%SZ")
+        body = json.dumps(record, indent=2) + "\n"
+        # This computer's own record, kept even when the push stopped partway, so the producer
+        # can see what left it and compare it with what's stored.
+        write_file(config.data_dir / LOCAL_PUSHES / record_name, body)
+        kept = f"This push's record is in {LOCAL_PUSHES}/{record_name} in your data folder."
+        if failure is not None:
+            raise PushError(f"{failure} {kept}")
         try:
-            name = f"{found.prefix}/pushes/{stamp}-{uuid.uuid4().hex[:12]}.json"
-            if store.add(name, body, "application/json") != "added":
+            name = f"{prefix}/pushes/{record_name}"
+            if store.add(name, body.encode("utf-8"), "application/json") != "added":
                 raise StoreError("The store already had a record by this push's name.")
         except Exception as e:
             raise PushError(
                 f"{stopped(e)} {results.count('added')} copy(ies) were added, but this push's "
-                "record wasn't. Run again: the copies are skipped and the record is added."
+                f"record wasn't. Run again: the copies are skipped and the record is added. {kept}"
             ) from None
 
     added, skipped = results.count("added"), results.count("exists")
@@ -467,7 +566,8 @@ def push(config: Config, opener: Callable[[str], Store] | None = None) -> str:
     if undated:
         report.append(f"{undated} canvas copy(ies) had no last_changed date and were not sent.")
     report.append(
-        "These copies are marked not approved for release, in the store too: phone numbers, "
-        "meeting links and secrets aren't checked yet."
+        "These copies are marked not approved for release, and went to the not-approved part of "
+        "your team's folder, which consumers are never given."
     )
+    report.append(kept)
     return "\n".join(report)

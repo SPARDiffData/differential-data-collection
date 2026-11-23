@@ -22,7 +22,7 @@ from diffdata.store import push as push_module
 from diffdata.store.backend import FakeStore, SignInError, StoreError
 from diffdata.store.push import PushError, push
 
-PREFIX = "fake-team/fake-producer/fake-project"
+PREFIX = "fake-team/not-approved/fake-producer/fake-project"
 DAY = "slack/export/CFAKE0001/2026-01-05.md"
 DAY_2 = "slack/export/CFAKE0001/2026-01-06.md"
 CANVAS = "documents/current/slack-canvas_FFAKE0001.md"
@@ -95,16 +95,35 @@ def make_scrub(data: Path, copies: dict[str, str], held=(), manifest_edit=None) 
     )
 
 
-def config(data: Path, **store) -> Config:
+# A made-up service account key: the shape Google gives, with no real value in it.
+KEY = {
+    "type": "service_account",
+    "project_id": "fake-project",
+    "client_email": "fake-uploader@fake-project.iam.gserviceaccount.com",
+    "private_key": "FAKE-NOT-A-KEY",
+}
+
+
+def config(data: Path, key: dict | None = KEY, **store) -> Config:
+    """Settings for a push, with config.toml's folder next to the data folder and the team's
+    key saved there, as in ~/.diffdata/."""
     settings = {
         "backend": "gcs",
         "bucket": "fake-pilot-bucket",
         "folder": "fake-team",
         "producer": "fake-producer",
         "project": "fake-project",
+        "send_not_approved": "yes",
     } | store
+    home = data.parent / "fake-diffdata"
+    home.mkdir(parents=True, exist_ok=True)
+    if key is not None:
+        (home / "store-key.json").write_text(json.dumps(key), encoding="utf-8")
     return Config(
-        data_dir=data, slack_channels=(), **{f"store_{k}": v for k, v in settings.items()}
+        data_dir=data,
+        slack_channels=(),
+        path=home / "config.toml",
+        **{f"store_{k}": v for k, v in settings.items()},
     )
 
 
@@ -123,8 +142,9 @@ class Opener:
         self.error = error
         self.opened = 0
 
-    def __call__(self, bucket: str) -> FakeStore:
+    def __call__(self, bucket: str, key: dict) -> FakeStore:
         self.opened += 1
+        self.key = key
         if self.error:
             raise self.error
         return self.store
@@ -592,9 +612,10 @@ def test_diffdata_push_sends_through_the_store(data, tmp_path, monkeypatch, caps
     (tmp_path / "config.toml").write_text(
         f'[local]\ndata_dir = "{data.as_posix()}"\n\n[store]\nbackend = "gcs"\n'
         'bucket = "fake-pilot-bucket"\nfolder = "fake-team"\nproducer = "fake-producer"\n'
-        'project = "fake-project"\n',
+        'project = "fake-project"\nsend_not_approved = "yes"\n',
         encoding="utf-8",
     )
+    (tmp_path / "store-key.json").write_text(json.dumps(KEY), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     opener = Opener()
     monkeypatch.setattr("diffdata.store.push.open_gcs", opener)
@@ -883,7 +904,11 @@ def gcs(monkeypatch):
     StubClient.made, StubClient.error = [], None
     StubCredentials.error = None
     monkeypatch.setattr(gcs.storage, "Client", StubClient)
-    monkeypatch.setattr(gcs.google.auth, "default", lambda scopes: (StubCredentials(), None))
+    monkeypatch.setattr(
+        gcs.service_account.Credentials,
+        "from_service_account_info",
+        lambda info, scopes: StubCredentials(),
+    )
     return gcs
 
 
@@ -898,11 +923,11 @@ class StubCredentials:
 
 
 def test_the_adapter_uploads_create_only_to_googles_own_address(gcs):
-    store = gcs.GCSStore("fake-pilot-bucket")
+    store = gcs.GCSStore("fake-pilot-bucket", KEY)
     assert store.add("fake/name.md", b"text", "text/markdown") == "added"
     (made,) = StubClient.made
     assert made["client_options"] == {"api_endpoint": "https://storage.googleapis.com"}
-    assert made["project"] == gcs.NO_PROJECT
+    assert made["project"] == "fake-project"  # from the key, so nothing goes looking
 
 
 def test_the_adapter_sends_the_create_only_condition(gcs, monkeypatch):
@@ -914,7 +939,7 @@ def test_the_adapter_sends_the_create_only_condition(gcs, monkeypatch):
         blobs.append(self)
 
     monkeypatch.setattr(StubClient, "__init__", keep)
-    gcs.GCSStore("fake-pilot-bucket").add("fake/name.md", b"text", "text/markdown")
+    gcs.GCSStore("fake-pilot-bucket", KEY).add("fake/name.md", b"text", "text/markdown")
     (call,) = blobs[0].blobs[0].calls
     assert call["if_generation_match"] == 0
 
@@ -923,7 +948,10 @@ def test_the_adapter_reports_a_taken_name_as_exists(gcs):
     from google.api_core import exceptions as api
 
     StubClient.error = api.PreconditionFailed("taken")
-    assert gcs.GCSStore("fake-pilot-bucket").add("fake/name.md", b"t", "text/markdown") == "exists"
+    assert (
+        gcs.GCSStore("fake-pilot-bucket", KEY).add("fake/name.md", b"t", "text/markdown")
+        == "exists"
+    )
 
 
 def test_the_adapter_never_shows_a_token_from_a_sign_in_error(gcs):
@@ -931,7 +959,7 @@ def test_the_adapter_never_shows_a_token_from_a_sign_in_error(gcs):
 
     StubClient.error = auth.RefreshError("refresh failed for token ya29.FAKE-TOKEN-1234")
     with pytest.raises(SignInError) as e:
-        gcs.GCSStore("fake-pilot-bucket").add("fake/name.md", b"t", "text/markdown")
+        gcs.GCSStore("fake-pilot-bucket", KEY).add("fake/name.md", b"t", "text/markdown")
     assert "FAKE-TOKEN" not in str(e.value)
 
 
@@ -940,8 +968,9 @@ def test_the_adapter_shows_only_the_type_of_a_network_error(gcs):
 
     StubClient.error = auth.TransportError("connection to FAKE-HOST failed")
     with pytest.raises(StoreError) as e:
-        gcs.GCSStore("fake-pilot-bucket").add("fake/name.md", b"t", "text/markdown")
-    assert "TransportError" in str(e.value) and "FAKE-HOST" not in str(e.value)
+        gcs.GCSStore("fake-pilot-bucket", KEY).add("fake/name.md", b"t", "text/markdown")
+    assert "Couldn't reach Google Cloud Storage" in str(e.value)
+    assert "FAKE-HOST" not in str(e.value)
 
 
 def test_the_adapter_signs_in_before_any_upload(gcs):
@@ -949,13 +978,13 @@ def test_the_adapter_signs_in_before_any_upload(gcs):
 
     StubCredentials.error = auth.RefreshError("refresh failed for token ya29.FAKE-TOKEN-1234")
     with pytest.raises(SignInError) as e:
-        gcs.GCSStore("fake-pilot-bucket")
+        gcs.GCSStore("fake-pilot-bucket", KEY)
     assert StubClient.made == [], "a client was made, so an upload could start"
     assert "FAKE-TOKEN" not in str(e.value) and "Nothing was sent" in str(e.value)
 
 
 def test_the_adapter_uses_the_checked_sign_in(gcs):
-    gcs.GCSStore("fake-pilot-bucket")
+    gcs.GCSStore("fake-pilot-bucket", KEY)
     (made,) = StubClient.made
     assert isinstance(made["credentials"], StubCredentials)
 
@@ -1061,3 +1090,158 @@ def test_a_store_setting_error_never_shows_the_config_path(tmp_path):
     make_scrub(tmp_path / "data", {DAY: DAY_TEXT})
     message = refused(cfg, "producer")
     assert "Fakey" not in message
+
+
+# Paul's review of #114: the team's key, copies not approved for release, the local record
+# and clearer messages.
+
+
+def test_no_store_key_stops_the_push(data):
+    message = refused(config(data, key=None), "There's no store key", "store-key.json")
+    assert str(data) not in message
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        {**KEY, "type": "authorized_user"},  # a person's own Google login
+        {**KEY, "private_key": ""},
+        {"type": "service_account"},
+        ["not", "a", "key"],
+    ],
+)
+def test_a_file_that_isnt_a_service_account_key_stops_the_push(data, key):
+    message = refused(config(data, key=key), "isn't a Google service account key")
+    assert "FAKE-NOT-A-KEY" not in message and "fake-uploader" not in message
+
+
+def test_a_key_file_that_isnt_json_stops_the_push(data):
+    cfg = config(data)
+    (cfg.path.parent / "store-key.json").write_text("FAKE-NOT-A-KEY {", encoding="utf-8")
+    message = refused(cfg, "isn't a Google service account key")
+    assert "FAKE-NOT-A-KEY" not in message
+
+
+def test_a_key_inside_a_git_repository_stops_the_push(data):
+    cfg = config(data)
+    (cfg.path.parent / ".git").mkdir()
+    refused(cfg, "inside a git repository or a synced folder")
+
+
+def test_a_key_inside_a_synced_folder_stops_the_push(tmp_path):
+    data = tmp_path / "Dropbox" / "data"
+    make_scrub(data, {DAY: DAY_TEXT})
+    refused(config(data), "inside a git repository or a synced folder")
+
+
+def test_the_key_is_passed_to_the_store_and_never_shown(data, capsys):
+    opener = Opener()
+    report = push(config(data), opener)
+    assert opener.key == KEY
+    assert "FAKE-NOT-A-KEY" not in report
+
+
+def test_copies_not_approved_are_refused_without_the_setting(data):
+    for value in ("", "no"):
+        message = refused(config(data, send_not_approved=value), "not approved for release")
+        assert 'send_not_approved = "yes"' in message
+
+
+def test_a_send_not_approved_value_other_than_yes_or_no_stops_the_push(data):
+    refused(config(data, send_not_approved="true"), 'must be "yes" or "no"')
+
+
+def test_copies_not_approved_go_to_their_own_part_of_the_folder(data):
+    store = FakeStore()
+    push(config(data), Opener(store))
+    assert store.objects and all(
+        name.startswith("fake-team/not-approved/fake-producer/fake-project/")
+        for name in store.objects
+    )
+
+
+def test_a_manifest_that_says_approved_stops_the_push(tmp_path):
+    # No scrub writes it until #117, so it could only come from an edited manifest.
+    make_scrub(
+        tmp_path / "data",
+        {DAY: DAY_TEXT},
+        manifest_edit=lambda m: m.update(approved_for_release=True),
+    )
+    refused(config(tmp_path / "data"), "manifest.json")
+
+
+def local_records(data: Path) -> list[dict]:
+    return [json.loads(f.read_text("utf-8")) for f in sorted((data / "pushes").glob("*.json"))]
+
+
+def test_each_push_keeps_its_record_on_this_computer(data):
+    store = FakeStore()
+    report = push(config(data), Opener(store))
+    (kept,) = local_records(data)
+    assert kept["complete"] is True and len(kept["copies"]) == 3
+    assert kept == records(store)[0]
+    assert "pushes/" in report and "in your data folder" in report
+
+
+def test_a_push_that_stops_partway_still_keeps_its_record(data):
+    with pytest.raises(PushError) as e:
+        push(config(data), Opener(FakeStore(fail_after=1)))
+    (kept,) = local_records(data)
+    assert kept["complete"] is False
+    assert [c["result"] for c in kept["copies"]] == ["added"]
+    assert "pushes/" in str(e.value) and "Nothing was sent" not in str(e.value)
+
+
+def test_a_record_that_fails_to_send_is_still_kept_here(data):
+    with pytest.raises(PushError):
+        push(config(data), Opener(RecordFails()))
+    (kept,) = local_records(data)
+    assert kept["complete"] is True
+
+
+def test_a_refused_push_keeps_no_record(data):
+    refused(config(data, key=None))
+    assert not (data / "pushes").exists()
+
+
+def test_a_local_pushes_folder_thats_a_link_stops_the_push(data, tmp_path):
+    (tmp_path / "elsewhere").mkdir()
+    symlink(data / "pushes", tmp_path / "elsewhere")
+    refused(config(data), "pushes/")
+
+
+def test_the_adapter_reports_a_turned_down_key_with_the_fix(gcs):
+    from google.auth import exceptions as auth
+
+    StubClient.error = auth.RefreshError("invalid_grant for FAKE-NOT-A-KEY")
+    with pytest.raises(SignInError) as e:
+        gcs.GCSStore("fake-pilot-bucket", KEY).add("fake/name.md", b"t", "text/markdown")
+    assert "clock" in str(e.value) and "FAKE-NOT-A-KEY" not in str(e.value)
+
+
+def test_the_adapter_shows_only_the_code_of_a_google_error(gcs):
+    from google.api_core import exceptions as api
+
+    StubClient.error = api.ServiceUnavailable("FAKE-DETAIL from Google")
+    with pytest.raises(StoreError) as e:
+        gcs.GCSStore("fake-pilot-bucket", KEY).add("fake/name.md", b"t", "text/markdown")
+    assert "code 503" in str(e.value) and "FAKE-DETAIL" not in str(e.value)
+
+
+def test_the_adapter_says_the_key_cant_add_to_the_folder(gcs):
+    from google.api_core import exceptions as api
+
+    StubClient.error = api.Forbidden("FAKE-DETAIL")
+    with pytest.raises(StoreError, match="this team's key can't add files"):
+        gcs.GCSStore("fake-pilot-bucket", KEY).add("fake/name.md", b"t", "text/markdown")
+
+
+def test_the_adapter_refuses_a_key_google_cant_read(gcs, monkeypatch):
+    def unreadable(info, scopes):
+        raise ValueError("bad key FAKE-NOT-A-KEY")
+
+    monkeypatch.setattr(gcs.service_account.Credentials, "from_service_account_info", unreadable)
+    with pytest.raises(SignInError) as e:
+        gcs.GCSStore("fake-pilot-bucket", KEY)
+    assert "isn't a Google service account key" in str(e.value)
+    assert "FAKE-NOT-A-KEY" not in str(e.value)

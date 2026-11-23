@@ -1,39 +1,43 @@
 """The pilot store: a Google Cloud Storage bucket (STO-1, decision D3), behind `Store`.
 
-The producer signs in once with their own Google account:
-    gcloud auth application-default login
-and the team's folder in the bucket gives them "Storage Object Creator" only: they can add
-files there and nothing else. Every upload is create-only (`if_generation_match=0`), so the
-bucket itself refuses to overwrite a file, even if our own checks were wrong (STO-3).
+The push signs in with the team's upload-only service account key, `store-key.json` next
+to config.toml (store/push.py reads and checks it). In the bucket that account has "Storage
+Object Creator" on the team's folder only: it can add files there, and can't read, change or
+delete anything. Every upload is also create-only (`if_generation_match=0`), so the bucket
+itself refuses to overwrite a file, even if our own checks were wrong (STO-3).
 
-diffdata never reads, stores or prints the sign-in token: Google's library finds it.
+diffdata never prints, stores or sends the key's contents anywhere but to Google's library.
 Push imports this module only when a real push runs. Its own tests use a stand-in for
-Google's client and sign-in, with no bucket, credentials or network.
+Google's client and sign-in, with no bucket, key or network.
 """
 
-import google.auth
 from google.api_core import exceptions as api
 from google.auth import exceptions as auth
 from google.auth.transport.requests import Request
 from google.cloud import storage
+from google.oauth2 import service_account
 
 from diffdata.store.backend import Added, SignInError, StoreError
 
-SIGN_IN = (
-    "Couldn't sign in to Google Cloud Storage. Run `gcloud auth application-default login` "
-    "once, sign in with the Google account the project team gave access to, then run again. "
+TURNED_DOWN = (
+    "Google turned down the store key. It may have been replaced or revoked, or this "
+    "computer's clock may be wrong. Check the clock, or ask the project team for a new key. "
     "Nothing was sent."
 )
-
+NOT_A_KEY = (
+    "~/.diffdata/store-key.json isn't a Google service account key. Ask the project team for a "
+    "new one. Nothing was sent."
+)
+UNREACHABLE = (
+    "Couldn't reach Google Cloud Storage: the network dropped or Google didn't answer in time. "
+    "Check your internet connection and run again."
+)
 
 # Google's own address, set here so no setting in the environment can send uploads elsewhere.
 ENDPOINT = "https://storage.googleapis.com"
-# Adding files to a bucket needs no Cloud project, and a producer's sign-in may not name one.
-# This is the library's own placeholder (as in its create_anonymous_client), so it doesn't
-# go looking for one.
+# Adding files to a bucket needs no Cloud project. The key names one; if it doesn't, this is
+# the library's own placeholder (as in its create_anonymous_client).
 NO_PROJECT = "<none>"
-
-
 # The narrowest scope Google offers that can upload. It would also allow overwriting and
 # deleting: what stops those is the folder's "Storage Object Creator" role, plus the
 # create-only condition on every upload.
@@ -41,15 +45,22 @@ SCOPES = ["https://www.googleapis.com/auth/devstorage.read_write"]
 
 
 class GCSStore:
-    def __init__(self, bucket: str):
-        # Sign in fully before any upload, so no copy is sent with a sign-in that then fails.
+    def __init__(self, bucket: str, key: dict):
         try:
-            credentials, _ = google.auth.default(scopes=SCOPES)
+            credentials = service_account.Credentials.from_service_account_info(key, scopes=SCOPES)
+        except (ValueError, KeyError, TypeError):
+            # Its message could quote part of the key, so it's never shown.
+            raise SignInError(NOT_A_KEY) from None
+        # Sign in fully before any upload, so no copy is sent with a key that then fails.
+        try:
             credentials.refresh(Request())
-        except (auth.DefaultCredentialsError, auth.RefreshError, auth.TransportError):
-            raise SignInError(SIGN_IN) from None
+        except auth.RefreshError:
+            raise SignInError(TURNED_DOWN) from None
+        except auth.TransportError:
+            raise StoreError(f"{UNREACHABLE} Nothing was sent.") from None
+        project = key.get("project_id")
         client = storage.Client(
-            project=NO_PROJECT,
+            project=project if isinstance(project, str) and project else NO_PROJECT,
             credentials=credentials,
             client_options={"api_endpoint": ENDPOINT},
         )
@@ -61,11 +72,11 @@ class GCSStore:
             blob.upload_from_string(data, content_type=content_type, if_generation_match=0)
         except api.PreconditionFailed:
             return "exists"  # create-only: the name is taken, and the stored file is unchanged
-        except (auth.RefreshError, auth.DefaultCredentialsError, api.Unauthorized):
-            raise SignInError(SIGN_IN) from None
+        except (auth.RefreshError, api.Unauthorized):
+            raise SignInError(TURNED_DOWN) from None
         except api.Forbidden:
             raise StoreError(
-                "Google Cloud Storage refused the upload: this account can't add files to the "
+                "Google Cloud Storage refused the upload: this team's key can't add files to the "
                 "folder in config.toml's [store]. Check bucket and folder, or ask the project "
                 "team for access."
             ) from None
@@ -73,13 +84,13 @@ class GCSStore:
             raise StoreError(
                 "Google Cloud Storage has no bucket by the name in config.toml's [store]."
             ) from None
-        except (
-            api.GoogleAPICallError,
-            api.RetryError,
-            auth.TransportError,
-        ) as e:
-            # Retries ran out, or the network failed: the run reports how many were added.
+        except (api.RetryError, auth.TransportError):
+            raise StoreError(UNREACHABLE) from None
+        except api.GoogleAPICallError as e:
+            # The code is a number, so it's safe to show. The message could quote anything.
+            code = f" (code {e.code})" if isinstance(e.code, int) else ""
             raise StoreError(
-                f"Google Cloud Storage stopped the upload ({type(e).__name__})."
+                f"Google Cloud Storage stopped the upload with an error on its side{code}. Wait "
+                "a few minutes and run again."
             ) from None
         return "added"

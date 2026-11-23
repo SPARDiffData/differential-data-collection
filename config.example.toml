@@ -32,11 +32,15 @@ data_dir = "~/diffdata-data"
 [store]
 # STO-1: the pilot store is a Google Cloud Storage bucket (decision D3 in the Second
 # Half Plan). `uv run diffdata push` sends your scrubbed copies there, and refuses to run
-# until every setting below is filled in. Sign in once first, with the Google account the
-# project team gave access to: gcloud auth application-default login
+# until every setting below is filled in. The project team gives your team this whole block
+# except producer, and a key file: save it as store-key.json next to this file. It can only
+# add files to your team's folder. Never share it or open it in an AI tool.
 backend = "gcs"
 bucket = ""    # the bucket's name, from the project team
 folder = ""    # your team's folder in the bucket, from the project team
 producer = ""  # a short handle for you, like "team-a-1": not your full name
-project = ""   # your project's short name, like "diffdata"
+project = ""   # your project's short name, from the project team
+# Copies are marked not approved for release until phone numbers, meeting links and secrets
+# are checked. "yes" sends them anyway, to a part of the folder consumers never get.
+send_not_approved = "no"
 # folder, producer and project are plain names: letters, digits, - and _ only.
