@@ -341,13 +341,14 @@ def test_the_review_agent_runs_review_pr_without_posting():
 
 
 def test_review_pr_asks_for_a_box_the_pr_template_has():
-    # /review-pr checks Paul's consent, scrub and store PRs for this box by its opening words.
+    # /review-pr checks consent, scrub and store PRs for this box by its opening words.
     template = (ROOT / ".github" / "pull_request_template.md").read_text(encoding="utf-8")
     review_pr = (ROOT / ".claude" / "commands" / "review-pr.md").read_text(encoding="utf-8")
-    box = "Paul's own consent, scrub or store PR"
+    box = "Consent, scrub or store"
     assert f"- [ ] {box}:" in template
     assert f'box that starts "{box}"' in review_pr
     assert "Solo phase:" not in template
+    assert "Paul's own consent, scrub or store PR:" not in template
 
 
 def test_review_pr_reads_a_contributing_section_that_exists():

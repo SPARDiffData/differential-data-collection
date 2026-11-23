@@ -42,8 +42,8 @@ You can also open Claude Code in an empty folder and say: "Walk me through the o
 3. **Work with Claude.** Start with: *"Read Issue #12 and propose a plan."* Claude reads `CLAUDE.md` for our rules. Check the plan before saying go. If you'd like a more structured plan, run `/plan-issue 12` instead. Claude asks its open questions first, then writes the plan in plan mode, and once you approve, posts it on the Issue so it isn't lost when the session ends. It's optional: plan whichever way suits you.
 4. **Run the tests:** *"Run the tests and the linter."* (That's `uv run pytest` and `uv run ruff check`.)
 5. **Push and open a PR:** *"Commit, push and open a PR with the template."* Check it says `Closes #12` and lists the requirement IDs.
-6. **Get a review.** Tell Claude: *"Review PR #34 with the pr-reviewer agent, and post the review."* The agent runs `/review-pr` in its own context: it doesn't see your conversation, and it has no file-editing tools. Claude posts only the review; the agent's last lines are notes for Claude, not for the PR. Or open a new, separate Claude session in the repo and run `/review-pr 34` there; it posts when you say yes. Either way you get a short review split into must-fix and nice-to-have. Fix the must-fix items, push, and run it again. Then ask Paul to review it: on the PR page, click **Reviewers** on the right and choose Paul. See [Review policy](#review-policy). To check a PR quickly, a reviewer can also run `/debrief 34`. It makes a one-page summary, as a private claude.ai page, of what was asked, what was delivered and which decisions need a look. It's optional and doesn't replace `/review-pr`.
-7. **Merge.** When CI is green and the review is done, click **Squash and merge** on the PR page. GitHub deletes the branch for you.
+6. **Get a review.** Tell Claude: *"Review PR #34 with the pr-reviewer agent, and post the review."* The agent runs `/review-pr` in its own context: it doesn't see your conversation, and it has no file-editing tools. Claude posts only the review; the agent's last lines are notes for Claude, not for the PR. Or open a new, separate Claude session in the repo and run `/review-pr 34` there; it posts when you say yes. Either way you get a short review split into must-fix and nice-to-have. Fix the must-fix items, push, and run it again. If you have Codex, run its review too. You don't need to wait for Paul: see [Review policy](#review-policy). To check a PR quickly, a reviewer can also run `/debrief 34`. It makes a one-page summary, as a private claude.ai page, of what was asked, what was delivered and which decisions need a look. It's optional and doesn't replace `/review-pr`.
+7. **Merge.** When CI is green and the reviews are done, click **Squash and merge** on the PR page. GitHub deletes the branch for you. Put the PR in that day's update to Paul (see [Review policy](#review-policy)).
 8. **Tidy up:** *"Switch back to main and pull."*
 
 ## When `main` moved under you
@@ -69,48 +69,61 @@ Find your lane from the requirement IDs in your Issue.
 
 ## Review policy
 
+Since 2026-11-23, PRs don't wait for Paul. Lachlan works on the project full time, and waiting for Paul's approval made him a bottleneck, so Paul asked for this change. Paul checks the work after it merges instead, from a daily update.
+
 Every PR gets reviewed before merge:
 
-- **`/review-pr` first, on every PR.** It's a quick, independent check that catches must-fix items before anyone else spends time on them. It runs in its own context: either as the `pr-reviewer` agent (`.claude/agents/pr-reviewer.md`), which takes only the PR number and has no file-editing tools, or in a separate Claude session.
-- **Paul reviews teammates' PRs.** His Claude session runs the same AI reviews and posts them on the PR. It never pushes to a teammate's branch: the author makes the fixes, and decisions go to Paul.
-- **A human reviews anything touching consent, scrub or store.** For a teammate's PR, that's Paul. For Paul's own, see [Human review for consent, scrub and store](#human-review-for-consent-scrub-and-store).
-- **If Paul becomes a bottleneck,** we'll change this. Any human can review, whichever AI they use.
+- **`/review-pr` first, on every PR.** It's a quick, independent check that catches must-fix items early. It runs in its own context: either as the `pr-reviewer` agent (`.claude/agents/pr-reviewer.md`), which takes only the PR number and has no file-editing tools, or in a separate Claude session.
+- **A Codex review on top, recommended.** See [Codex, a second AI review](#codex-a-second-ai-review).
+- **The author reviews and merges.** When CI is green, `/review-pr` has nothing under Must fix, and Codex's high findings are fixed or answered, the author merges. A teammate's review is welcome but not required. No PR waits for Paul's approval.
+- **Consent, scrub and store get human checks too.** The author does them: see [Human review for consent, scrub and store](#human-review-for-consent-scrub-and-store).
+- **Claude never pushes to a teammate's branch.** The author makes the fixes on their own PR.
 
-### Codex, for risky changes
+### The daily update to Paul
 
-Codex, OpenAI's coding agent, gives a second AI review, from a different company. Two models catch more than one. It runs on Paul's machine with a paid API key, so it's used only where it's worth the cost:
+At the end of each working day, whoever merged PRs sends Paul a short update in the team Slack channel. Claude can draft it. It lists:
+
+- each PR merged that day: what it changes, in a line or two
+- decisions made without Paul, and why
+- anything that may need fixing, or that Paul should check
+
+Paul reads it when he can and asks for changes where he thinks they're needed. Each request becomes an Issue, or a fix on the PR if it hasn't merged yet. If Paul hasn't seen something yet, that doesn't block the next step.
+
+### Codex, a second AI review
+
+Codex, OpenAI's coding agent, gives a second AI review, from a different company. It catches things Claude misses, so we recommend it on top of `/review-pr`, especially for:
 - code under `src/` that touches consent, scrub or store, or a stored format
 - a hook or permission in `.claude/`
 - large changes
 
-Whether it runs is agreed when the work starts: Claude says whether it's worth it, and Paul confirms along with the plan.
+It's a recommendation, not a requirement: whoever has Codex runs it, and anyone without it skips it. If Codex is skipped on one of the changes above, say so in the PR.
 
-Codex runs after `/review-pr`, once that review's must-fix items are fixed: on the same commit if there are none, otherwise on the fix commit. That way it doesn't spend a paid run reporting what's already being fixed, and it sees the fixes, which is where new bugs tend to hide.
+Codex runs after `/review-pr`, once that review's must-fix items are fixed: on the same commit if there are none, otherwise on the fix commit. That way it doesn't report what's already being fixed, and it sees the fixes, which is where new bugs tend to hide.
 
-Codex runs on a separate worktree of the PR branch, so nobody's folder has to switch branches, and at most twice per PR. It never gets the data folder, `config.toml` or `.env`, because it sends what it reads to OpenAI. That's why `config.toml` and `.env` live in `~/.diffdata/`, outside the repo folder. Teammates without Codex skip it.
+Codex runs on a separate worktree of the PR branch, so nobody's folder has to switch branches, and at most twice per PR. It never gets the data folder, `config.toml` or `.env`, because it sends what it reads to OpenAI. That's why `config.toml` and `.env` live in `~/.diffdata/`, outside the repo folder.
 
-### How Claude runs the reviews on Paul's PRs
+### How Claude runs the reviews
 
-Since 2026-10-16, the Claude session that wrote the code runs the reviews itself, so Paul doesn't carry results between sessions:
+The Claude session that wrote the code runs the reviews itself, so nobody carries results between sessions:
 
 1. Once the PR is open and CI passes, it runs the `pr-reviewer` agent. It posts the review on the PR word for word, leaving out the agent's notes after the review: its Codex focus line and its list of denied tool calls.
-2. If Codex was agreed and the review has nothing under Must fix, Codex runs next, on the same commit, with that focus line. Its output is posted word for word too.
+2. If the user has Codex and the review has nothing under Must fix, Codex runs next, on the same commit, with that focus line. Its output is posted word for word too.
 3. It fixes the must-fix items, Codex's high findings, and small items inside the PR's own lines. Everything else goes into one follow-up Issue for the PR. After each round of fixes, a "Review fixes" comment lists what was fixed, what was backlogged, and what wasn't changed and why.
-4. It runs `/review-pr` once more on the fix commit. If Codex was agreed and hasn't run yet, because the first review had must-fix items, Codex runs on the fix commit at the same time. Codex's findings from that run, and the re-review's nice-to-haves, are handled as in step 3, with their own "Review fixes" comment. If the re-review itself still has must-fix items, it stops and asks Paul instead of fixing them. Codex runs at most twice per PR. The commit Paul merges always gets a final `/review-pr`, even when fixes land after the last round: the limit is on fix rounds and on Codex, not on checking what gets merged.
-5. It gives Paul one line: the verdict, what was fixed and backlogged, and what needs him. Paul does the human checks the PR needs (see [Human review for consent, scrub and store](#human-review-for-consent-scrub-and-store)), then merges.
+4. It runs `/review-pr` once more on the fix commit. If Codex hasn't run yet, because the first review had must-fix items, Codex runs on the fix commit at the same time. Codex's findings from that run, and the re-review's nice-to-haves, are handled as in step 3, with their own "Review fixes" comment. If the re-review itself still has must-fix items, it stops and asks the user instead of fixing them. Codex runs at most twice per PR. The commit that merges always gets a final `/review-pr`, even when fixes land after the last round: the limit is on fix rounds and on Codex, not on checking what gets merged.
+5. It gives the user one line: the verdict, what was fixed and backlogged, and what needs them. The user does the human checks the PR needs (see below), merges, and adds the PR to the daily update.
 
 ### Human review for consent, scrub and store
 
-These lanes decide what we collect, what we remove before release and where data goes, so a mistake there costs people's trust. For Paul's own PRs in these lanes, each person checks what they check best:
+These lanes decide what we collect, what we remove before release and where data goes, so a mistake there costs people's trust. The person who opens the PR does these checks, whoever they are:
 
-1. **Before coding, the rules in plain words.** The plan lists what the code must refuse or stop on, and what happens instead: its must-refuse list. Paul approves it along with the plan. `/plan-issue` asks for it.
-2. **Before merge, a hands-on check.** Paul runs the change himself, or watches a demo, and sees each refusal happen.
-3. **A teammate who reads Python reads the code.** That's Lachlan, who leads legal and compliance.
-4. **Both AI reviews,** `/review-pr` and Codex, with Codex always run.
+1. **Before coding, the rules in plain words.** The plan lists what the code must refuse or stop on, and what happens instead: its must-refuse list. The author approves it along with the plan, and it goes on the Issue. `/plan-issue` asks for it.
+2. **Before merge, a hands-on check.** The author runs the change, or watches a demo, and sees each refusal happen. Each item on the list also has a test.
+3. **The author reads the code.** A teammate's read is welcome but not required.
+4. **Both AI reviews:** `/review-pr`, and Codex if the author has it.
 
-The PR says it got this review by ticking the template's box for it.
+The PR says it got this review by ticking the template's box for it. The daily update names it, so Paul can check the must-refuse list after the fact.
 
-**How we got here.** From 2026-10-09 to 2026-10-16, Paul worked solo, and the AI review plus his own read counted as the human review. Until 2026-10-23, Paul read every changed line himself. His hands-on runs caught more than those reads did: on #59, a real export run found a bug that every AI review had missed.
+**How we got here.** From 2026-10-09 to 2026-10-16, Paul worked solo, and the AI review plus his own read counted as the human review. Until 2026-10-23, Paul read every changed line himself. His hands-on runs caught more than those reads did: on #59, a real export run found a bug that every AI review had missed. Until 2026-11-23, Paul reviewed every teammate's PR, and ran Codex for the team. From 2026-11-23, authors review and merge their own PRs, Paul gets a daily update, and Codex is recommended for anyone who has it.
 
 ## Getting help
 
