@@ -32,6 +32,7 @@ import json
 import os
 import re
 import stat
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -40,8 +41,9 @@ from pathlib import Path
 
 from diffdata import __version__
 from diffdata.common.config import Config
-from diffdata.scrub.people import PEOPLE_FILE, PeopleError, read_people
-from diffdata.scrub.run import IN_PROGRESS, LOCK, PRIVATE, SCRUBBED, is_link
+from diffdata.discover.slack_inbox import applied_stamp, opt_out_stamp
+from diffdata.scrub.people import PEOPLE_FILE, PeopleError, nfc, read_people
+from diffdata.scrub.run import CHANNEL_LINE, IN_PROGRESS, LOCK, PRIVATE, SCRUBBED, is_link
 from diffdata.scrub.text import CHECKS, Scrubber
 from diffdata.store.backend import SignInError, Store, StoreError
 
@@ -56,10 +58,16 @@ BUCKET = re.compile(r"[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?")
 SLACK_COPY = re.compile(r"slack/export/(?P<id>[A-Z0-9]+)/(?P<date>\d{4}-\d{2}-\d{2})\.md")
 CANVAS_COPY = re.compile(r"documents/current/slack-canvas_(?P<id>[A-Z0-9]+)\.md")
 SHA256 = re.compile(r"[0-9a-f]{64}")
-# A manifest entry has exactly the fields a scrub writes.
+# A manifest, and each entry in it, has exactly the fields a scrub writes.
+MANIFEST_FIELDS = {"tool", "approved_for_release", "note", "opt_out_stamp", "copies", "held_back"}
 COPY_FIELDS = {"source", "id", "path", "sha256", "checks", "flags"}
 HELD_FIELDS = {"source", "id", "why"}
-SOURCES = ("slack", "slack-canvas")
+# Each source's IDs, as a scrub writes them.
+HELD_IDS = {
+    "slack": re.compile(r"[A-Z0-9]+/\d{4}-\d{2}-\d{2}"),
+    "slack-canvas": re.compile(r"[A-Z0-9]+"),
+}
+IP_ADDRESS = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}")
 # A canvas copy's date is the day it last changed, from its header.
 LAST_CHANGED = re.compile(r"^last_changed: (\d{4}-\d{2}-\d{2})", re.MULTILINE)
 MARKDOWN = "text/markdown; charset=utf-8"
@@ -96,6 +104,8 @@ def bucket_name(name: str) -> bool:
     """Whether `name` follows Google Cloud Storage's naming rules for a bucket."""
     if not BUCKET.fullmatch(name) or name.startswith("goog") or "google" in name:
         return False
+    if IP_ADDRESS.fullmatch(name):
+        return False
     if "." in name:
         return len(name) <= 222 and all(1 <= len(part) <= 63 for part in name.split("."))
     return 3 <= len(name) <= 63
@@ -111,7 +121,8 @@ def settings(config: Config) -> Settings:
         config.store_producer,
         config.store_project,
     )
-    where = f"under [store] in {config.path}" if config.path else "under [store] in config.toml"
+    # Not config.path: it holds the computer's user name, and the output may be shared.
+    where = "under [store] in config.toml"
     missing = [key for key, value in vars(found).items() if not value.strip()]
     if missing:
         raise PushError(
@@ -178,7 +189,9 @@ def read_plain(root: Path, relative: str) -> bytes | None:
         path = path / part if part else path
         if is_link(path):
             return None
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    # Without following a link, and without waiting: a named pipe would otherwise hang here.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_BINARY", 0)
     try:
         handle = os.open(path, flags)
     except OSError:
@@ -191,7 +204,8 @@ def read_plain(root: Path, relative: str) -> bytes | None:
 
 
 def unsafe_entry(folder: Path) -> bool:
-    """Whether `folder` holds a link, or a file with a second hard link, at any depth."""
+    """Whether `folder` holds a link, a file with a second hard link, or anything that's
+    neither a folder nor a plain file (a named pipe, say), at any depth."""
     with os.scandir(folder) as entries:
         for entry in entries:
             if entry.is_symlink() or entry.is_junction():
@@ -199,8 +213,10 @@ def unsafe_entry(folder: Path) -> bool:
             if entry.is_dir(follow_symlinks=False):
                 if unsafe_entry(Path(entry.path)):
                     return True
+                continue
             # os.stat, not entry.stat: on Windows a DirEntry's st_nlink is always 0.
-            elif os.stat(entry.path, follow_symlinks=False).st_nlink != 1:
+            info = os.stat(entry.path, follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 return True
     return False
 
@@ -232,8 +248,9 @@ def read_manifest(data: Path) -> dict:
         )
     if unsafe_entry(scrubbed):
         raise PushError(
-            f"{SCRUBBED}/ in your data folder holds a link, which could send a file from somewhere "
-            f"else. Run uv run diffdata scrub again to rebuild it. {NOTHING_SENT}"
+            f"{SCRUBBED}/ in your data folder holds a link, or something that isn't a plain file, "
+            f"which could send a file from somewhere else. Run uv run diffdata scrub again to "
+            f"rebuild it. {NOTHING_SENT}"
         )
     broken = (
         f"{SCRUBBED}/{MANIFEST} is missing or isn't in the shape a scrub writes. Run uv run "
@@ -248,10 +265,12 @@ def read_manifest(data: Path) -> dict:
         raise PushError(broken) from None
     if not (
         isinstance(manifest, dict)
-        and isinstance(manifest.get("copies"), list)
-        and isinstance(manifest.get("held_back"), list)
+        and manifest.keys() == MANIFEST_FIELDS
+        and all(isinstance(manifest[k], str) for k in ("tool", "note", "opt_out_stamp"))
+        and isinstance(manifest["copies"], list)
+        and isinstance(manifest["held_back"], list)
         # Every scrub so far marks its copies not approved: until SCR-1, nothing else is right.
-        and manifest.get("approved_for_release") is False
+        and manifest["approved_for_release"] is False
         and all(isinstance(c, dict) for c in manifest["copies"] + manifest["held_back"])
     ):
         raise PushError(broken)
@@ -259,7 +278,8 @@ def read_manifest(data: Path) -> dict:
         if not (
             held.keys() == HELD_FIELDS
             and all(isinstance(held[k], str) for k in HELD_FIELDS)
-            and held["source"] in SOURCES
+            and held["source"] in HELD_IDS
+            and HELD_IDS[held["source"]].fullmatch(held["id"])
         ):
             raise PushError(broken)
     for copy in manifest["copies"]:
@@ -270,6 +290,7 @@ def read_manifest(data: Path) -> dict:
             and copy["checks"] == list(CHECKS)
             and isinstance(copy["flags"], int)
             and not isinstance(copy["flags"], bool)
+            and copy["flags"] >= 0
             and SHA256.fullmatch(copy["sha256"])
         ):
             raise PushError(broken)
@@ -302,11 +323,19 @@ def last_check(data: Path) -> Scrubber:
         ) from None
 
 
-def plan(data: Path, prefix: str) -> tuple[dict, list[Upload], int]:
+def plan(data: Path, prefix: str, opted_out=()) -> tuple[dict, list[Upload], int]:
     """Every check on the copies, before anything is sent. Returns the manifest, what to send,
     and how many canvas copies were left out for having no date. A copy is named by its place
     in the manifest, never by its path: the manifest could have been edited."""
     manifest = read_manifest(data)
+    if not (manifest["opt_out_stamp"] == applied_stamp(data) == opt_out_stamp(opted_out)):
+        # The copies were made under a different opt-out list than the one in config.toml
+        # now, or than the last build applied: they could hold someone who has opted out.
+        raise PushError(
+            f"slack_opted_out in config.toml has changed since these copies were made. Run uv "
+            f"run diffdata discover slack build, then uv run diffdata scrub, then push. "
+            f"{NOTHING_SENT}"
+        )
     scrubbed = data / SCRUBBED
     held = {(h["source"], h["id"]) for h in manifest["held_back"]}
     scrubber = last_check(data) if manifest["copies"] else None
@@ -340,11 +369,21 @@ def plan(data: Path, prefix: str) -> tuple[dict, list[Upload], int]:
             text = content.decode("utf-8")
         except UnicodeDecodeError:
             raise PushError(f"{which} isn't UTF-8 text. {NOTHING_SENT}") from None
-        if scrubber.leftovers(text):
+        if scrubber.leftovers(text) or scrubber.scrub(text)[0] != nfc(text):
+            # A scrubbed copy is left as it is by scrubbing it again. Anything the scrub
+            # would still change, such as a mention it doesn't know, means it isn't one.
             raise PushError(
-                f"{which} still holds a name, a Slack ID or an email, so it isn't a scrubbed "
-                f"copy. Run uv run diffdata scrub again. {NOTHING_SENT}"
+                f"{which} still holds something the scrub replaces, such as a name, a Slack ID, "
+                f"an email or a mention, so it isn't a scrubbed copy. Run uv run diffdata scrub "
+                f"again. {NOTHING_SENT}"
             )
+        if slack:
+            channel = CHANNEL_LINE.search(text.partition("\n---\n")[0])
+            if channel is None or channel[1] != slack["id"]:
+                raise PushError(
+                    f"{which} has a header that doesn't name its channel. Run uv run diffdata "
+                    f"scrub again. {NOTHING_SENT}"
+                )
         name = object_name(prefix, copy, text)
         if name is None:
             undated += 1
@@ -375,7 +414,7 @@ def push(config: Config, opener: Callable[[str], Store] | None = None) -> str:
     found = settings(config)
     check_environment()
     with holding_lock(config.data_dir):
-        manifest, uploads, undated = plan(config.data_dir, found.prefix)
+        manifest, uploads, undated = plan(config.data_dir, found.prefix, config.slack_opted_out)
         store = (opener or open_gcs)(found.bucket)  # signs in: only after every check passed
         results = []
         for upload in uploads:
@@ -406,12 +445,12 @@ def push(config: Config, opener: Callable[[str], Store] | None = None) -> str:
             ],
         }
         body = (json.dumps(record, indent=2) + "\n").encode("utf-8")
-        # Named by its time and content, so two pushes in the same second get two names, and
-        # a name already taken holds this same record.
+        # Named by its time and a random part, so every push gets its own record.
         stamp = pushed_at.strftime("%Y-%m-%dT%H-%M-%SZ")
-        digest = hashlib.sha256(body).hexdigest()[:12]
         try:
-            store.add(f"{found.prefix}/pushes/{stamp}-{digest}.json", body, "application/json")
+            name = f"{found.prefix}/pushes/{stamp}-{uuid.uuid4().hex[:12]}.json"
+            if store.add(name, body, "application/json") != "added":
+                raise StoreError("The store already had a record by this push's name.")
         except Exception as e:
             raise PushError(
                 f"{stopped(e)} {results.count('added')} copy(ies) were added, but this push's "
@@ -420,8 +459,8 @@ def push(config: Config, opener: Callable[[str], Store] | None = None) -> str:
 
     added, skipped = results.count("added"), results.count("exists")
     report = [
-        f"{added} scrubbed copy(ies) added to the store, and {skipped} skipped because the same "
-        "content was already there."
+        f"{added} scrubbed copy(ies) added to the store, and {skipped} skipped because the store "
+        "already had a file by that name, which holds the copy's content hash."
     ]
     if held := len(manifest["held_back"]):
         report.append(f"{held} copy(ies) the scrub held back were not sent.")

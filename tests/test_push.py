@@ -15,6 +15,7 @@ import pytest
 from diffdata import cli
 from diffdata.common.config import Config, ConfigError, load_config
 from diffdata.discover.slack_export import build
+from diffdata.discover.slack_inbox import opt_out_stamp
 from diffdata.scrub.run import ScrubError, scrub
 from diffdata.scrub.text import CHECKS
 from diffdata.store import push as push_module
@@ -75,6 +76,7 @@ def make_scrub(data: Path, copies: dict[str, str], held=(), manifest_edit=None) 
         "tool": "diffdata 0.0.1",
         "approved_for_release": False,
         "note": "Not approved for release.",
+        "opt_out_stamp": opt_out_stamp([]),
         "copies": [entry(path, text) for path, text in copies.items()],
         "held_back": [
             {"source": s, "id": i, "why": "the last check found a name"} for s, i in held
@@ -419,7 +421,12 @@ def test_scrubbed_being_a_link_stops_the_push(tmp_path):
 def test_scrubbed_being_a_file_stops_the_push(tmp_path):
     (tmp_path / "data" / "private").mkdir(parents=True)
     write(tmp_path / "data" / "scrubbed", "not a folder")
-    refused(config(tmp_path / "data"))
+    refused(config(tmp_path / "data"), "isn't a folder")
+
+
+def test_no_scrubbed_folder_with_a_private_folder_stops_the_push(tmp_path):
+    (tmp_path / "data" / "private").mkdir(parents=True)
+    refused(config(tmp_path / "data"), "no scrubbed copies yet")
 
 
 @pytest.mark.parametrize("checks", [["anything I like"], [{"a": 1}], "emails"])
@@ -646,7 +653,7 @@ def test_a_raw_file_with_a_forged_manifest_entry_is_still_refused(tmp_path):
     data = tmp_path / "data"
     raw = f"---\nchannel_id: CFAKE0001\n---\n\n{SECRETS[0]}: {SECRETS[2]}\n"
     make_scrub(data, {DAY: raw})
-    message = refused(config(data), "Copy 1", "still holds a name")
+    message = refused(config(data), "Copy 1", "still holds something the scrub replaces")
     assert SECRETS[0] not in message
 
 
@@ -675,8 +682,8 @@ class LockWatcher(FakeStore):
             try:
                 scrub(config(self.data))
                 self.scrub_refused = False
-            except ScrubError:
-                self.scrub_refused = True
+            except ScrubError as e:
+                self.scrub_refused = "a push is running" in str(e)
         return super().add(name, data, content_type)
 
 
@@ -874,8 +881,20 @@ def gcs(monkeypatch):
     from diffdata.store import gcs
 
     StubClient.made, StubClient.error = [], None
+    StubCredentials.error = None
     monkeypatch.setattr(gcs.storage, "Client", StubClient)
+    monkeypatch.setattr(gcs.google.auth, "default", lambda scopes: (StubCredentials(), None))
     return gcs
+
+
+class StubCredentials:
+    error: Exception | None = None
+    refreshed = 0
+
+    def refresh(self, request):
+        StubCredentials.refreshed += 1
+        if StubCredentials.error:
+            raise StubCredentials.error
 
 
 def test_the_adapter_uploads_create_only_to_googles_own_address(gcs):
@@ -923,3 +942,122 @@ def test_the_adapter_shows_only_the_type_of_a_network_error(gcs):
     with pytest.raises(StoreError) as e:
         gcs.GCSStore("fake-pilot-bucket").add("fake/name.md", b"t", "text/markdown")
     assert "TransportError" in str(e.value) and "FAKE-HOST" not in str(e.value)
+
+
+def test_the_adapter_signs_in_before_any_upload(gcs):
+    from google.auth import exceptions as auth
+
+    StubCredentials.error = auth.RefreshError("refresh failed for token ya29.FAKE-TOKEN-1234")
+    with pytest.raises(SignInError) as e:
+        gcs.GCSStore("fake-pilot-bucket")
+    assert StubClient.made == [], "a client was made, so an upload could start"
+    assert "FAKE-TOKEN" not in str(e.value) and "Nothing was sent" in str(e.value)
+
+
+def test_the_adapter_uses_the_checked_sign_in(gcs):
+    gcs.GCSStore("fake-pilot-bucket")
+    (made,) = StubClient.made
+    assert isinstance(made["credentials"], StubCredentials)
+
+
+# Review fixes after Codex's second review of #114.
+
+
+def test_a_forged_copy_with_a_mention_the_scrub_would_replace_is_refused(tmp_path):
+    data = tmp_path / "data"
+    make_scrub(data, {DAY: "---\nchannel_id: CFAKE0001\n---\n\n[Person 1]: ask @quartzoperator\n"})
+    refused(config(data), "Copy 1", "mention")
+
+
+def test_a_slack_copy_whose_header_names_another_channel_is_refused(tmp_path):
+    data = tmp_path / "data"
+    make_scrub(data, {DAY: DAY_TEXT.replace("CFAKE0001", "CFAKE0002")})
+    refused(config(data), "Copy 1", "doesn't name its channel")
+
+
+def test_copies_made_before_an_opt_out_are_never_sent(data):
+    # The person opted out after the scrub: config.toml lists them, but the copies don't
+    # know it. The build and scrub must run again first.
+    cfg = Config(
+        data_dir=data,
+        slack_channels=(),
+        slack_opted_out=(SECRETS[1],),
+        **{f"store_{k}": v for k, v in vars(push_module.settings(config(data))).items()},
+    )
+    refused(cfg, "slack_opted_out")
+
+
+def test_copies_made_before_the_last_build_are_never_sent(data):
+    # The manifest was made under another list than the one the last build applied.
+    manifest = json.loads((data / "scrubbed" / "manifest.json").read_text())
+    manifest["opt_out_stamp"] = opt_out_stamp([SECRETS[1]])
+    write(data / "scrubbed" / "manifest.json", json.dumps(manifest))
+    refused(config(data), "slack_opted_out")
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda m: m.pop("tool"),
+        lambda m: m.pop("note"),
+        lambda m: m.pop("opt_out_stamp"),
+        lambda m: m.update(extra="field"),
+        lambda m: m["copies"][0].update(flags=-1),
+        lambda m: m["held_back"].append({"source": "slack", "id": "", "why": "a name"}),
+        lambda m: m["held_back"].append({"source": "slack-canvas", "id": "F/1", "why": "x"}),
+    ],
+)
+def test_a_manifest_missing_or_bending_a_field_stops_the_push(tmp_path, edit):
+    make_scrub(tmp_path / "data", {DAY: DAY_TEXT}, manifest_edit=edit)
+    refused(config(tmp_path / "data"), "manifest.json")
+
+
+def test_a_bucket_named_like_an_ip_address_stops_the_push(data):
+    refused(config(data, bucket="192.0.2.10"), "bucket")
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no named pipes on this system")
+def test_a_named_pipe_in_scrubbed_is_refused_and_the_lock_let_go(data):
+    # Not on the manifest, so only the scan of scrubbed/ sees it.
+    os.mkfifo(data / "scrubbed" / "extra.pipe")
+    refused(config(data), "isn't a plain file")
+    assert not (data / "private" / "scrub.lock").exists()
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no named pipes on this system")
+def test_a_named_pipe_reached_after_the_scan_doesnt_hang_the_push(data, monkeypatch):
+    monkeypatch.setattr(push_module, "unsafe_entry", lambda folder: False)
+    (data / "scrubbed" / "manifest.json").unlink()
+    os.mkfifo(data / "scrubbed" / "manifest.json")
+    refused(config(data), "manifest.json")
+
+
+def test_two_identical_pushes_in_the_same_second_both_get_a_record(data, monkeypatch):
+    class Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 1, 9, 12, 0, 0, tzinfo=UTC)
+
+    monkeypatch.setattr(push_module, "datetime", Frozen)
+    store = FakeStore()
+    push(config(data), Opener(store))
+    push(config(data), Opener(store))  # all skipped: same results as the next one
+    push(config(data), Opener(store))
+    assert len(records(store)) == 3
+
+
+def test_a_record_name_already_taken_is_reported(data, monkeypatch):
+    class Taken(FakeStore):
+        def add(self, name, data, content_type):
+            return "exists" if "/pushes/" in name else super().add(name, data, content_type)
+
+    with pytest.raises(PushError, match="record wasn't"):
+        push(config(data), Opener(Taken()))
+
+
+def test_a_store_setting_error_never_shows_the_config_path(tmp_path):
+    cfg = config(tmp_path / "data", producer="")
+    cfg = Config(**{**vars(cfg), "path": tmp_path / "Fakey Realname" / "config.toml"})
+    make_scrub(tmp_path / "data", {DAY: DAY_TEXT})
+    message = refused(cfg, "producer")
+    assert "Fakey" not in message

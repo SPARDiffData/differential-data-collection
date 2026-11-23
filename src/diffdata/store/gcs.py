@@ -7,11 +7,14 @@ files there and nothing else. Every upload is create-only (`if_generation_match=
 bucket itself refuses to overwrite a file, even if our own checks were wrong (STO-3).
 
 diffdata never reads, stores or prints the sign-in token: Google's library finds it.
-This module is imported only when a real push runs, so tests never load it.
+Push imports this module only when a real push runs. Its own tests use a stand-in for
+Google's client and sign-in, with no bucket, credentials or network.
 """
 
+import google.auth
 from google.api_core import exceptions as api
 from google.auth import exceptions as auth
+from google.auth.transport.requests import Request
 from google.cloud import storage
 
 from diffdata.store.backend import Added, SignInError, StoreError
@@ -31,12 +34,23 @@ ENDPOINT = "https://storage.googleapis.com"
 NO_PROJECT = "<none>"
 
 
+# Enough to add files to a bucket.
+SCOPES = ["https://www.googleapis.com/auth/devstorage.read_write"]
+
+
 class GCSStore:
     def __init__(self, bucket: str):
+        # Sign in fully before any upload, so no copy is sent with a sign-in that then fails.
         try:
-            client = storage.Client(project=NO_PROJECT, client_options={"api_endpoint": ENDPOINT})
-        except auth.DefaultCredentialsError:
+            credentials, _ = google.auth.default(scopes=SCOPES)
+            credentials.refresh(Request())
+        except (auth.DefaultCredentialsError, auth.RefreshError, auth.TransportError):
             raise SignInError(SIGN_IN) from None
+        client = storage.Client(
+            project=NO_PROJECT,
+            credentials=credentials,
+            client_options={"api_endpoint": ENDPOINT},
+        )
         self.bucket = client.bucket(bucket)
 
     def add(self, name: str, data: bytes, content_type: str) -> Added:

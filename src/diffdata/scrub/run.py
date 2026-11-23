@@ -261,6 +261,9 @@ def make_copies(config: Config, earlier: bool) -> str:
             "Not approved for release. Names, Slack IDs and emails are replaced. Phone "
             "numbers, meeting links and secrets aren't checked yet."
         ),
+        # Which opt-out list the build had applied when these copies were made, so a push can
+        # tell if the list changed since (store/push.py). A fingerprint: it names nobody.
+        "opt_out_stamp": applied_stamp(data),
         "copies": copies,
         "held_back": held,
     }
