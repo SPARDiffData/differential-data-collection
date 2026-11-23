@@ -6,6 +6,7 @@ Under the data folder:
   scrubbed/documents/current/slack-canvas_<canvas ID>.md
   scrubbed/manifest.json   each copy with its hash and checks, and the copies held back
   private/people.toml      who's who (people.py), never in a scrubbed copy
+  private/people-numbers.json  every [Person N] given, to catch someone lost from the list
   private/flags.md         what was hidden without knowing who it is, as written
   private/scrub.lock       while a scrub runs, so two can't run at once
 
@@ -46,10 +47,14 @@ from diffdata.discover.slack_inbox import (
     slack_dir,
 )
 from diffdata.scrub.people import (
+    NUMBERS_FILE,
     PEOPLE_FILE,
     People,
     PeopleError,
     add_seen,
+    check_whole,
+    numbers,
+    read_given,
     read_people,
     render,
     seen_in_slack,
@@ -184,9 +189,11 @@ def make_copies(config: Config, earlier: bool) -> str:
                 "data, so nothing was scrubbed. Run uv run diffdata discover slack build "
                 "first, then scrub again."
             )
-    people_file = data / PEOPLE_FILE
+    people_file, numbers_file = data / PEOPLE_FILE, data / NUMBERS_FILE
+    given = read_given(numbers_file)
     if people_file.is_file():
         people = read_people(people_file)
+        check_whole(people, given)
     elif earlier:
         raise ScrubError(
             f"{PEOPLE_FILE} is missing, but {PRIVATE}/ is there from an earlier scrub, so the "
@@ -203,6 +210,10 @@ def make_copies(config: Config, earlier: bool) -> str:
     new = add_seen(people, seen)
     if render(people) != before or not people_file.is_file():
         write_file(people_file, render(people))
+    # After the list, so a run cut short between the two never records a number the list
+    # doesn't have.
+    if set(numbers(people)) != given or not numbers_file.is_file():
+        write_file(numbers_file, json.dumps({"numbers": numbers(people)}) + "\n")
 
     scrubber = Scrubber(people)
     building = data / IN_PROGRESS
