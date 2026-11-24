@@ -16,6 +16,7 @@ from diffdata import cli
 from diffdata.common.config import Config, ConfigError, load_config
 from diffdata.discover.slack_export import build
 from diffdata.discover.slack_inbox import opt_out_stamp
+from diffdata.scrub import secrets
 from diffdata.scrub.run import ScrubError, scrub
 from diffdata.scrub.text import CHECKS
 from diffdata.store import push as push_module
@@ -678,11 +679,32 @@ def test_a_raw_file_with_a_forged_manifest_entry_is_still_refused(tmp_path):
     assert SECRETS[0] not in message
 
 
-@pytest.mark.parametrize("leftover", [SECRETS[1], "fake.person@example.com", "UFAKE12345"])
-def test_a_copy_with_a_slack_id_or_email_left_in_it_is_refused(tmp_path, leftover):
+# Built from parts, so the repo never holds a string shaped like a real key.
+FAKE_TOKEN = "gh" + "p_" + "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5"
+
+
+@pytest.mark.parametrize(
+    "leftover",
+    [
+        SECRETS[1],
+        "fake.person@example.com",
+        "UFAKE12345",
+        FAKE_TOKEN,
+        "https://meet.google.com/abc-defg-hij",
+        "+44 20 7946 0958",
+    ],
+    ids=["name", "email", "slack id", "secret", "meeting link", "phone number"],
+)
+def test_a_copy_with_anything_the_scrub_replaces_left_in_it_is_refused(tmp_path, leftover):
     data = tmp_path / "data"
     make_scrub(data, {DAY: f"---\nchannel_id: CFAKE0001\n---\n\n[Person 1]: ask {leftover}\n"})
     refused(config(data), "still holds")
+
+
+def test_a_missing_or_changed_secret_rules_file_stops_the_push(data, monkeypatch, tmp_path):
+    monkeypatch.setattr(secrets, "RULES_FILE", tmp_path / "missing.toml")
+    message = refused(config(data), "secret rules file")
+    assert "Nothing was sent" in message
 
 
 def test_a_missing_people_list_stops_the_push(data):

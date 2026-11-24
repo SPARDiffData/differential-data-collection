@@ -40,8 +40,7 @@ bucket = ""    # the bucket's name, from the project team
 folder = ""    # your team's folder in the bucket, from the project team
 producer = ""  # a short handle for you, like "team-a-1": not your full name
 project = ""   # your project's short name, from the project team
-# Copies are marked not approved for release until what "approved" means is settled (names
-# outside the people list aren't checked yet). "yes" sends them anyway, to a part of the
-# folder consumers never get.
+# Copies are marked not approved for release: names of people who aren't in the people list
+# aren't checked yet. "yes" sends them anyway, to a part of the folder consumers never get.
 send_not_approved = "no"
 # folder, producer and project are plain names: letters, digits, - and _ only.

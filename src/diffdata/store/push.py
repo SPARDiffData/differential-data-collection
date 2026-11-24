@@ -13,7 +13,8 @@ Every check runs before the store is opened, so a refusal sends nothing:
   - scrubbed/ being a link, holding a link or a hard-linked file, or not being a folder
   - a listed copy that isn't a name a scrub makes, that's missing, a link or hard-linked, that
     the manifest also lists as held back, whose content changed since the scrub, or in which
-    the scrub's last check, run again here, finds a name, a Slack ID or an email
+    the scrub's last check, run again here, finds a name, a Slack ID, an email, a secret, a
+    meeting link or a phone number
 
 The push holds the scrub's lock throughout, so no scrub can replace the copies while they're
 checked and sent.
@@ -60,6 +61,7 @@ from diffdata.scrub.run import (
     is_link,
     write_file,
 )
+from diffdata.scrub.secrets import RulesError, rules
 from diffdata.scrub.text import CHECKS, Scrubber
 from diffdata.store.backend import SignInError, Store, StoreError
 
@@ -400,7 +402,15 @@ def object_name(prefix: str, copy: dict, text: str) -> str | None:
 def last_check(data: Path) -> Scrubber:
     """The scrub's last check, with the people list on this computer. Push runs it again on
     every copy, so a file put in scrubbed/ by hand, with a manifest entry to match, still can't
-    send a name, a Slack ID or an email."""
+    send a name, a Slack ID, an email, a secret, a meeting link or a phone number."""
+    try:
+        rules()  # the scrub's secret rules, checked against their pinned copy
+    except RulesError:
+        raise PushError(
+            "The scrub's secret rules file (diffdata/scrub/rules/gitleaks.toml) is missing or "
+            "changed, so the copies can't be checked again before sending. Restore it from the "
+            f"repository, or reinstall with uv sync, and run again. {NOTHING_SENT}"
+        ) from None
     try:
         return Scrubber(read_people(data / PEOPLE_FILE))
     except (OSError, PeopleError):
@@ -463,8 +473,8 @@ def plan(data: Path, found: Settings, opted_out=()) -> tuple[dict, list[Upload],
             # would still change, such as a mention it doesn't know, means it isn't one.
             raise PushError(
                 f"{which} still holds something the scrub replaces, such as a name, a Slack ID, "
-                f"an email or a mention, so it isn't a scrubbed copy. Run uv run diffdata scrub "
-                f"again. {NOTHING_SENT}"
+                f"an email, a mention, a secret, a meeting link or a phone number, so it isn't a "
+                f"scrubbed copy. Run uv run diffdata scrub again. {NOTHING_SENT}"
             )
         if slack:
             channel = CHANNEL_LINE.search(text.partition("\n---\n")[0])
