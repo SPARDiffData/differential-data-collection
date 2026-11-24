@@ -778,3 +778,20 @@ def test_a_short_secret_is_replaced_where_found_but_not_all_through_the_copy(mon
     rule = secrets.Rule("made-up", re.compile(r"code=(\w+)"), (), 0.0, 0)
     monkeypatch.setattr(secrets, "rules", lambda: (rule,))
     assert scrub("code=ab12xy and the word ab12xyz") == "code=[secret] and the word ab12xyz"
+
+
+@pytest.mark.parametrize(
+    "text, scrubbed",
+    [
+        ("+12025550142-{a}", "[phone]-[secret?]"),
+        ("id {b}-2025550142-{c} end", "id [secret?] end"),
+        ("user@example.com/{d}", "[email]/[secret?]"),
+        ("call my_notes-2025550142-final today", "call my_notes-[phone]-final today"),
+    ],
+)
+def test_a_random_run_on_both_sides_of_an_email_or_phone_number_is_checked(text, scrubbed):
+    # Letters next to the number, so the phone library reads it as one.
+    values = {"a": "q" + rand(29), "b": rand(24) + "x", "c": "q" + rand(14), "d": rand(40)}
+    result = scrub(text.format(**values))
+    assert result == scrubbed
+    assert found(result) == []

@@ -423,8 +423,9 @@ def covering(spans: list[tuple[int, ...]], starts: list[int], start: int, end: i
 
 def random_runs(text: str, left: list[tuple[int, int]] | None = None) -> list[tuple[int, int]]:
     """Runs that look random enough to be a secret, outside Google IDs and meeting links.
-    `left` is what later steps replace whole (emails and phone numbers), sorted: a run
-    inside one is left to that step, and a run that reaches one is cut where it starts. In
+    `left` is what later steps replace whole (emails and phone numbers), sorted: that part
+    of a run is left to the step, and the parts before and after it are checked on their
+    own. In
     a link's path, each part between slashes is checked on its own, so the site's name and
     plain path words stay readable; a value in its query is checked whole."""
     kept = kept_links(text)
@@ -443,28 +444,48 @@ def random_runs(text: str, left: list[tuple[int, int]] | None = None) -> list[tu
                     (m.start() + run.start(), m.end() + run.start())
                     for m in re.finditer(r"[^/]+", run[0])
                 ]
-        for start, end in pieces:
-            # Strip the symbols at its edges: "--" or "==" around a word isn't part of it.
-            while start < end and text[start] in "+/_=-":
-                start += 1
-            while end > start and text[end - 1] in "+/_=-":
-                end -= 1
-            if end - start < MIN_RUN:
-                continue
-            k = covering(kept, kept_starts, start, end)
-            if k != -1 and kept[k][0] <= start and end <= kept[k][1]:
-                continue
-            if (k := covering(emails, email_starts, start, end)) != -1:
-                if emails[k][0] <= start:
-                    continue  # inside an email: the email step takes it whole
-                end = emails[k][0]  # the run up to where the email starts
+        for piece in pieces:
+            # What a later step takes (an email, a phone number) is left to it, and the parts
+            # of the run before and after it are checked on their own. But if one sits wholly
+            # inside the run, like digits inside a key, the whole run is checked first.
+            parts = outside(piece, emails, email_starts)
+            if parts != [piece] and parts and parts[0][0] == piece[0] and parts[-1][1] == piece[1]:
+                parts = [piece] + parts
+            for start, end in parts:
+                # Strip the symbols at its edges: "--" or "==" around a word isn't part of it.
+                while start < end and text[start] in "+/_=-":
+                    start += 1
                 while end > start and text[end - 1] in "+/_=-":
                     end -= 1
                 if end - start < MIN_RUN:
                     continue
-            if looks_random(text[start:end]):
-                found.append((start, end))
+                k = covering(kept, kept_starts, start, end)
+                if k != -1 and kept[k][0] <= start and end <= kept[k][1]:
+                    continue
+                if looks_random(text[start:end]):
+                    found.append((start, end))
+                    if (start, end) == piece or (start <= piece[0] and piece[1] <= end):
+                        break  # the whole run goes, so its parts needn't be checked
     return found
+
+
+def outside(
+    piece: tuple[int, int], spans: list[tuple[int, int]], starts: list[int]
+) -> list[tuple[int, int]]:
+    """The parts of `piece` that no span in a sorted, non-overlapping list covers."""
+    start, end = piece
+    parts = []
+    at = max(bisect.bisect_right(starts, start) - 1, 0)
+    while at < len(spans) and spans[at][0] < end:
+        s, e = spans[at]
+        if e > start:
+            if s > start:
+                parts.append((start, s))
+            start = max(start, e)
+        at += 1
+    if start < end:
+        parts.append((start, end))
+    return parts
 
 
 def secrets(text: str) -> list[tuple[int, int, str]]:
