@@ -53,7 +53,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from diffdata.collect import slack_canvas
-from diffdata.common.config import Config, ConfigError, channel_name, load_config
+from diffdata.common.config import CHANNEL_ID, Config, ConfigError, channel_name, load_config
 from diffdata.common.paths import UnsafeDataDirError
 from diffdata.consent import approvals
 from diffdata.discover import slack_state
@@ -83,7 +83,6 @@ SAVED_TOOLS = ("slack_read_channel", "slack_read_thread")
 OVERFLOW = re.compile(r"saved to:?\s+(?P<path>.+?\.(?:txt|json))\b", re.IGNORECASE)
 # Public channels start with C, older private ones with G. DMs (D) need both people's
 # consent first (CON-5), so they're refused.
-CHANNEL_ID = re.compile(r"[CG][A-Z0-9]{6,}")
 # The reads `check()` lets through only when the open run names what they read, and the
 # input field that names it. The command's PreToolUse hook matches these and the search.
 CHECKED_READS = {
@@ -321,35 +320,51 @@ def require_workspace(config: Config) -> None:
 
 
 def run_channel_names(data: Path) -> dict[str, str]:
-    """Channel ID to name, from every run so far. The newest name wins after a rename."""
+    """Channel ID to name, from every run so far. The newest name wins after a rename. A
+    channel listed by ID has no name in a run until its first read shows it, so an empty
+    name never replaces a known one."""
     names: dict[str, str] = {}
     paths = sorted((slack_dir(data) / "runs").glob("*.json")) + [run_path(data)]
     for path in paths:
         if path.is_file():
-            names.update(json.loads(path.read_text(encoding="utf-8"))["channels"])
+            channels = json.loads(path.read_text(encoding="utf-8"))["channels"]
+            names.update({channel_id: name for channel_id, name in channels.items() if name})
     return names
 
 
+def shown_channel(run: Run, channel_id: str) -> str:
+    """How a message names a run's channel: #name, or, before the first read of a channel
+    listed by ID, a phrase with no ID, since Claude may see the message."""
+    name = run.channels.get(channel_id, "")
+    return f"#{name}" if name else "the channel listed by its ID"
+
+
 def begin(config: Config, pairs: list[str], now: datetime | None = None, full: bool = False) -> str:
-    """Open an export run for `pairs` like "example-channel=C00000001". Returns a report,
-    which says where each channel's read and search start. A full run starts every channel
-    from the beginning."""
+    """Open an export run for `pairs` like "example-channel=C00000001", or a bare ID for a
+    channel config.toml lists by ID. Returns a report, which says where each channel's read
+    and search start. A full run starts every channel from the beginning."""
     now = now or datetime.now(UTC)
     require_workspace(config)
     channels: dict[str, str] = {}
     for pair in pairs:
         name, sep, channel_id = pair.partition("=")
+        if not sep:  # a bare ID
+            name, channel_id = "", name
         name, channel_id = channel_name(name), channel_id.strip()
-        if not sep or not name or not CHANNEL_ID.fullmatch(channel_id):
+        if (sep and not name) or not CHANNEL_ID.fullmatch(channel_id):
             raise SlackExportError(
-                f"'{pair}' isn't a channel as name=ID, with an ID starting with C or G."
+                "A channel given to begin isn't name=ID or a bare ID, with an ID starting "
+                "with C or G."
             )
-        if name not in config.slack_channels:
+        if not config.lists_channel(channel_id, name):
+            which = f"#{name}" if name else "A channel ID given to begin"
             raise SlackExportError(
-                f"#{name} isn't in slack_channels in config.toml. Listing a channel there "
+                f"{which} isn't in slack_channels in config.toml. Listing a channel there "
                 "is the opt-in to collecting it (CON-1)."
             )
-        channels[channel_id] = name
+        # Its name is kept only if config.toml lists it by name: a channel listed by ID gets
+        # its name from its first read, which the save hook checks against the ID.
+        channels[channel_id] = name if name in config.slack_channels else ""
 
     notes = []
     previous = open_run(config.data_dir)
@@ -598,22 +613,29 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
             return fail(str(e))
 
     channel_id = read_id
+    learned = ""
     if tool == "slack_read_channel":
         header = CHANNEL_HEADER.match(result_text(response).lstrip())
+        expected = run.channels[channel_id]
         if (
             header is None
             or header["id"] != channel_id
-            or channel_name(header["name"]) != run.channels[channel_id]
+            or (expected and channel_name(header["name"]) != expected)
+            or not channel_name(header["name"])
         ):
             return fail(
                 f"This channel read doesn't show the channel opted in as "
-                f"#{run.channels[channel_id]} in config.toml, so it wasn't saved (CON-1). "
+                f"{shown_channel(run, channel_id)} in config.toml, so it wasn't saved (CON-1). "
                 "Stop the export."
             )
+        if not expected:
+            # Listed by ID: the read's ID matched, so its name is the channel's name. The run
+            # keeps it once the read is saved, so the export and the scrub name the folder.
+            learned = channel_name(header["name"])
     elif not channel_checked(config.data_dir, run, channel_id):
         return fail(
-            f"A thread in #{run.channels[channel_id]} was read before the channel itself, so "
-            "diffdata couldn't check the channel and didn't save it. Stop the export."
+            f"A thread in {shown_channel(run, channel_id)} was read before the channel itself, "
+            "so diffdata couldn't check the channel and didn't save it. Stop the export."
         )
 
     path = inbox_dir(config.data_dir) / channel_id / run.run_id / f"{tool}-{call}.json"
@@ -626,6 +648,12 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
         write_json(path, record)
     except OSError as e:
         return fail(f"Couldn't save a Slack result to the inbox: {e}")
+    if learned:
+        run.channels[channel_id] = learned
+        try:
+            write_json(run_path(config.data_dir), asdict(run))
+        except OSError as e:
+            return fail(f"Couldn't record the channel's name in the export run: {e}")
     note = saved_note(tool, hook["tool_name"], hook["tool_input"], response, overflow is not None)
     if left:
         note += f" {left} message(s) by people in slack_opted_out were left out of what was saved."

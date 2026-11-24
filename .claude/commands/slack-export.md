@@ -41,10 +41,10 @@ If the arguments say `full`, this is a **full run**: add `--full` to `begin` in 
 
 ## Steps
 
-1. **Channels.** Run `uv run diffdata discover slack channels`. It prints the opted-in channel names from `config.toml`, one per line after the first. Don't open `config.toml` yourself. If the command fails, stop and show its message: it says where `config.toml` belongs.
-2. **Open a run.** For each name, find its channel ID with `slack_search_channels`, with `keywords` set to the name and `channel_types` set to `public_channel,private_channel`. Use only a result whose name matches exactly; if there isn't one, stop and say which name wasn't found. Then run:
+1. **Channels.** Run `uv run diffdata discover slack channels`. It prints the opted-in channels from `config.toml`, one per line after the first. Each line is a channel name (lowercase) or a channel ID (a capital C or G, then capitals and digits). Don't open `config.toml` yourself. If the command fails, stop and show its message: it says where `config.toml` belongs.
+2. **Open a run.** For each name, find its channel ID with `slack_search_channels`, with `keywords` set to the name and `channel_types` set to `public_channel,private_channel`. Use only a result whose name matches exactly; if there isn't one, stop and say which name wasn't found. An ID needs no search: pass it as it is, with no name. The first read of that channel shows its name, and the hook records it. Then run, with a `<name>=<ID>` for each name and a bare `<ID>` for each ID:
    ```
-   uv run diffdata discover slack begin <name>=<ID> <name>=<ID> ...
+   uv run diffdata discover slack begin <name>=<ID> <ID> ...
    ```
    If it fails, stop and show its message. It says how many canvases the run reads, listed in `config.toml` or approved, and where each channel starts: `from the start`, or `from "<time>"` with a time in quotes.
 3. **Read each channel.** Call `slack_read_channel` with the channel ID, `response_format: "detailed"` and `limit: 100`. If `begin` gave the channel a time, also set `oldest` to that time, as a string; if it said `from the start`, leave `oldest` out. While the note gives a next cursor, call it again with the same values and that `cursor`. This returns top-level posts only.

@@ -1311,3 +1311,17 @@ def test_a_broken_or_changed_rule_file_stops_the_scrub_before_anything(
             "won't compile": "won't compile in Python"}[problem] in message  # fmt: skip
     assert copies(config) == before_copies and originals(config) == before_originals
     assert sorted((config.data_dir / "private").iterdir()) == before_private
+
+
+# Decision 2 on #130: a channel listed by ID gets its copies, as one listed by name does.
+def test_a_channel_listed_by_id_gets_the_same_copies_as_by_name(config, export):
+    export()
+
+    def channel_copies(listed: Config) -> list:
+        return [s for s in scrub_run.sources(listed)[0] if s.kind == "slack"]
+
+    by_name = channel_copies(config)
+    by_id = channel_copies(replace(config, slack_channels=(), slack_channel_ids=(CHANNEL,)))
+    neither = channel_copies(replace(config, slack_channels=(), slack_channel_ids=("C0000009",)))
+    assert by_name and by_id == by_name
+    assert neither == []

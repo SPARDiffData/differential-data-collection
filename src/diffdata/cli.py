@@ -40,8 +40,8 @@ COMMANDS = {
 STUBS: tuple[str, ...] = ()
 
 SLACK_STEPS = {
-    "channels": "List the opted-in channels from config.toml, and which file it read.",
-    "begin": "Open an export run for channels given as name=ID (run by /slack-export).",
+    "channels": "List the opted-in channels (names or IDs) from config.toml, and its path.",
+    "begin": "Open an export run for channels given as name=ID or ID (run by /slack-export).",
     "check": "Stop a Slack read the open run doesn't name (run by the /slack-export hook).",
     "save": "Save one Slack result from stdin to the inbox (run by the /slack-export hook).",
     "canvases-due": "List the canvases this run should read, and why (run by /slack-export).",
@@ -100,7 +100,7 @@ def add_discover_sources(discover: argparse.ArgumentParser) -> None:
     for name, help_text in SLACK_STEPS.items():
         step = steps.add_parser(name, help=help_text, description=help_text)
         if name == "begin":
-            step.add_argument("channels", nargs="+", metavar="NAME=ID")
+            step.add_argument("channels", nargs="+", metavar="NAME=ID|ID")
             full_help = "Read every channel from the start, and every listed canvas."
             step.add_argument("--full", action="store_true", help=full_help)
 
@@ -153,9 +153,10 @@ def run_slack_step(args: argparse.Namespace) -> int:
     try:
         config = load_config()
         if args.step == "channels":
-            if not config.slack_channels:
+            channels = [*config.slack_channels, *config.slack_channel_ids]
+            if not channels:
                 raise ConfigError(f"No channels are listed under slack_channels in {config.path}.")
-            report = "\n".join([f"Opted-in channels, from {config.path}:", *config.slack_channels])
+            report = "\n".join([f"Opted-in channels, from {config.path}:", *channels])
         elif args.step == "begin":
             report = slack_inbox.begin(config, args.channels, full=args.full)
         elif args.step == "abort":

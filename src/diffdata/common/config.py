@@ -18,6 +18,18 @@ CONFIG_NAME = "config.toml"
 # A canvas is listed by its ID, or by its link: https://<workspace>.slack.com/docs/<team>/<ID>
 CANVAS_ID = re.compile(r"F[A-Z0-9]{6,}")
 CANVAS_LINK = re.compile(r"https://[a-z0-9-]+\.slack\.com/docs/T[A-Z0-9]+/(F[A-Z0-9]{6,})/?")
+# A channel is listed by its name, its ID, or a link to it or to one of its messages:
+# https://<workspace>.slack.com/archives/<ID>, maybe followed by /p<digits>. Names are lowercase,
+# IDs uppercase, so an ID is told apart before the name is made lowercase.
+CHANNEL_ID = re.compile(r"[CG][A-Z0-9]{6,}")
+CHANNEL_LINK = re.compile(
+    r"https://([a-z0-9-]+)\.slack\.com/archives/([CG][A-Z0-9]{6,})(?:/p\d+)?/?(?:\?.*)?"
+)
+# What setup takes as a channel name: no spaces, dots, slashes or other marks a pasted
+# sentence or link has. load_config() doesn't check it yet, so no existing config breaks.
+CHANNEL_NAME = re.compile(r"[^\s./#,:;<>@'\"]{1,80}")
+# A workspace's address: https://<name>.slack.com
+WORKSPACE_URL = re.compile(r"https://[a-z0-9][a-z0-9-]*\.slack\.com")
 # A Google Doc is listed by its ID, or by its link, from the address bar or Drive's "open" form.
 DOC_ID = re.compile(r"[A-Za-z0-9_-]{20,}")
 DOC_LINK = re.compile(
@@ -86,6 +98,8 @@ class Config:
     data_dir: Path
     # CON-1: listing a channel is the opt-in to collecting it. Names, without the '#'.
     slack_channels: tuple[str, ...]
+    # CON-1: channels listed by their ID, or by a link, in slack_channels. IDs.
+    slack_channel_ids: tuple[str, ...] = ()
     # The workspace's address, like https://example.slack.com, for message links.
     slack_workspace_url: str = ""
     # CON-1: listing a canvas is the opt-in to collecting it (COL-2). Canvas IDs.
@@ -111,10 +125,31 @@ class Config:
     # Which config.toml these settings came from.
     path: Path | None = None
 
+    def lists_channel(self, channel_id: str, name: str = "") -> bool:
+        """Whether slack_channels lists this channel, by its ID or by its name (CON-1)."""
+        return channel_id in self.slack_channel_ids or (
+            bool(name) and channel_name(name) in self.slack_channels
+        )
+
 
 def channel_name(name: str) -> str:
     """Slack channel names are lowercase; people sometimes type the '#'."""
     return name.strip().lstrip("#").lower()
+
+
+def channel_id(value: str) -> str | None:
+    """A channel's ID, from its ID or a link to it. None if it's neither."""
+    value = value.strip()
+    if CHANNEL_ID.fullmatch(value):
+        return value
+    link = CHANNEL_LINK.fullmatch(value)
+    return link[2] if link else None
+
+
+def link_workspace(value: str) -> str | None:
+    """The workspace address in a channel link, like https://example.slack.com."""
+    link = CHANNEL_LINK.fullmatch(value.strip())
+    return f"https://{link[1]}.slack.com" if link else None
 
 
 def canvas_id(value: str) -> str | None:
@@ -177,10 +212,31 @@ def load_config(path: str | Path | None = None) -> Config:
     sources = raw.get("sources", {})
     channels = sources.get("slack_channels", [])
     if not isinstance(channels, list) or not all(isinstance(c, str) for c in channels):
-        raise ConfigError(f"slack_channels in {path} must be a list of channel names.")
+        raise ConfigError(
+            f"slack_channels in {path} must be a list of channel names, IDs or links."
+        )
     workspace = sources.get("slack_workspace_url", "")
     if not isinstance(workspace, str) or (workspace and not workspace.startswith("https://")):
         raise ConfigError(f"slack_workspace_url in {path} must start with https://")
+    channel_names: list[str] = []
+    channel_ids: dict[str, int] = {}  # ID to its entry number
+    for number, listed in enumerate(channels, start=1):
+        found = channel_id(listed)
+        if found is not None:
+            if found in channel_ids:
+                raise ConfigError(
+                    f"Entries {channel_ids[found]} and {number} in slack_channels in {path} are "
+                    "the same channel. Remove one, or replace it with the channel you meant."
+                )
+            channel_ids[found] = number
+        elif listed.strip().lower().startswith(("http://", "https://")):
+            # Messages name the entry's place, not the link, so no ID reaches shared output.
+            raise ConfigError(
+                f"Entry {number} in slack_channels in {path} is a link, but not to a Slack "
+                "channel (https://<workspace>.slack.com/archives/C...)."
+            )
+        else:
+            channel_names.append(channel_name(listed))
     canvases = sources.get("slack_canvases", [])
     if not isinstance(canvases, list) or not all(isinstance(c, str) for c in canvases):
         raise ConfigError(f"slack_canvases in {path} must be a list of canvas IDs or links.")
@@ -280,7 +336,8 @@ def load_config(path: str | Path | None = None) -> Config:
 
     return Config(
         data_dir=data_dir(configured),
-        slack_channels=tuple(channel_name(c) for c in channels),
+        slack_channels=tuple(channel_names),
+        slack_channel_ids=tuple(channel_ids),
         slack_workspace_url=workspace.rstrip("/"),
         slack_canvases=tuple(canvas_ids),
         canvas_refresh_days=refresh_days,
