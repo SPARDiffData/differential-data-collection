@@ -10,9 +10,11 @@ Secrets, in two parts:
     with an `entropy` setting skips a secret whose Shannon entropy isn't above it. Only the
     secret is replaced, not the words around it, and the same value anywhere else in the
     copy is replaced too. These become [secret].
-  - Our randomness check: a run of 20 or more letters, digits and + / _ = - that looks
-    random becomes [secret?], for the producer to check. It skips the ID part of Slack and
-    Google links, so those links keep working.
+  - Our randomness check: a run of 20 or more letters, digits and + / _ - that looks
+    random becomes [secret?], for the producer to check: hex above HEX_ENTROPY, a mix of
+    cases and digits above MIXED_ENTROPY unless it reads as joined words, and a run in one
+    case at 24 or more characters on the same terms (see ONE_CASE_MIN). It skips Slack and
+    Google links up to their query, so those links keep working, and meeting links.
 
 What we leave out of gitleaks, on purpose:
   - Its allowlists, global and per rule. They only stop a match being reported, so
@@ -29,6 +31,11 @@ Go and Python write a few regex features differently. `go_to_python` translates 
 a flag like (?i) partway through applies to the rest of its group in Go, so it becomes a
 scoped group, (?i:...); \\z becomes \\Z; and POSIX classes like [[:alnum:]] become plain
 ranges. Patterns compile with re.ASCII, so \\w, \\s and \\d mean what they mean in Go.
+Python's engine is slower than Go's on some patterns, so two changes keep every rule quick
+on a long line, without changing what it finds in ordinary text: an open .* reads at most
+DOT_STAR characters (only the two curl rules have one, so a curl command's header must
+come within 2,000 characters of "curl"), and a rule's leading lazy word run is dropped
+(see LEAD).
 
 Meeting links: any link to the services in MEETING_HOSTS becomes [meeting link], with any
 passcode in it.
@@ -71,15 +78,26 @@ HEX_ENTROPY, MIXED_ENTROPY = 3.0, 3.8
 # 20 characters is missed, and almost none of 24 or more. gitleaks' rules still run on them.
 WORDS = re.compile(r"[a-z]{3,}|[A-Z][a-z]{2,}")
 WORDY = 0.7
+# A run in one case (small letters and digits, or capitals and digits, like a base32 seed)
+# counts only at 24 or more characters with no _ - / or +: in one case, names are written
+# with those (snake_case, kebab-case, a path). Its word-like runs must also have a vowel in
+# at least 3 of 10 letters, as words do, since random letters in one case form long runs.
+# A UUID has hyphens, so it's left alone: it's usually an ID, and a key shaped like one
+# with a keyword nearby is still found by gitleaks' rules.
+ONE_CASE_MIN, ONE_CASE_WORDS, VOWELS = 24, re.compile(r"[a-z]{3,}|[A-Z]{3,}"), 0.3
+SEPARATORS = re.compile(r"[_/+-]")
 # A password in a link, as in https://user:password@host. gitleaks has no rule for it.
 LINK_PASSWORD = re.compile(
     r"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{0,30}://[^\s/:@<>|]+:(?P<secret>[^\s/@<>|]+)@"
 )
 
-# Links: with a scheme, or a bare domain followed by a path. A link ends at a space or at
-# what wraps it in Slack's markup (<url|label>) or Markdown ([label](url)).
+# Links: with a scheme, or a bare domain followed by a path. A bare domain's last part starts
+# with a letter, so a phone number written with dots, like 201.555.0123/4, isn't a link. A
+# link ends at a space or at what wraps it in Slack's markup (<url|label>) or Markdown
+# ([label](url)).
 LINK = re.compile(
-    r"(?i)(?<![\w.@/-])(?:(?:https?|ftp)://|www\.|[a-z0-9-]+(?:\.[a-z0-9-]+)+/)[^\s<>|\"'`()\[\]]*"
+    r"(?i)(?<![\w.@/-])(?:(?:https?|ftp)://|www\.|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z][a-z0-9-]*/)"
+    r"[^\s<>|\"'`()\[\]]*"
 )
 HOST = re.compile(r"(?i)^(?:(?:https?|ftp)://)?(?P<host>[^/?#:\s]+)")
 # Slack and Google links keep their IDs: a policy on links is for before the first release.
@@ -101,6 +119,8 @@ POSIX = {
     "space": r"\t\n\v\f\r ", "xdigit": "0-9A-Fa-f", "word": r"\w", "punct": r"!-/:-@\[-`{-~",
 }  # fmt: skip
 INLINE_FLAGS = re.compile(r"\(\?([a-zA-Z]+)\)")
+# How far an open .* in a rule reads: 2,000 characters, not to the end of the line.
+DOT_STAR = 2000
 # Many rules start with any 0 to 50 word characters, lazily, before their keyword. That only
 # moves where a match starts, never where its secret is, but in Python two of them in a row
 # are slow on a long word. So a pattern's leading ones are dropped. A test checks the
@@ -154,6 +174,12 @@ def go_to_python(regex: str) -> str:
                     out.append(lead)
                     i += len(lead)
                     break
+            continue
+        if regex.startswith(".*", i):
+            # Go's engine reads a line once; Python's tries every start again, so an open
+            # .* is slow on a long line. Bound it. Only the two curl rules have one.
+            out.append(f".{{0,{DOT_STAR}}}")
+            i += 2
             continue
         flags = INLINE_FLAGS.match(regex, i)
         if flags and out:
@@ -232,6 +258,10 @@ def rules() -> tuple[Rule, ...]:
     return tuple(found)
 
 
+def vowel_share(word: str) -> float:
+    return sum(c in "aeiouyAEIOUY" for c in word) / len(word)
+
+
 def entropy(text: str) -> float:
     """Shannon entropy in bits per character, as gitleaks measures it."""
     counts = Counter(text)
@@ -275,13 +305,17 @@ def is_meeting(link: str) -> bool:
 
 
 def kept_links(text: str) -> list[tuple[int, int]]:
-    """Links the randomness check leaves alone: Slack and Google links, whose IDs stay, and
-    meeting links, which become [meeting link] whole."""
-    return [
-        link.span()
-        for link in LINK.finditer(text)
-        if on_host(link[0], KEEP_ID_HOSTS) or is_meeting(link[0])
-    ]
+    """What the randomness check leaves alone: a Slack or Google link up to its query, so its
+    IDs stay (anything after ? or # is still checked), and a meeting link, which becomes
+    [meeting link] whole."""
+    spans = []
+    for link in LINK.finditer(text):
+        if is_meeting(link[0]):
+            spans.append(link.span())
+        elif on_host(link[0], KEEP_ID_HOSTS):
+            path = re.match(r"[^?#]*", link[0])[0]
+            spans.append((link.start(), link.start() + len(path)))
+    return spans
 
 
 def random_runs(text: str) -> list[tuple[int, int]]:
@@ -306,6 +340,10 @@ def random_runs(text: str) -> list[tuple[int, int]]:
         elif any(c.isupper() for c in value) and any(c.islower() for c in value):
             wordy = sum(len(w) for w in WORDS.findall(value)) / len(value)
             if entropy(value) > MIXED_ENTROPY and wordy < WORDY:
+                found.append((start, end))
+        elif len(value) >= ONE_CASE_MIN and not SEPARATORS.search(value):
+            words = [w for w in ONE_CASE_WORDS.findall(value) if vowel_share(w) >= VOWELS]
+            if entropy(value) > MIXED_ENTROPY and sum(map(len, words)) / len(value) < WORDY:
                 found.append((start, end))
     return found
 

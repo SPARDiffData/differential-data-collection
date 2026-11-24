@@ -368,3 +368,72 @@ def test_the_last_check_names_the_kind_never_the_value(left, kind):
     result = found(f"something left: {value}")
     assert result == [kind]
     assert value not in " ".join(result)
+
+
+# Review fixes (#126)
+
+
+def test_the_curl_rules_take_time_in_step_with_the_line_not_its_square():
+    """Go reads a line once; Python's engine tried every curl again to the end of it."""
+    rules = {rule.id: rule for rule in secrets.rules()}
+    for rule_id in ("curl-auth-header", "curl-auth-user"):
+        took = []
+        for n in (20_000, 80_000):
+            text = "curl -H " * (n // 8)
+            started = time.perf_counter()
+            list(rules[rule_id].pattern.finditer(text))
+            took.append(time.perf_counter() - started)
+        assert took[1] < 8 * max(took[0], 0.01), rule_id  # four times the text: about 4x
+
+
+def test_a_curl_header_or_user_is_still_found():
+    token, password = rand(32), rand(16)
+    assert scrub(f'curl -H "Authorization: Bearer {token}" https://api.example.com') == (
+        'curl -H "Authorization: Bearer [secret]" https://api.example.com'
+    )
+    assert scrub(f"curl -u admin:{password} https://api.example.com") == (
+        "curl -u [secret] https://api.example.com"  # gitleaks' secret is user:password
+    )
+
+
+@pytest.mark.parametrize(
+    "alphabet",
+    [
+        string.ascii_lowercase + string.digits,
+        string.ascii_uppercase + string.digits,
+        string.ascii_uppercase + "234567",  # base32, as in a 2FA seed
+    ],
+    ids=["small letters and digits", "capitals and digits", "base32"],
+)
+def test_a_random_run_in_one_case_becomes_secret_maybe(alphabet):
+    value = rand(32, alphabet)
+    while not (any(c.isdigit() for c in value) and any(c.isalpha() for c in value)):
+        value = rand(32, alphabet)
+    assert scrub(f"seed {value} end") == "seed [secret?] end"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "123e4567-e89b-12d3-a456-426614174000",  # a UUID: an ID, left alone
+        "my_project_notes_2024_final and q4_planning_2026_draft_v2",
+        "export-slack-channel-history-2 and MAX_UPLOAD_SIZE_BYTES_2048",
+        "differentialdatacollection2026 and weeklyupdate20261123lachlanpaul",
+        "CHANGELOG2026NOVEMBERDRAFT and thequickbrownfox2024jumpsoverthelazydog",
+    ],
+)
+def test_names_in_one_case_are_left_alone(text):
+    assert scrub(text) == text
+
+
+@pytest.mark.parametrize(
+    "number", ["Office 020.7946.0958/ext 12", "Call 201.555.0123/201.555.0124"]
+)
+def test_a_phone_number_with_dots_before_a_slash_isnt_read_as_a_link(number):
+    scrubbed = scrub(number)
+    assert "[phone]" in scrubbed and not re.search(r"\d{4}", scrubbed.replace("[phone]", ""))
+
+
+def test_a_random_value_in_a_google_links_query_is_still_checked():
+    doc = "https://docs.google.com/document/d/" + rand(44, URLSAFE) + "/edit"
+    assert scrub(f"{doc}?x={rand(40)}") == f"{doc}?x=[secret?]"

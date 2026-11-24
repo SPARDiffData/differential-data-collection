@@ -1214,6 +1214,7 @@ def test_secrets_links_and_phones_are_replaced_and_quoted_nowhere(config, export
     every = [*copies(config).values(), report, flags(config)]
     fragments = {v[i : i + 12] for v in values.values() for i in range(0, len(v) - 12, 6)}
     fragments = {f for f in fragments if not f.startswith(("https://zoo", "+44 20"))}
+    fragments.add("7946 0958")  # the phone number, which the filter above leaves out
     for text in every:
         assert not [f for f in fragments if f in text]
     listed = flags(config)
