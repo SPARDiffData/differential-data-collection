@@ -95,11 +95,10 @@ ONE_CASE_MIN, ONE_CASE_WORDS, VOWELS = 24, re.compile(r"[a-z]{3,}|[A-Z]{3,}"), 0
 SEPARATORS = re.compile(r"[_/+-]")
 # A password in a link, as in https://user:password@host. gitleaks has no rule for it.
 LINK_PASSWORD = re.compile(
-    r"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{0,30}://[^\s/:@<>|]+:(?!\[secret\]@)"
-    r"(?P<secret>[^\s/@<>|]+)@"
+    r"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{0,30}://[^\s/:@<>|]+:(?P<secret>[^\s/@<>|]+)@"
 )
 # The end of a link's user:[secret] part, so the @ after it isn't read as a mention.
-USERINFO_END = re.compile(r"(?i)[a-z][a-z0-9+.-]{0,30}://[^\s/:@<>|]+:\[secret\]\Z")
+USERINFO_END = re.compile(r"(?i)[a-z][a-z0-9+.-]{0,30}://(?:[^\s/:@<>|]+:)?\[secret\]\Z")
 
 # Links: with a scheme, or a bare domain followed by a path. A bare domain's last part starts
 # with a letter, so a phone number written with dots, like 201.555.0123/4, isn't a link. A
@@ -121,21 +120,21 @@ GOOGLE_ID = re.compile(r"/(?:d|e|folders)/(?P<id>[A-Za-z0-9_-]{20,})(?=/|$)")  #
 EMAILISH = re.compile(  # starts where a run starts, so it reads a long run once
     r"(?<![\w.+%-])[\w.+%-]+@(?:[\w-]+(?:\.[\w-]+)+|\[(?:IPv6:)?[0-9A-Fa-f.:]+\])"
 )
+# A rule's secret that's only a placeholder, perhaps in quotes: already scrubbed.
+PLACEHOLDER_ONLY = re.compile(r"[\"'`]*\[(?:secret\??|phone|email|meeting link|name\??)\][\"'`]*")
+# A value one of our own rules finds is replaced everywhere in the copy only above this.
+OURS_SPREAD_ENTROPY = 3.0
 # Two small rules of our own, on top of gitleaks', for credentials it lets through when a
 # shell or a link carries on right after them: a credential-named value in a link's query
-# (?password=...&next=...), and curl's -u user:password followed by ; & or |. Neither
-# matches a value that's already a placeholder, so the last check passes a scrubbed copy.
-NOT_PLACEHOLDER = r"(?!\[secret\??\](?:[&#;|\s<>\"'`]|$))"
+# (?password=...&next=...), and curl's -u user:password followed by ; & or |.
 QUERY_SECRET = re.compile(
     r"(?i)[?&](?:password|passwd|pwd|pass|token|access_token|refresh_token|id_token|"
     r"api_?key|key|secret|client_secret|auth|session_?id|sid|sig|signature)="
-    + NOT_PLACEHOLDER
-    + r"(?P<secret>[^&#\s<>|\"'`()\[\]]+)"
+    r"(?P<secret>[^&#\s<>|\"'`()\[\]]+)"
 )
 CURL_USER = re.compile(
     r"(?<!\S)(?:-u|--user)(?:=|[ \t]{1,5})['\"]?"
-    + NOT_PLACEHOLDER
-    + r"(?P<secret>[^\s;&|:'\"]+:[^\s;&|'\"]+)"
+    r"(?P<secret>[^\s;&|:'\"]+:[^\s;&|'\"]+)"
 )
 MEETING_HOSTS = (
     "zoom.us", "zoomgov.com", "meet.google.com", "teams.live.com", "webex.com",
@@ -160,6 +159,11 @@ INLINE_FLAGS = re.compile(r"\(\?([a-zA-Z]+)\)")
 # match begins, never where its secret is, so it's dropped: the rules then find the option
 # wherever it is in a copy that holds "curl" (their keyword). That replaces more, never less.
 CURL_START = re.compile(r"^\\bcurl\\b\(\?:\.\*\??\|\.\*\??\(\?:\[\\r\\n\]\{1,2\}\.\*\??\)\{1,5\}\)")
+# The Kubernetes rule has two runs of spaces in a row, \s+ then [ \t]*, so on a long run of
+# spaces Python tries every split between them, for time in the square of the run. Reading
+# the first run possessively (\s++, Python 3.11+) can't change what matches, since the second
+# can be empty. Only that rule has this pair.
+K8S_SPACE = (r"\s+)?[ \t]*", r"\s++)?[ \t]*")
 # Many rules start with any 0 to 50 word characters, lazily, before their keyword. That only
 # moves where a match starts, never where its secret is, but in Python two of them in a row
 # are slow on a long word. So a pattern's leading ones are dropped. A test checks the
@@ -278,10 +282,11 @@ def compiled(raw: bytes) -> tuple[Rule, ...]:
             # A rule for one kind of file (its "path") runs on every copy: it can only
             # replace more.
             regex = CURL_START.sub("", rule["regex"])
+            pattern = drop_lead(go_to_python(regex)).replace(*K8S_SPACE)
             found.append(
                 Rule(
                     id=rule["id"],
-                    pattern=re.compile(drop_lead(go_to_python(regex)), re.ASCII),
+                    pattern=re.compile(pattern, re.ASCII),
                     keywords=tuple(k.lower() for k in rule.get("keywords", ())),
                     entropy=float(rule.get("entropy", 0)),
                     group=int(rule.get("secretGroup", 0)),
@@ -446,8 +451,14 @@ def random_runs(text: str) -> list[tuple[int, int]]:
             k = covering(kept, kept_starts, start, end)
             if k != -1 and kept[k][0] <= start and end <= kept[k][1]:
                 continue
-            if covering(emails, email_starts, start, end) != -1:
-                continue
+            if (k := covering(emails, email_starts, start, end)) != -1:
+                if emails[k][0] <= start:
+                    continue  # inside an email: the email step takes it whole
+                end = emails[k][0]  # the run up to where the email starts
+                while end > start and text[end - 1] in "+/_=-":
+                    end -= 1
+                if end - start < MIN_RUN:
+                    continue
             if looks_random(text[start:end]):
                 found.append((start, end))
     return found
@@ -469,13 +480,20 @@ def secrets(text: str) -> list[tuple[int, int, str]]:
             value = seen[start:end]
             if end <= start or (rule.entropy and entropy(value) <= rule.entropy):
                 continue
+            if PLACEHOLDER_ONLY.fullmatch(value):
+                continue  # already scrubbed: the last check passes it
             spans.append((start, end, True))
             values.add(value)
     ours = [LINK_PASSWORD, QUERY_SECRET] + ([CURL_USER] if "curl" in low else [])
     for pattern in ours:
         for match in pattern.finditer(seen):
+            if PLACEHOLDER_ONLY.fullmatch(match["secret"]):
+                continue
             spans.append((*match.span("secret"), True))
-            values.add(match["secret"])
+            # Our rules have no entropy setting, so a plain word (?key=features) is replaced
+            # where it's found, but only a value that looks random is replaced everywhere.
+            if entropy(match["secret"]) > OURS_SPREAD_ENTROPY:
+                values.add(match["secret"])
     # A secret found once is replaced everywhere it appears in the copy.
     for value in values:
         if len(value) < 8:
@@ -533,13 +551,16 @@ def meeting_end(text: str, end: int) -> int:
 def meeting_links(text: str) -> list[tuple[int, int, str]]:
     """Where the meeting links are: the whole link, passcode and all. A link inside one
     already found is part of it."""
-    found: list[tuple[int, int, str]] = []
-    for link in LINK.finditer(text):
+    # Read as the secret step reads text, so a host with an invisible character or wide
+    # letters in it (zoom\u200b.us) is still a meeting link, here and in the last check.
+    seen, where = view(text)
+    found: list[tuple[int, int]] = []
+    for link in LINK.finditer(seen):
         if found and link.start() < found[-1][1]:
             continue
         if is_meeting(link[0]):
-            found.append((link.start(), meeting_end(text, link.end()), MEETING))
-    return found
+            found.append((link.start(), meeting_end(seen, link.end())))
+    return [(where[s], where[e - 1] + 1, MEETING) for s, e in found if e > s]
 
 
 def phone_numbers(text: str) -> list[tuple[int, int, str]]:

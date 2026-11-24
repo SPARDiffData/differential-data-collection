@@ -327,7 +327,7 @@ def test_other_links_stay_even_if_they_mention_a_meeting_service():
         "020 7946 0958",
         "+44 20 7946 0958",
         "+44 (0)20 7946 0958",
-        "+33 1 23 45 67 89",
+        "+33 1 99 00 12 34",  # ARCEP's range for fiction
     ],
 )
 def test_a_phone_number_becomes_phone(number):
@@ -632,3 +632,65 @@ def test_many_links_are_read_in_step_with_their_number():
         found(scrub(text))
         took.append(time.perf_counter() - started)
     assert took[1] < 8 * max(took[0], 0.01)  # four times the links: about 4x
+
+
+# Review fixes, third round (the final /review-pr at dba7601)
+
+
+@pytest.mark.parametrize(
+    "host", ["zoom​.us", "ｚｏｏｍ.us"], ids=["zero-width space", "wide letters"]
+)
+def test_a_secret_in_a_meeting_link_with_a_disguised_host_still_goes(host):
+    for value in (fake("github"), rand(40)):
+        scrubbed = scrub(f"join https://{host}/j/1?x={value} now")
+        assert scrubbed == "join [meeting link] now"
+        assert found(scrubbed) == []
+    # The last check finds a disguised meeting link too.
+    assert found(f"https://{host}/j/1?pwd=x") == ["a meeting link"]
+
+
+def test_the_kubernetes_rule_is_quick_on_a_long_run_of_spaces():
+    run_with_deadline(
+        "from diffdata.scrub.text import Scrubber\n"
+        "from diffdata.scrub.people import People\n"
+        "scrubber = Scrubber(People())\n"
+        "text = 'kind: Secret\\ndata:\\n  demo: |' + ' ' * 20000 + '!'\n"
+        "scrubber.leftovers(scrubber.scrub(text)[0])\n",
+        seconds=10,
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '<add key="Password" value="{p}" />',
+        'password = "{p}"',
+        "kind: Secret\ndata:\n  token: {p}",
+    ],
+)
+def test_a_rules_secret_thats_only_a_placeholder_passes_the_last_check(text):
+    scrubbed = scrub(text.format(p=fake("password")))
+    assert "[secret]" in scrubbed
+    assert found(scrubbed) == []
+
+
+def test_a_random_run_just_before_an_email_is_replaced_and_the_email_too():
+    scrubbed = scrub(f"{rand(40)}/x@example.org")
+    assert scrubbed == "[secret?]/[email]"
+    assert found(scrubbed) == []
+
+
+def test_a_plain_word_in_a_query_isnt_replaced_all_through_the_copy():
+    text = "https://example.com/page?key=features and the features list, auth=required"
+    assert (
+        scrub(text) == "https://example.com/page?key=[secret] and the features list, auth=required"
+    )
+
+
+def test_the_same_password_in_curl_and_a_link_leaves_the_links_host_alone():
+    password = fake("password")
+    scrubbed, flags = Scrubber(People()).scrub(
+        f"curl -u admin:{password}; psql postgres://admin:{password}@db.internal.test/app"
+    )
+    assert scrubbed == "curl -u [secret]; psql postgres://[secret]@db.internal.test/app"
+    assert flags == [] and found(scrubbed) == []
