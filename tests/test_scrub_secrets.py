@@ -1,0 +1,370 @@
+"""Secrets, meeting links and phone numbers (SCR-1, SCR-2): the finders in secrets.py and the
+steps in text.py, with the must-refuse list from the plan on Issue #117. The end-to-end
+items (held back, the rule file, nothing quoted) are in test_scrub.py.
+
+Fake secrets are built here from parts and a seeded generator, so the repository never
+holds a string shaped like a real key, and GitHub's secret scanning isn't set off. Phone
+numbers are in fictional ranges (US 555-01xx, UK Ofcom drama numbers)."""
+
+import random
+import re
+import string
+import time
+import tomllib
+
+import pytest
+
+from diffdata.scrub import secrets
+from diffdata.scrub.people import People, Person
+from diffdata.scrub.text import CHECKS, MAYBE_SECRET, Scrubber
+
+RANDOM = random.Random(117)
+ALNUM = string.ascii_letters + string.digits
+URLSAFE = ALNUM + "_-"
+
+
+@pytest.fixture(autouse=True)
+def same_values_every_run():
+    """Each test gets the same made-up values, however the tests are picked or ordered."""
+    RANDOM.seed(117)
+
+
+def rand(n: int, alphabet: str = ALNUM) -> str:
+    return "".join(RANDOM.choice(alphabet) for _ in range(n))
+
+
+def fake(kind: str) -> str:
+    """A made-up value in the shape of a real secret, built from parts."""
+    return {
+        "aws key id": "AK" + "IA" + rand(16, string.ascii_uppercase + "234567"),
+        "github": "gh" + "p_" + rand(36),
+        "slack": "xo" + "xb-" + rand(12, string.digits) + "-" + rand(12, string.digits) + "-"
+        + rand(24),
+        "google": "AI" + "za" + rand(35, URLSAFE),
+        "openai": "sk-" + "proj-" + rand(74, URLSAFE) + "T3Blbk" + "FJ" + rand(74, URLSAFE),
+        "anthropic": "sk-" + "ant-" + "api03-" + rand(93, URLSAFE) + "AA",
+        "jwt": "ey" + "J" + rand(30) + ".ey" + "J" + rand(40) + "." + rand(30),
+        "pem": "-----BEGIN RSA PRIV" + "ATE KEY-----\n" + rand(64) + "\n" + rand(64)
+        + "\n-----END RSA PRIV" + "ATE KEY-----",
+        "password": rand(18),
+    }[kind]  # fmt: skip
+
+
+def scrub(text: str, people: People | None = None) -> str:
+    return Scrubber(people or People()).scrub(text)[0]
+
+
+def found(text: str) -> list[str]:
+    return Scrubber(People()).leftovers(text)
+
+
+# The rule file
+
+
+def test_every_rule_compiles_and_the_file_is_the_pinned_release():
+    raw = secrets.RULES_FILE.read_bytes()
+    config = tomllib.loads(raw.decode("utf-8"))
+    text_rules = [r for r in config["rules"] if "regex" in r and "path" not in r]
+    assert len(secrets.rules()) == len(text_rules) > 200
+    assert "v8.30.1" in secrets.RULES_RELEASE
+    assert "v8.30.1" in (secrets.RULES_FILE.parent / "README.md").read_text("utf-8")
+
+
+@pytest.mark.parametrize(
+    "go, python",
+    [
+        (r"(?i)abc", r"(?i)abc"),  # at the start: global, as in Python
+        (r'x"(?i)ab"', r'x"(?i:ab")'),  # partway: to the end of its group
+        (r'(?:"(?i)a"|b)c', r'(?:"(?i:a")|(?i:b))c'),  # across a | in the same group
+        (r"a\zb", r"a\Zb"),
+        (r"[[:alnum:]]{3}", r"[a-zA-Z0-9]{3}"),
+        (r"[^]a]\[x", r"[^]a]\[x"),
+    ],
+)
+def test_go_patterns_are_translated(go, python):
+    assert secrets.go_to_python(go) == python
+
+
+def test_a_mid_pattern_flag_matches_as_go_matches_it():
+    pattern = re.compile(secrets.go_to_python(r'(?:"(?i)ab"|cd)'))
+    assert pattern.fullmatch('"AB"') and pattern.fullmatch("CD")
+    assert not re.compile(secrets.go_to_python(r'x(?:"(?i)ab")')).fullmatch('X"ab"')
+
+
+def test_dropping_a_rules_lazy_lead_finds_the_same_secrets():
+    """The leading [\\w.-]{0,50}? only moves where a match starts, never its secret."""
+    config = tomllib.loads(secrets.RULES_FILE.read_text("utf-8"))
+    leads = [r for r in config["rules"] if "regex" in r and "path" not in r]
+    leads = [r for r in leads if secrets.drop_lead(secrets.go_to_python(r["regex"])) != (
+        secrets.go_to_python(r["regex"]))]  # fmt: skip
+    assert len(leads) > 50
+    value = rand(40, "0123456789abcdef")
+    for rule in leads:
+        keyword = rule.get("keywords", ["key"])[0]
+        texts = [
+            f"my_{keyword}_token = {value}\n",
+            f"{keyword} {keyword}: '{value}' and {keyword}={value} ",
+            f'x.y-z{keyword}_API_KEY := "{value}"',
+        ]
+        full = re.compile(secrets.go_to_python(rule["regex"]), re.ASCII)
+        lean = re.compile(secrets.drop_lead(secrets.go_to_python(rule["regex"])), re.ASCII)
+        for text in texts:
+            spans = [
+                secrets.secret_span(m, rule.get("secretGroup", 0)) for m in full.finditer(text)
+            ]
+            lean_spans = [
+                secrets.secret_span(m, rule.get("secretGroup", 0)) for m in lean.finditer(text)
+            ]
+            assert spans == lean_spans, rule["id"]
+
+
+WORST = ("a", "A", "0", "-", "=", "/", " ", "\t", "\n", ".", "_", "'", '"', ":", "ey")
+WORST += ("a+", "x+%40", "key=", "curl -H ", "https://a:", "sk-ant-api03-", "-----BEGIN ")
+
+
+def test_no_rule_is_slow_on_long_worst_case_text():
+    """Python's regex engine can be slow where Go's can't. A slow rule fails here, in CI,
+    not on a producer's machine."""
+    slow = []
+    for rule in secrets.rules():
+        lead = " ".join(rule.keywords) + " "
+        for piece in WORST:
+            text = lead + piece * (20_000 // len(piece))
+            started = time.perf_counter()
+            list(rule.pattern.finditer(text))
+            if (took := time.perf_counter() - started) > 1:
+                slow.append((rule.id, piece, round(took, 2)))
+    assert slow == []
+
+
+@pytest.mark.parametrize("piece", WORST)
+def test_every_step_and_the_last_check_are_quick_on_long_worst_case_text(piece):
+    text = piece * (20_000 // len(piece))
+    started = time.perf_counter()
+    scrubbed = scrub(text)
+    found(scrubbed)
+    assert time.perf_counter() - started < 5
+
+
+# Known secret shapes
+
+
+@pytest.mark.parametrize(
+    "kind", ["aws key id", "github", "slack", "google", "openai", "anthropic", "jwt", "pem"]
+)
+def test_a_known_secret_shape_becomes_secret(kind):
+    value = fake(kind)
+    assert scrub(f"Here it is: {value} (don't share)") == "Here it is: [secret] (don't share)"
+
+
+def test_an_aws_secret_key_and_a_password_line_become_secret_and_only_the_value_goes():
+    key, password = rand(40, ALNUM + "+/"), fake("password")
+    text = f'aws_secret_access_key = {key}\npassword = "{password}"\nDB_PASSWORD: {password}'
+    assert (
+        scrub(text)
+        == 'aws_secret_access_key = [secret]\npassword = "[secret]"\nDB_PASSWORD: [secret]'
+    )
+
+
+def test_a_password_in_a_link_becomes_secret_and_the_link_stays_readable():
+    password = fake("password")
+    assert (
+        scrub(f"use postgres://admin:{password}@db.example.com/app")
+        == "use postgres://admin:[secret]@db.example.com/app"
+    )
+    query = f"https://example.com/login?user=a&password={password}"
+    assert scrub(query) == "https://example.com/login?user=a&password=[secret]"
+
+
+def test_a_settings_line_with_no_secret_in_it_isnt_replaced():
+    """The rules' entropy settings: the generic key rule needs a value that looks random."""
+    text = (
+        "timeout = 30\nkey: value\napi_version = v2\nauth = enabled\naccess: read-only-mode\n"
+        "token_name = my_test_token_here\npassword: ********\nsecret = 'not-a-real-one'"
+    )
+    assert scrub(text) == text
+
+
+def test_the_same_secret_twice_is_replaced_both_times_even_where_no_rule_sees_it():
+    password = fake("password")
+    text = f"password = {password}\nand again later: {password}."
+    assert scrub(text) == "password = [secret]\nand again later: [secret]."
+
+
+# A secret split or disguised (must-refuse 17 and "split or disguised")
+
+
+@pytest.mark.parametrize(
+    "hidden",
+    ["\u200b", "\u00ad", "\u200b\u2060", "\ufeff\u00ad"],
+    ids=["zero-width space", "soft hyphen", "two different", "two others"],
+)
+def test_must_refuse_17_a_secret_split_by_invisible_characters_is_replaced_whole(hidden):
+    value = fake("github")
+    split = value[:10] + hidden[0] + value[10:20] + hidden[-1] + value[20:]
+    assert scrub(f"token: {split} ok") == "token: [secret] ok"
+
+
+def test_must_refuse_17_the_last_check_finds_half_a_split_secret():
+    value = fake("anthropic")
+    split = value[:54] + "\u200b" + value[54:]
+    assert found(f"left: {split}") == ["a secret"]
+    # A broken replacement that stops at the invisible character leaves half a key.
+    assert found(f"left: [secret]\u200b{value[54:]}") == ["a secret"]
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    ["`{}`", "```\n{}\n```", "<https://api.example.com/v1?token={}|link>", "'{}'", "({})"],
+    ids=["backticks", "code block", "inside a link", "quotes", "brackets"],
+)
+def test_a_secret_wrapped_in_formatting_is_found(wrap):
+    value = fake("github")
+    assert value not in scrub(wrap.format(value))
+    assert "[secret]" in scrub(wrap.format(value))
+
+
+def test_a_secret_in_wide_letters_is_found():
+    value = fake("github")
+    wide = "".join(chr(ord(c) + 0xFEE0) if "!" <= c <= "~" else c for c in value)
+    assert scrub(f"key {wide} end") == "key [secret] end"
+
+
+# The randomness check
+
+
+def test_a_random_string_becomes_secret_maybe_and_is_flagged_without_its_value():
+    value = rand(40)
+    text, flags = Scrubber(People()).scrub(f"the value {value} works")
+    assert text == "the value [secret?] works"
+    assert [(f.kind, f.text) for f in flags] == [(MAYBE_SECRET, "")]
+
+
+def test_a_long_hex_string_like_a_commit_hash_becomes_secret_maybe():
+    assert scrub("fixed in " + rand(40, "0123456789abcdef")) == "fixed in [secret?]"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "internationalization and characterization2024",
+        "Thesentencewithoutanyspacesatall",
+        "MyProjectNotes2024Final ExportSlackChannelHistory2 getUserAccountSettings2",
+        "README-2026-11-23-final and snake_case_variable_name_2",
+        "[Person 12] [secret?] [meeting link] [phone] [email]",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1111111111111111111111111111",
+    ],
+)
+def test_ordinary_words_and_placeholders_are_left_alone(text):
+    assert scrub(text) == text
+
+
+def test_slack_and_google_links_come_through_whole():
+    doc = "https://docs.google.com/document/d/" + rand(44, URLSAFE) + "/edit?usp=sharing"
+    drive = "https://drive.google.com/file/d/" + rand(33, URLSAFE) + "/view"
+    message = "https://example.slack.com/archives/C00000001/p1790864040000100?thread_ts=1790864040.000100&cid=C00000001"
+    canvas = "https://example.slack.com/docs/T00000000/F00000003"
+    text = f"See <{doc}|the doc>, {drive}, {message} and [canvas]({canvas})."
+    assert scrub(text) == text
+
+
+# Meeting links
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://us02web.zoom.us/j/12345678901?pwd={code}",
+        "https://zoom.us/my/example.room",
+        "https://meet.google.com/abc-defg-hij",
+        "meet.google.com/abc-defg-hij?authuser=0",
+        "https://teams.microsoft.com/l/meetup-join/19%3ameeting_{code}%40thread.v2/0",
+        "https://teams.live.com/meet/9876543210?p={code}",
+        "https://example.webex.com/example/j.php?MTID={code}",
+        "https://whereby.com/example-room",
+        "https://meet.jit.si/ExampleRoom{code}",
+        "https://calendly.com/example/30min",
+    ],
+)
+def test_a_meeting_link_becomes_meeting_link_passcode_and_all(link):
+    link = link.format(code=rand(24))
+    assert scrub(f"Join here: {link} at 10") == "Join here: [meeting link] at 10"
+    assert scrub(f"<{link}|Join here>") == "<[meeting link]|Join here>"
+
+
+def test_other_links_stay_even_if_they_mention_a_meeting_service():
+    text = "https://example.com/zoom/notes and https://teams.microsoft.com/settings and zoom.us"
+    assert scrub(text) == text
+
+
+# Phone numbers
+
+
+@pytest.mark.parametrize(
+    "number",
+    [
+        "(201) 555-0123",
+        "201-555-0123",
+        "201.555.0123",
+        "+1 202 555 0142",
+        "+1-800-555-0199",
+        "020 7946 0958",
+        "+44 20 7946 0958",
+        "+44 (0)20 7946 0958",
+        "+33 1 23 45 67 89",
+    ],
+)
+def test_a_phone_number_becomes_phone(number):
+    assert scrub(f"Call me on {number} tomorrow.") == "Call me on [phone] tomorrow."
+
+
+def test_a_tel_link_is_replaced_whole():
+    assert scrub("<tel:+12025550142|call>") == "<[phone]|call>"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "On 2026-11-23 at 10:30, and 23/11/2026, 11/23/2026.",
+        "Version 1.2.3 and v2026.11.0 cost $1,234.56 or £12,345.",
+        "ts 1790864040.000100 and p1790864040000100",
+        "[Person 12] and [Person 345] met at 14:00-15:30.",
+        "See https://example.com/p/2015550123 and https://docs.google.com/d/2015550123/edit",
+        "https://example.slack.com/archives/C00000001/p1790864040000100",
+    ],
+)
+def test_dates_times_versions_money_ids_and_links_arent_phone_numbers(text):
+    assert scrub(text) == text
+
+
+# Order, placeholders and the last check
+
+
+def test_new_checks_come_first_in_order():
+    assert CHECKS[:4] == ("secrets", "meeting links", "phone numbers", "emails")
+    assert CHECKS[-1] == "last check"
+
+
+@pytest.mark.parametrize("name", ["Secret", "Phone", "Meeting", "Link", "Meeting Link"])
+def test_a_person_named_like_a_placeholder_doesnt_change_it(name):
+    people = People(people=[Person("[Person 1]", ("U00000001",), (name,), ())])
+    text = f"{name} said call {'(201) 555-0123'} or https://meet.google.com/abc-defg-hij"
+    scrubbed = scrub(text, people)
+    assert scrubbed == "[Person 1] said call [phone] or [meeting link]"
+    assert found(scrubbed) == []
+
+
+@pytest.mark.parametrize(
+    "left, kind",
+    [
+        (lambda: fake("github"), "a secret"),
+        (lambda: rand(40), "a secret"),
+        (lambda: "https://meet.google.com/abc-defg-hij", "a meeting link"),
+        (lambda: "+44 20 7946 0958", "a phone number"),
+    ],
+)
+def test_the_last_check_names_the_kind_never_the_value(left, kind):
+    value = left()
+    result = found(f"something left: {value}")
+    assert result == [kind]
+    assert value not in " ".join(result)

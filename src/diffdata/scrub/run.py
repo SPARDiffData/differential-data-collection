@@ -59,7 +59,16 @@ from diffdata.scrub.people import (
     render,
     seen_in_slack,
 )
-from diffdata.scrub.text import CHECKS, SHARED, UNKNOWN_ID, UNKNOWN_MENTION, Flag, Scrubber
+from diffdata.scrub.secrets import RULES_RELEASE, RulesError, rules
+from diffdata.scrub.text import (
+    CHECKS,
+    MAYBE_SECRET,
+    SHARED,
+    UNKNOWN_ID,
+    UNKNOWN_MENTION,
+    Flag,
+    Scrubber,
+)
 
 SCRUBBED = "scrubbed"
 IN_PROGRESS = "scrubbed-in-progress"
@@ -83,7 +92,16 @@ FLAG_KINDS = {
     SHARED: "A name more than one person has, hidden as [name]",
     UNKNOWN_MENTION: "A mention of someone not in the list, hidden as @[name?]",
     UNKNOWN_ID: "A Slack ID of someone not in the list, hidden as [name?]",
+    MAYBE_SECRET: "Text that looks random, maybe a key or password, hidden as [secret?]",
 }
+# What's checked and what isn't, for anyone who reads the manifest (Paul, #117).
+NOTE = (
+    "Not approved for release. Replaced: secrets (the rules of "
+    f"{RULES_RELEASE}, run in Python, and a randomness check), meeting links, phone "
+    "numbers, emails, Slack IDs, mentions and the names in the people list. Not checked "
+    "yet: names of people who aren't in the people list, and links that open the original "
+    "(a doc shared with anyone who has the link, a Slack file)."
+)
 FLAGS_HEADER = """\
 # Flags from the last scrub
 
@@ -91,7 +109,10 @@ The scrub hid these without knowing who they are. Each one is real text from you
 so this file stays in private/ and is never shared.
 
 To resolve one, edit people.toml: add it to someone's nicknames (or a Slack ID to their
-slack_ids) if it's them, or to not_names if it isn't a name. The next scrub applies it."""
+slack_ids) if it's them, or to not_names if it isn't a name. The next scrub applies it.
+
+A possible secret ([secret?]) is listed by copy only, never by its value. It stays hidden
+either way; look at the original if you need to know what it was."""
 
 
 class ScrubError(Exception):
@@ -145,6 +166,10 @@ def scrub(config: Config) -> str:
     data = config.data_dir
     if not data.is_dir():
         raise ScrubError("The data folder doesn't exist yet. Run /slack-export first.")
+    try:
+        rules()  # a missing or changed rule file stops the run before anything is touched
+    except RulesError as e:
+        raise ScrubError(str(e)) from None
     for name in (SCRUBBED, IN_PROGRESS, PRIVATE):
         refuse_links(data, name)
     for name in (SCRUBBED, IN_PROGRESS):
@@ -257,10 +282,7 @@ def make_copies(config: Config, earlier: bool) -> str:
     manifest = {
         "tool": f"diffdata {__version__}",
         "approved_for_release": False,
-        "note": (
-            "Not approved for release. Names, Slack IDs and emails are replaced. Phone "
-            "numbers, meeting links and secrets aren't checked yet."
-        ),
+        "note": NOTE,
         "copies": copies,
         "held_back": held,
     }
@@ -287,8 +309,9 @@ def make_copies(config: Config, earlier: bool) -> str:
         )
     report.append(f"The people list has {len(people.people)} people, {new} of them new.")
     report.append(
-        "These copies are not approved for release: phone numbers, meeting links and "
-        "secrets aren't checked yet."
+        "These copies are not approved for release: names of people who aren't in the "
+        "people list, and links that open the original, aren't checked yet. Read your "
+        "copies before you push."
     )
     return "\n".join(report)
 
@@ -305,7 +328,8 @@ def render_flags(flags: list[tuple[str, Flag]]) -> str:
             lines += ["", f"## {title}", ""]
         for flag in found:
             shown = ("@" if kind == UNKNOWN_MENTION else "") + flag.text
-            text = json.dumps(shown, ensure_ascii=False)  # quoted, so any text stays one line
+            # quoted, so any text stays one line. A possible secret is never written down.
+            text = "[secret?]" if kind == MAYBE_SECRET else json.dumps(shown, ensure_ascii=False)
             shared = f", shared by {' and '.join(flag.shared_by)}" if flag.shared_by else ""
             where = ", ".join(f"{copy} ({n})" for copy, n in sorted(places[flag].items()))
             lines.append(f"- {text}{shared}: {where}")
