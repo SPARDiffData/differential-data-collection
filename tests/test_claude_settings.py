@@ -199,6 +199,21 @@ def test_claudes_file_tools_cant_write_the_files_that_opt_items_in(edit):
     assert denied(edit)
 
 
+# STO-1: the team's store key can add files to the team's folder in the bucket, so no AI tool
+# reads it, writes it or names it in a command (decision 5 on #114).
+STORE_KEY_USES = [
+    "Read(~/.diffdata/store-key.json)",
+    "Edit(~/.diffdata/store-key.json)",
+    "Bash(cat ~/.diffdata/store-key.json)",
+    "PowerShell(Get-Content ~/.diffdata/store-key.json)",
+]
+
+
+@pytest.mark.parametrize("use", STORE_KEY_USES)
+def test_claudes_tools_cant_read_write_or_name_the_store_key(use):
+    assert denied(use)
+
+
 @pytest.mark.parametrize("edit", DEVELOPMENT_EDITS)
 def test_editing_the_consent_code_and_the_example_config_isnt_blocked(edit):
     assert not denied(edit)

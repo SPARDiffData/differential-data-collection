@@ -181,8 +181,8 @@ def scrub(config: Config) -> str:
         (private / LOCK).touch(exist_ok=False)
     except FileExistsError:
         raise ScrubError(
-            f"Another scrub is running, or one stopped without finishing. If none is "
-            f"running, delete {PRIVATE}/{LOCK} in your data folder and run again."
+            f"Another scrub or a push is running, or a scrub stopped without finishing. If "
+            f"neither is running, delete {PRIVATE}/{LOCK} in your data folder and run again."
         ) from None
     try:
         return make_copies(config, earlier)
@@ -199,7 +199,11 @@ def make_copies(config: Config, earlier: bool) -> str:
     data = config.data_dir
     opted_out = set(config.slack_opted_out)
     stores = sorted((slack_dir(data) / "store").glob("*/messages.jsonl"))
-    if stores and applied_stamp(data) != opt_out_stamp(opted_out):
+    # Read once, before anything is checked or copied, and written into the manifest as it
+    # was read: a build finishing during the scrub then makes the manifest stale, never
+    # current (store/push.py compares the two).
+    stamp = applied_stamp(data)
+    if stores and stamp != opt_out_stamp(opted_out):
         # The last finished build applied a different list, or none, or stopped partway.
         raise ScrubError(
             "slack_opted_out in config.toml has changed since the last build, or the last "
@@ -283,6 +287,9 @@ def make_copies(config: Config, earlier: bool) -> str:
         "tool": f"diffdata {__version__}",
         "approved_for_release": False,
         "note": NOTE,
+        # Which opt-out list the build had applied when these copies were made, so a push can
+        # tell if the list changed since (store/push.py). A fingerprint: it names nobody.
+        "opt_out_stamp": stamp,
         "copies": copies,
         "held_back": held,
     }

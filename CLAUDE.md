@@ -36,7 +36,8 @@ If a change would break one of these, or you aren't sure, stop and ask the user.
 These rules keep real data out of the repo and out of other companies' AI tools.
 
 - **A session that has seen real data keeps it in its transcript.** That's any session that ran `/slack-export`, read Slack or Google live, or opened files in the data folder. Never hand its transcript to another AI tool: no `/codex:transfer` from it, and no `--source` pointing at it.
-- **Codex, or any AI tool outside Claude, never gets the data folder, `config.toml` or `.env`.** It sends what it reads to its company.
+- **Codex, or any AI tool outside Claude, never gets the data folder, `config.toml`, `.env` or `store-key.json`.** It sends what it reads to its company.
+- **Never read, open, copy or print `~/.diffdata/store-key.json`, by any route.** It's the team's key for adding files to the bucket. `.claude/settings.json` refuses Claude's file tools on it, and any shell command that names it. If a push says the key is missing or wrong, tell the user to fix it themselves.
 - **Invent every value in fixtures and code comments.** When a live read shows you a format, copy its structure (field names, separators, the wording of notices) and make up every value: IDs, names, titles, times, sizes and cursors. Use values nobody saw, such as round times and `FAKE-` IDs.
 - **Scan before anything leaves the machine.** Before each commit, search the staged diff for real values: the workspace's ID prefixes, people's names, email domains, titles, times and sizes. Scan PR descriptions, comments and Issues the same way before posting them. GitHub keeps every edit, so fixing a post afterwards is too late.
 - **If `/slack-export` fails, don't fix the code in that session.** Take the error message to a coding session, with any real values in it (times, IDs, names, quoted text) replaced by placeholders first. A session handed real values counts as having seen real data.
@@ -58,7 +59,7 @@ These rules keep real data out of the repo and out of other companies' AI tools.
 
 ```
 src/diffdata/
-  cli.py            the `diffdata` command; `discover slack`, `consent`, `collect google-docs` and `scrub` are built, the rest are stubs
+  cli.py            the `diffdata` command; `discover slack`, `consent`, `collect google-docs`, `scrub` and `push` are built
   consent/ discover/ collect/ organize/ scrub/ store/    one package per stage
   consent/approvals.py   the approvals file next to config.toml (CON-1, CON-3): approved, skipped or withdrawn, per canvas or Google file; it only grows
   consent/review.py   `diffdata consent review` and `withdraw`: a person approves new items from the reference log, typed in a terminal; they refuse to run anywhere else, as in Claude's tools
@@ -69,6 +70,7 @@ src/diffdata/
   collect/google_fetch.py    fetches the docs listed in `google_docs` or approved at review with that sign-in, read-only, and saves each fetch unchanged (COL-4, COL-5)
   collect/google_doc.py, gdocs_changelog.py   the reader: what any fetch saved, in the shared format, with the changelog replayed
   scrub/            `diffdata scrub` (SCR-1, SCR-2): scrubbed copies in <data>/scrubbed/, built all or nothing (run.py), with the people list in <data>/private/ (people.py), the replacements and last check in text.py, and secrets, meeting links and phone numbers found by secrets.py from gitleaks' pinned rules in scrub/rules/
+  store/            `diffdata push` (STO-1 to STO-3, STO-9, STO-11): sends the passed scrubbed copies, create-only, through one `Store` interface (backend.py); the Google Cloud Storage version is gcs.py
   common/           shared pieces; paths.py holds the data folder guards, config.py reads config.toml
   common/documents.py   the shared document format (ORG-2): raw, versions, event log, clean copies
 tests/              pytest; fixtures/ holds synthetic data only

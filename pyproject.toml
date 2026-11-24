@@ -5,6 +5,7 @@ description = "Finds, collects, scrubs and stores the working data behind AI saf
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "google-cloud-storage>=3",
     "phonenumbers>=9.0.44",
 ]
 
