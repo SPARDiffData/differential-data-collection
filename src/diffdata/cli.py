@@ -197,7 +197,8 @@ def run_slack_step(args: argparse.Namespace) -> int:
     try:
         config = load_config()
         if args.step == "channels":
-            channels = [*config.slack_channels, *config.slack_channel_ids]
+            # In config.toml's order: a test run reads only the first one.
+            channels = list(config.listed_channels)
             if not channels:
                 raise ConfigError(f"No channels are listed under slack_channels in {config.path}.")
             report = "\n".join([f"Opted-in channels, from {config.path}:", *channels])

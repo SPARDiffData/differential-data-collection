@@ -244,7 +244,14 @@ def left_out_locked(data: Path) -> Iterator[None]:
     at once, two hooks can finish together: without this, each would write back only its own
     names over the other's, and a name lost there would let plain-text mentions of that
     person through the scrub. If another holds it, wait for it, briefly."""
-    lock = left_out_path(data).with_name("left_out.json.lock")
+    with file_locked(left_out_path(data).with_name("left_out.json.lock"), "slack/left_out.json"):
+        yield
+
+
+@contextmanager
+def file_locked(lock: Path, what: str) -> Iterator[None]:
+    """Hold `lock` while one hook reads, changes and writes a shared file. If another holds
+    it, wait for it, briefly."""
     lock.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + LEFT_OUT_WAIT_SECONDS
     while True:
@@ -254,14 +261,26 @@ def left_out_locked(data: Path) -> Iterator[None]:
         except FileExistsError as e:
             if time.monotonic() > deadline:
                 raise SlackExportError(
-                    "another save held slack/left_out.json for too long. If no Slack export "
-                    "is running, delete slack/left_out.json.lock in the data folder"
+                    f"another save held {what} for too long. If no Slack export is running, "
+                    f"delete {what}.lock in the data folder"
                 ) from e
             time.sleep(0.05)
     try:
         yield
     finally:
         lock.unlink(missing_ok=True)
+
+
+def record_channel_name(data: Path, run_id: str, channel_id: str, name: str) -> None:
+    """Add a channel's name, learned from its first read, to the open run. Under a lock, and
+    from the run as it is now, so two hooks that finish together keep both names."""
+    path = run_path(data)
+    with file_locked(path.with_name(f"{path.name}.lock"), "slack/run.json"):
+        run = open_run(data)
+        if run is None or run.run_id != run_id:
+            raise SlackExportError("the export run closed while the read was saved")
+        run.channels[channel_id] = name
+        write_json(path, asdict(run))
 
 
 def record_left_out(data: Path, seen: dict[str, set[str]]) -> None:
@@ -630,7 +649,7 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
             )
         if not expected:
             # Listed by ID: the read's ID matched, so its name is the channel's name. The run
-            # keeps it once the read is saved, so the export and the scrub name the folder.
+            # keeps it, so the export and the scrub name the channel's folder.
             learned = channel_name(header["name"])
     elif not channel_checked(config.data_dir, run, channel_id):
         return fail(
@@ -644,16 +663,20 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
             record_left_out(config.data_dir, left_names)
         except (OSError, SlackExportError) as e:
             return fail(f"Couldn't record who was left out, so nothing was saved: {e}")
+    if learned:
+        # Before the read is saved: a saved read with no name would leave its channel
+        # nameless for the build and the scrub. A name with no saved read does no harm: it
+        # came from the read whose ID matched.
+        try:
+            record_channel_name(config.data_dir, run.run_id, channel_id, learned)
+        except (OSError, SlackExportError) as e:
+            return fail(
+                f"Couldn't record the channel's name in the export run, so nothing was saved: {e}"
+            )
     try:
         write_json(path, record)
     except OSError as e:
         return fail(f"Couldn't save a Slack result to the inbox: {e}")
-    if learned:
-        run.channels[channel_id] = learned
-        try:
-            write_json(run_path(config.data_dir), asdict(run))
-        except OSError as e:
-            return fail(f"Couldn't record the channel's name in the export run: {e}")
     note = saved_note(tool, hook["tool_name"], hook["tool_input"], response, overflow is not None)
     if left:
         note += f" {left} message(s) by people in slack_opted_out were left out of what was saved."

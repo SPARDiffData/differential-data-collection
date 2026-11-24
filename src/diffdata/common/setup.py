@@ -28,7 +28,9 @@ What setup refuses (the plan's must-refuse list, approved on #130):
   12  to send anything anywhere: it makes no network call
   13  to take the handle from the computer or from Slack
   14  to change a saved handle by itself
-  15  to take team values from anywhere but --team or the producer's paste
+  15  to take team values from anywhere but --team or the producer's paste. The one other
+      source is the config.toml setup wrote before: the values the producer pasted or
+      accepted then. They're shown and need a yes, like any others (16)
   16  to use team values without showing them first and getting a yes
 """
 
@@ -36,7 +38,6 @@ import json
 import os
 import re
 import secrets
-import shutil
 import string
 import subprocess
 import sys
@@ -57,7 +58,7 @@ from diffdata.common.config import (
     link_workspace,
     load_config,
 )
-from diffdata.common.paths import UnsafeDataDirError, data_dir
+from diffdata.common.paths import UnsafeDataDirError, data_dir, find_git_root, synced_by
 from diffdata.store import push
 
 TEAM_KEYS = ("bucket", "folder", "project")
@@ -316,16 +317,36 @@ def write_config(settings: Path, raw: dict, prompter: Prompter) -> bool:
     text = render(raw)
     folder = settings.parent
     folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if settings.is_symlink():
+        raise SetupError(
+            f"{settings} is a link. Setup writes only a plain config.toml: replace the link "
+            f"with the file itself, then run setup again. {NOTHING_WRITTEN}"
+        )
     if settings.exists():
         backup = folder / BACKUP_NAME
+        if backup.is_symlink() or (backup.exists() and not backup.is_file()):
+            # Copying onto a link would write over the file it points to.
+            raise SetupError(
+                f"{backup} is a link or a folder, not a plain file. Move it away, then run "
+                f"setup again. {NOTHING_WRITTEN}"
+            )
         if backup.exists() and not prompter.yes(
             f"There's an older {BACKUP_NAME}. Replace it with a copy of the current config.toml?",
             default=False,
         ):
             prompter.say(f"{NOTHING_WRITTEN} Move {backup} away to keep it, then run setup again.")
             return False
-        shutil.copy2(settings, backup)
-        restrict(backup)
+        # A private copy first, then one move: the old backup is never gone before the new
+        # one is in place, and no one else can read it on the way.
+        old, copy_name = tempfile.mkstemp(dir=folder, prefix=".config-bak-", suffix=".toml")
+        copy = Path(copy_name)
+        try:
+            with os.fdopen(old, "wb") as file:
+                file.write(settings.read_bytes())
+            restrict(copy)
+            os.replace(copy, backup)
+        finally:
+            copy.unlink(missing_ok=True)
     handle, temp_name = tempfile.mkstemp(dir=folder, prefix=".config-", suffix=".toml")
     temp = Path(temp_name)
     try:
@@ -425,7 +446,9 @@ def folder_step(prompter: Prompter, picker: Callable[[str], Path | None], curren
         if proposed is not None:
             try:
                 shown = data_dir(proposed)
-            except UnsafeDataDirError as e:
+                if shown.exists() and not shown.is_dir():
+                    raise SetupError(f"{shown} is a file, not a folder.")
+            except (UnsafeDataDirError, SetupError) as e:
                 prompter.say(f"{e} Choose another folder.")
             else:
                 answer = prompter.ask(
@@ -440,7 +463,8 @@ def folder_step(prompter: Prompter, picker: Callable[[str], Path | None], curren
         if chosen is None:
             typed = prompter.ask("Type the folder's full path: ").strip()
             chosen = Path(typed) if typed else None
-        proposed = str(chosen.expanduser()) if chosen else None
+        # Absolute, so config.toml names the same folder from wherever a command runs.
+        proposed = str(chosen.expanduser().resolve()) if chosen else None
 
 
 def config_step(
@@ -554,7 +578,7 @@ def key_step(prompter: Prompter, folder: Path, picker: Callable[[str], Path | No
         if prompter.yes(
             f"Others on this computer can read {push.KEY_NAME}. Make it readable only by you "
             "(chmod 600)?",
-            default=True,
+            default=False,
         ):
             os.chmod(key, 0o600)
 
@@ -577,7 +601,21 @@ def import_key(source: Path, key: Path) -> None:
             push.read_key(temp)
         except push.PushError as e:
             raise SetupError(str(e).replace(temp.name, push.KEY_NAME)) from None
-        os.replace(temp, key)
+        # Made only if it isn't there, so a key saved meanwhile by another window is never
+        # written over. One plain file, which push accepts; a write cut short removes it.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        try:
+            out = os.open(key, flags, 0o600)
+        except FileExistsError:
+            raise SetupError(f"A store key appeared at {key} meanwhile. It was kept.") from None
+        try:
+            with os.fdopen(out, "wb") as file:
+                file.write(raw)
+        except BaseException:
+            key.unlink(missing_ok=True)
+            raise
+        restrict(key)
     finally:
         temp.unlink(missing_ok=True)
 
@@ -609,6 +647,12 @@ def setup(
             f"{folder}, and stops when it finds two. Move that file away or delete it yourself, "
             f"or run setup from another folder. {NOTHING_WRITTEN}"
         )
+    for candidate in (folder.absolute(), folder.resolve()):
+        if find_git_root(candidate) is not None or synced_by(candidate) is not None:
+            raise SetupError(
+                f"{folder} is inside a git repository or a synced folder, where config.toml "
+                f"and the store key could be shared by mistake. {NOTHING_WRITTEN}"
+            )
     raw: dict = {}
     if settings.exists():
         raw = read_raw(settings)

@@ -572,3 +572,142 @@ def test_team_command_refuses_a_value_push_would_refuse(capsys, tmp_path, monkey
     err = capsys.readouterr().err
     assert "bucket" in err and "Bad_Bucket" not in err
     assert list(tmp_path.iterdir()) == []
+
+
+def test_a_typed_relative_data_folder_is_saved_as_an_absolute_path(home):
+    answers = fresh_answers()
+    answers[1:2] = ["c", "../relative-data", ""]  # choose; no picker: type it; then use it
+    code, _ = run(home, *answers)
+    assert code == 0
+    saved = tomllib.loads(settings(home).read_text())["local"]["data_dir"]
+    assert saved == str((Path.cwd().parent / "relative-data").resolve())
+    assert Path(saved).is_absolute()
+
+
+# --- fixes after Codex's first review --------------------------------------------------
+
+
+@POSIX
+def test_a_backup_that_is_a_link_is_refused_and_its_target_kept(home):
+    path = existing(home)
+    target = home / "precious.txt"
+    target.write_text("keep me\n", encoding="utf-8")
+    (path.parent / setup.BACKUP_NAME).symlink_to(target)
+    before = path.read_bytes()
+    with pytest.raises(SetupError, match="is a link or a folder"):
+        run(home, "y", "", "", "new-channel", "", "", "y", team=None)
+    assert target.read_text(encoding="utf-8") == "keep me\n"
+    assert path.read_bytes() == before
+
+
+def test_a_settings_folder_in_a_synced_folder_is_refused_before_anything(home, monkeypatch):
+    synced = home / "Dropbox" / ".diffdata" / "config.toml"
+    monkeypatch.setattr(config_module, "user_config_file", lambda: synced)
+    with pytest.raises(SetupError, match="synced folder"):
+        run(home)
+    assert not (home / "Dropbox").exists()
+
+
+def test_a_key_saved_meanwhile_is_never_written_over(home, monkeypatch):
+    download = home / "key.json"
+    download.write_text(json.dumps(KEY), encoding="utf-8")
+    key = home / ".diffdata" / "store-key.json"
+    real_read_key = setup.push.read_key
+
+    def read_key_then_another_window_saves_one(path):
+        found = real_read_key(path)
+        if path != key:
+            key.write_text("saved by another window\n", encoding="utf-8")
+        return found
+
+    monkeypatch.setattr(setup.push, "read_key", read_key_then_another_window_saves_one)
+    answers = fresh_answers()
+    answers[-1:] = [str(download), ""]  # the download; then "later"
+    _, script = run(home, *answers)
+    assert key.read_text(encoding="utf-8") == "saved by another window\n"
+    assert "appeared" in script.text
+    assert not list(key.parent.glob(".store-key-*"))
+
+
+@POSIX
+def test_must_refuse_10_enter_at_the_chmod_question_changes_nothing(home):
+    key = write_key(home, mode=0o644)
+    run(home, *fresh_answers())  # the last answer, for the chmod question, is Enter
+    assert stat.S_IMODE(key.stat().st_mode) == 0o644
+
+
+def test_a_data_folder_that_is_a_file_is_asked_again(home):
+    a_file = home / "a-file"
+    a_file.write_text("x", encoding="utf-8")
+    answers = fresh_answers()
+    answers[1:2] = ["c", str(a_file), str(home / "good"), ""]  # refused: straight to typing
+    code, script = run(home, *answers)
+    assert code == 0
+    assert "is a file, not a folder" in script.text
+    assert tomllib.loads(settings(home).read_text())["local"]["data_dir"] == str(home / "good")
+
+
+@POSIX
+def test_a_config_that_is_a_link_is_never_written_through(home):
+    real = home / "elsewhere.toml"
+    real.write_text(EXISTING.format(data=(home / "old-data").as_posix()), encoding="utf-8")
+    settings(home).parent.mkdir(parents=True)
+    settings(home).symlink_to(real)
+    before = real.read_bytes()
+    with pytest.raises(SetupError, match="is a link"):
+        run(home, "y", "", "", "new-channel", "", "", "y", team=None)
+    assert real.read_bytes() == before
+    assert settings(home).is_symlink()
+    assert not (settings(home).parent / setup.BACKUP_NAME).exists()
+
+
+@POSIX
+def test_the_backup_is_private_and_replaces_the_old_one_in_one_step(home):
+    path = existing(home)
+    backup = path.parent / setup.BACKUP_NAME
+    backup.write_text("older backup\n", encoding="utf-8")
+    os.chmod(backup, 0o644)
+    before = path.read_bytes()
+    run(home, "y", "", "", "new-channel", "", "", "y", "y", "", team=None)
+    assert backup.read_bytes() == before
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+    assert not list(path.parent.glob(".config-bak-*"))
+
+
+def test_a_key_write_cut_short_leaves_no_key(home, monkeypatch):
+    download = home / "key.json"
+    download.write_text(json.dumps(KEY), encoding="utf-8")
+    key = home / ".diffdata" / "store-key.json"
+    real_open, real_fdopen = setup.os.open, setup.os.fdopen
+    key_fds = []
+
+    def open_and_note(path, flags, *args):
+        fd = real_open(path, flags, *args)
+        if Path(path) == key:
+            key_fds.append(fd)
+        return fd
+
+    class CutShort:
+        def __init__(self, fd):
+            self.fd = fd
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            os.close(self.fd)
+
+        def write(self, data):
+            raise KeyboardInterrupt
+
+    def fdopen(fd, *args, **kwargs):
+        return CutShort(fd) if fd in key_fds else real_fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(setup.os, "open", open_and_note)
+    monkeypatch.setattr(setup.os, "fdopen", fdopen)
+    answers = fresh_answers()
+    answers[-1:] = [str(download)]
+    with pytest.raises(KeyboardInterrupt):
+        run(home, *answers)
+    assert key_fds and not key.exists()
+    assert not list(key.parent.glob(".store-key-*"))

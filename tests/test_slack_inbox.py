@@ -1287,3 +1287,70 @@ def test_the_channels_step_lists_names_and_ids(tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert cli.main(["discover", "slack", "channels"]) == 0
     assert capsys.readouterr().out.splitlines()[1:] == ["example-channel", "C00000002"]
+
+
+def test_two_names_learned_together_are_both_kept(config):
+    by_id = replace(config, slack_channels=(), slack_channel_ids=(CHANNEL, "C00000002"))
+    begin(by_id, [CHANNEL, "C00000002"], now=T0)
+    run_id = open_run(by_id.data_dir).run_id
+    slack_inbox.record_channel_name(by_id.data_dir, run_id, CHANNEL, "example-channel")
+    slack_inbox.record_channel_name(by_id.data_dir, run_id, "C00000002", "other")
+    assert open_run(by_id.data_dir).channels == {CHANNEL: "example-channel", "C00000002": "other"}
+
+
+def test_a_held_run_lock_stops_the_save_and_says_so(config, monkeypatch, capsys):
+    by_id = replace(config, slack_channels=(), slack_channel_ids=(CHANNEL,))
+    begin(by_id, [CHANNEL], now=T0)
+    monkeypatch.setattr(slack_inbox, "LEFT_OUT_WAIT_SECONDS", 0.1)
+    lock = slack_inbox.run_path(by_id.data_dir).with_name("run.json.lock")
+    lock.write_text("", encoding="utf-8")
+    assert save(by_id, payload(), now=T0) == 2
+    assert "run.json.lock" in capsys.readouterr().err
+    assert open_run(by_id.data_dir).channels == {CHANNEL: ""}
+    assert inbox_files(by_id) == []  # no read saved without its channel's name
+
+
+def test_names_learned_by_overlapping_saves_are_both_kept(config, monkeypatch):
+    """A second hook starts while the first holds the run: it must wait, then add its name
+    to the run as the first left it."""
+    import threading
+    import time
+
+    by_id = replace(config, slack_channels=(), slack_channel_ids=(CHANNEL, "C00000002"))
+    begin(by_id, [CHANNEL, "C00000002"], now=T0)
+    run_id = open_run(by_id.data_dir).run_id
+    real_open_run = slack_inbox.open_run
+    second: list[threading.Thread] = []
+
+    def open_run_then_overlap(data):
+        found = real_open_run(data)
+        if not second:
+            other = threading.Thread(
+                target=slack_inbox.record_channel_name,
+                args=(by_id.data_dir, run_id, "C00000002", "other"),
+            )
+            second.append(other)
+            other.start()
+            time.sleep(0.2)  # the second hook is now waiting, or racing
+        return found
+
+    monkeypatch.setattr(slack_inbox, "open_run", open_run_then_overlap)
+    slack_inbox.record_channel_name(by_id.data_dir, run_id, CHANNEL, "example-channel")
+    second[0].join(timeout=5)
+    assert real_open_run(by_id.data_dir).channels == {
+        CHANNEL: "example-channel",
+        "C00000002": "other",
+    }
+
+
+def test_the_channels_step_keeps_config_order(tmp_path, capsys, monkeypatch):
+    data = (tmp_path / "data").as_posix()
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f'[sources]\nslack_channels = ["C00000002", "example-channel"]\n[local]\n'
+        f'data_dir = "{data}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["discover", "slack", "channels"]) == 0
+    assert capsys.readouterr().out.splitlines()[1:] == ["C00000002", "example-channel"]

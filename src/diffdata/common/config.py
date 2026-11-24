@@ -100,6 +100,8 @@ class Config:
     slack_channels: tuple[str, ...]
     # CON-1: channels listed by their ID, or by a link, in slack_channels. IDs.
     slack_channel_ids: tuple[str, ...] = ()
+    # Every channel as slack_channels lists it, in its order: a name, or an ID.
+    listed_channels: tuple[str, ...] = ()
     # The workspace's address, like https://example.slack.com, for message links.
     slack_workspace_url: str = ""
     # CON-1: listing a canvas is the opt-in to collecting it (COL-2). Canvas IDs.
@@ -220,6 +222,7 @@ def load_config(path: str | Path | None = None) -> Config:
         raise ConfigError(f"slack_workspace_url in {path} must start with https://")
     channel_names: list[str] = []
     channel_ids: dict[str, int] = {}  # ID to its entry number
+    listed_channels: list[str] = []
     for number, listed in enumerate(channels, start=1):
         found = channel_id(listed)
         if found is not None:
@@ -229,6 +232,7 @@ def load_config(path: str | Path | None = None) -> Config:
                     "the same channel. Remove one, or replace it with the channel you meant."
                 )
             channel_ids[found] = number
+            listed_channels.append(found)
         elif listed.strip().lower().startswith(("http://", "https://")):
             # Messages name the entry's place, not the link, so no ID reaches shared output.
             raise ConfigError(
@@ -237,6 +241,7 @@ def load_config(path: str | Path | None = None) -> Config:
             )
         else:
             channel_names.append(channel_name(listed))
+            listed_channels.append(channel_name(listed))
     canvases = sources.get("slack_canvases", [])
     if not isinstance(canvases, list) or not all(isinstance(c, str) for c in canvases):
         raise ConfigError(f"slack_canvases in {path} must be a list of canvas IDs or links.")
@@ -338,6 +343,7 @@ def load_config(path: str | Path | None = None) -> Config:
         data_dir=data_dir(configured),
         slack_channels=tuple(channel_names),
         slack_channel_ids=tuple(channel_ids),
+        listed_channels=tuple(listed_channels),
         slack_workspace_url=workspace.rstrip("/"),
         slack_canvases=tuple(canvas_ids),
         canvas_refresh_days=refresh_days,
