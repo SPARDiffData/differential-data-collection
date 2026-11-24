@@ -2,16 +2,21 @@
 what's left (SCR-2).
 
 The steps run in this order, each on the text the one before left:
-  1. emails become [email]
-  2. Slack user IDs become that person's [Person N], or [name?] if the people list
+  1. secrets become [secret], or [secret?] if only the randomness check finds them
+     (secrets.py): first, so a token inside a link or an email-like string can't be half
+     replaced by a later step
+  2. meeting links become [meeting link], passcode and all
+  3. phone numbers and tel: links become [phone], but not digits inside other links
+  4. emails become [email]
+  5. Slack user IDs become that person's [Person N], or [name?] if the people list
      doesn't have them
-  3. @mentions are read whole, handle and all: a known name becomes its [Person N], and
+  6. @mentions are read whole, handle and all: a known name becomes its [Person N], and
      anything else becomes @[name?], so a handle like @alex.newperson, or a display name
      like @Alex Newperson that only starts with a known name, can't half survive
-  4. known people's names become their [Person N]: whole words, longest first ("Alex
+  7. known people's names become their [Person N]: whole words, longest first ("Alex
      Example" before "Alex"), and never inside a placeholder already put in
-A name two people share becomes [name]. Later steps slot into the order: secrets first,
-then meeting links and phone numbers before emails.
+A name two people share becomes [name]. Every [secret?] is listed in flags.md by kind and
+copy, never by value.
 
 Names are compared folded: in any case (WEISS for Weiß), without accents (Jose for José),
 with any spacing, with a curly apostrophe the same as a straight one, and with wide or
@@ -32,7 +37,8 @@ gives "riley". An initial on its own, like "J.", isn't a name: it would hide eve
 one-letter name in a script without capitals, like 李, is.
 
 `leftovers()` is the separate last check. It scans a whole scrubbed text again for any
-email, any Slack-ID-shaped word, and any name or Slack ID in the people list. A copy with
+secret (gitleaks' rules or the randomness check), meeting link, phone number, email,
+Slack-ID-shaped word, and any name or Slack ID in the people list. A copy with
 anything left isn't written.
 """
 
@@ -41,6 +47,8 @@ import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
 
+from diffdata.scrub import secrets
+from diffdata.scrub.chars import HIDDEN, INVISIBLE, PLAIN_FORMS
 from diffdata.scrub.people import PLACEHOLDER, SLACK_ID, People, Person, nfc
 
 # An email: before the @, the letters, digits and symbols an address can hold, or a part in
@@ -75,10 +83,11 @@ EMAIL = re.compile(
 # second. They're kept, so a row keeps its | and *.
 JOIN = re.compile(f"{SYMBOL}*")
 SHARED = "shared name"
+MAYBE_SECRET = "possible secret"
 UNKNOWN_ID = "unknown Slack ID"
 UNKNOWN_MENTION = "unknown mention"
 # The placeholders the steps put in. Nothing is matched inside one.
-KEPT = r"\[(?:Person [1-9][0-9]*|name\??|email)\]"
+KEPT = r"\[(?:Person [1-9][0-9]*|name\??|email|secret\??|phone|meeting link)\]"
 # A name starts and ends at a letter's edge: "Alex's" and "alex_2" hold Alex; "Alexa" doesn't.
 BEFORE, AFTER = r"(?<![^\W\d_])", r"(?![^\W\d_])"
 # The Latin letters folded text can hold. A Latin name's edge is any character but these.
@@ -90,21 +99,6 @@ LATIN = (
     r"\uab5c-\uab69"
 )
 LATIN_BEFORE, LATIN_AFTER = rf"(?<![{LATIN}])", rf"(?![{LATIN}])"
-# Characters that show as nothing: Unicode's format characters (Cf), like a zero-width
-# space, a soft hyphen or a direction mark, and the rest of what it calls default ignorable,
-# like a variation selector or a Hangul filler. Text pasted from web pages or Word can hold
-# them inside a name. A test checks the list against Python's own Unicode data.
-INVISIBLE = (
-    r"\u00ad\u034f\u0600-\u0605\u061c\u06dd\u070f\u0890\u0891\u08e2\u115f\u1160\u17b4\u17b5"
-    r"\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0"
-    r"\ufff0-\ufffb\U000110bd\U000110cd\U00013430-\U0001343f\U0001bca0-\U0001bca3"
-    r"\U0001d173-\U0001d17a\U000e0000-\U000e0fff"
-)
-HIDDEN = re.compile(f"[{INVISIBLE}]+")
-# Wide letters from Chinese, Japanese and Korean keyboards (Ａ), narrow ones (ｱ) and styled
-# ones from fancy-text tools (𝐀) are compared as their plain letter. Other compatibility
-# forms keep their shape, so "Alex™" still ends at the ™.
-PLAIN_FORMS = ("<wide>", "<narrow>", "<font>")
 # "@jordan", "@alex.newperson", "cc:@_jordan" or "@Jordan Smith": an @ that doesn't follow
 # a letter, a handle, and up to two more words, since a display name can have spaces. Only
 # words in capitals count, in any alphabet, which `Scrubber.mentions` checks. A handle reads
@@ -124,7 +118,16 @@ POSSESSIVE = re.compile(r"(?P<owner>.+)(?P<s>['’]s)")
 NOT_PEOPLE = {"here", "channel", "everyone"}
 APOSTROPHES = str.maketrans("’‘ʼ", "'''")
 # The steps `Scrubber.scrub` runs, then the last check, as the manifest lists them.
-CHECKS = ("emails", "Slack IDs", "mentions", "known names", "last check")
+CHECKS = (
+    "secrets",
+    "meeting links",
+    "phone numbers",
+    "emails",
+    "Slack IDs",
+    "mentions",
+    "known names",
+    "last check",
+)
 
 
 @dataclass(frozen=True)
@@ -132,7 +135,7 @@ class Flag:
     """Text hidden without knowing who it is. `text` is real data, kept only in flags.md."""
 
     kind: str
-    text: str
+    text: str  # empty for a possible secret, which is never written down
     shared_by: tuple[str, ...] = ()  # the placeholders that share a name
 
 
@@ -231,7 +234,8 @@ class Scrubber:
         """The text with every step applied, and what was flagged on the way."""
         flags: list[Flag] = []
         text = nfc(text)
-        for step in (self.emails, self.slack_ids, self.mentions, self.known_names):
+        steps = (self.secrets, self.meeting_links, self.phone_numbers, self.emails)
+        for step in (*steps, self.slack_ids, self.mentions, self.known_names):
             text = step(text, flags)
         return text, flags
 
@@ -240,6 +244,21 @@ class Scrubber:
         if self.shared[found]:
             flags.append(Flag(SHARED, written, self.shared[found]))
         return self.targets[found]
+
+    def secrets(self, text: str, flags: list[Flag]) -> str:
+        found = secrets.secrets(text)
+        flags += [
+            Flag(MAYBE_SECRET, "")
+            for *_, placeholder in found
+            if placeholder == secrets.MAYBE_SECRET
+        ]
+        return secrets.replace(text, found)
+
+    def meeting_links(self, text: str, flags: list[Flag]) -> str:
+        return secrets.replace(text, secrets.meeting_links(text))
+
+    def phone_numbers(self, text: str, flags: list[Flag]) -> str:
+        return secrets.replace(text, secrets.phone_numbers(text))
 
     def emails(self, text: str, flags: list[Flag]) -> str:
         return EMAIL.sub(lambda match: JOIN.match(match["local"])[0] + "[email]", text)
@@ -255,6 +274,11 @@ class Scrubber:
 
     def mentions(self, text: str, flags: list[Flag]) -> str:
         def replace(match: re.Match) -> str:
+            # A link's user:[secret]@host: the @ starts its host, not a mention.
+            if secrets.USERINFO_END.search(
+                match.string, max(0, match.start() - 300), match.start()
+            ):
+                return match[0]
             # The words after the handle that start with a capital; the rest is ordinary text.
             words = [match[part] for part in MENTION_PARTS if match[part] is not None]
             end = 1
@@ -297,6 +321,12 @@ class Scrubber:
         can go in the manifest. Empty means the copy can be kept."""
         text = nfc(text)
         found = []
+        if secrets.secrets(text):
+            found.append("a secret")
+        if secrets.meeting_links(text):
+            found.append("a meeting link")
+        if secrets.phone_numbers(text):
+            found.append("a phone number")
         if EMAIL.search(text):
             found.append("an email")
         if self.slack_id.search(text):

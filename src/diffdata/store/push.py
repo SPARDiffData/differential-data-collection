@@ -356,7 +356,8 @@ def read_manifest(data: Path) -> dict:
         and all(isinstance(manifest[k], str) for k in ("tool", "note", "opt_out_stamp"))
         and isinstance(manifest["copies"], list)
         and isinstance(manifest["held_back"], list)
-        # Every scrub so far marks its copies not approved: until SCR-1, nothing else is right.
+        # Every scrub so far marks its copies not approved, until what "approved" means is
+        # settled (#117 point 4, #127). Until then, nothing else is right.
         and manifest["approved_for_release"] is False
         and all(isinstance(c, dict) for c in manifest["copies"] + manifest["held_back"])
     ):
@@ -520,10 +521,10 @@ def push(config: Config, opener: Callable[[str, dict], Store] | None = None) -> 
         manifest, uploads, undated = plan(config.data_dir, found, config.slack_opted_out)
         if not manifest["approved_for_release"] and config.store_send_not_approved != "yes":
             raise PushError(
-                "These copies are marked not approved for release: phone numbers, meeting links "
-                "and secrets aren't checked yet. To send them anyway, to a part of your team's "
-                'folder that consumers are never given, set send_not_approved = "yes" under '
-                f"[store] in config.toml. Read them first. {NOTHING_SENT}"
+                "These copies are marked not approved for release: names of people who aren't "
+                "in the people list aren't checked yet. To send them anyway, to a part of your "
+                'team\'s folder that consumers are never given, set send_not_approved = "yes" '
+                f"under [store] in config.toml. Read them first. {NOTHING_SENT}"
             )
         check_local_records(config.data_dir)
         key = read_key(key_path(config))

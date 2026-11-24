@@ -101,6 +101,17 @@ The build lists every canvas and Google file your saved Slack data links to. Not
 
 Your decisions go in `approvals.jsonl`, next to `config.toml` in `~/.diffdata/`: keys, decisions, times and your answer, never titles. Both commands refuse to write it inside a git repository or a synced folder.
 
+## Scrub your copies (SCR-1, SCR-2)
+
+Run `uv run diffdata scrub` after an export. It makes a scrubbed copy of each opted-in Slack day file and canvas in `scrubbed/` in your data folder. Your originals are only read. Each copy has:
+
+- **secrets** replaced: API keys, tokens, passwords and private keys become `[secret]`, using the rules of gitleaks v8.30.1, run in Python. Text that only looks random, like a key with no known shape, becomes `[secret?]` and is listed in `private/flags.md` by copy, never by its value. Google links keep their document IDs, so they still work, and inside other links a site's name stays readable;
+- **meeting links** (Zoom, Google Meet, Teams, Webex, Whereby, Jitsi, Calendly, GoTo) replaced whole, passcode and all, by `[meeting link]`;
+- **phone numbers** and `tel:` links replaced by `[phone]`, but not digits inside other links;
+- **emails, Slack IDs, mentions and the names in your people list** replaced by `[email]` and `[Person N]`.
+
+A last check reads each copy again. A copy with anything left is held back: no file is written, and `scrubbed/manifest.json` says what kind of thing was found, never the value. Copies are still marked "not approved for release": names of people who aren't in the people list, and links that open an original (a doc shared with anyone who has the link), aren't checked yet. So read your copies before you share them.
+
 ## Upload the scrubbed copies (STO-1 to STO-3)
 
 `uv run diffdata push` sends the copies the last scrub passed to your team's folder in the pilot bucket on Google Cloud Storage. Run it after `uv run diffdata scrub`.
@@ -108,9 +119,9 @@ Your decisions go in `approvals.jsonl`, next to `config.toml` in `~/.diffdata/`:
 **One-time setup.**
 1. **Save the team's key.** The project team sends your team a key file. Save it as `store-key.json` in `~/.diffdata/`, next to `config.toml`. It can only add files to your team's folder: it can't read, change or delete anything there. Never share it, commit it, or open it in an AI tool. The push refuses a key inside a git repository or a synced folder. There's no Google Cloud CLI to install.
 2. **Fill in `[store]` in `config.toml`.** The project team gives your team the whole `[store]` block: `bucket`, `folder` and `project`. Only `producer`, a short handle for you (not your full name), is yours to choose. The push refuses to run while any of them is empty.
-3. **Decide about copies not approved for release.** Until phone numbers, meeting links and secrets are checked (SCR-1), every copy is marked not approved, and the push refuses them. To send them anyway, set `send_not_approved = "yes"` under `[store]`. They then go to a part of your team's folder that consumers are never given.
+3. **Decide about copies not approved for release.** Every copy is marked not approved for now: names of people who aren't in the people list, and links that open an original, aren't checked yet, and what "approved" means isn't settled. The push refuses them. To send them anyway, set `send_not_approved = "yes"` under `[store]`. They then go to a part of your team's folder that consumers are never given.
 
-**Before you push, read your copies.** They're plain text files in `scrubbed/` in your data folder. Look for anything that shouldn't leave your team: a name the scrub missed, a phone number, a password or key, a private meeting link. Phone numbers, keys and meeting links aren't checked yet. You can use an AI tool to help, but it sends what it reads to the company that runs it, so pick one you'd trust with this text. If something is wrong, don't push; tell the project team. Pushing is your OK to store these copies, and you can't remove them from the bucket yourself.
+**Before you push, read your copies.** They're plain text files in `scrubbed/` in your data folder. Look for anything that shouldn't leave your team: a name the scrub missed, a phone number, a password or key, a private meeting link. The scrub replaces phone numbers, keys and meeting links, but no check catches everything, and names of people who aren't in the people list aren't checked yet. You can use an AI tool to help, but it sends what it reads to the company that runs it, so pick one you'd trust with this text. If something is wrong, don't push; tell the project team. Pushing is your OK to store these copies, and you can't remove them from the bucket yourself.
 
 **What it sends, and what it never sends.** Only the copies listed as passed in `scrubbed/manifest.json`. Nothing else in your data folder is sent: not the raw Slack data, not `private/` (the people list and the flags), not `slack/left_out.json`, and not a copy the scrub held back. It stops before sending anything if a scrub is running or was cut short, if a copy changed after the scrub, if the manifest lists anything a scrub doesn't make, or if `scrubbed/` holds a link or a hard-linked file. It also scrubs every copy again, using your people list, and stops if that would change anything, such as a name, a Slack ID, an email or a mention left in it. If it stops for any of these, run the scrub again and push again. It also stops if `slack_opted_out` changed since the copies were made: run the build, then the scrub, then push. While it runs it holds the scrub's lock, so a scrub can't start until it's done. It refuses to run if `STORAGE_EMULATOR_HOST` or `GOOGLE_CLOUD_UNIVERSE_DOMAIN` is set, since either would send the copies somewhere other than Google.
 
