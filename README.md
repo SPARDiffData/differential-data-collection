@@ -118,7 +118,7 @@ Your decisions go in `approvals.jsonl`, next to `config.toml` in `~/.diffdata/`:
 
 **A record of each push.** Each push adds a record of what it sent under `pushes/` in the bucket, and keeps the same record on your computer, in `pushes/` in your data folder. It keeps it even when a push stops partway, so you can see what left your computer and compare it with what's stored. The report says where it is.
 
-**Who can read your folder:** the project's admins; you and the other producers on your team, read-only, through your own Google account; and later, consumers you approve (not built yet). Copies not approved for release go to a part of the folder that consumers are never given. To look at what's stored, open the bucket in Google's web console, signed in with your own Google account.
+**Who can read your folder:** the project's admins; you and the other producers on your team, read-only, through your own Google account; and later, consumers you approve (not built yet). Copies not approved for release go to a part of the folder that consumers are never given. To look at what's stored, sign in to Google's web console with your own Google account and open your folder's direct link: `https://console.cloud.google.com/storage/browser/<bucket>/<folder>`, with the bucket and folder from `[store]`. You can see and download the copies there, but not change or delete them. Your folder isn't reachable from the console's list of buckets, and the console shows "Access denied" for the bucket itself and its settings. That's expected: you can read your team's folder only.
 
 ## Two hard rules
 
