@@ -14,6 +14,7 @@ import sys
 import time
 import tomllib
 
+import phonenumbers
 import pytest
 
 from diffdata.scrub import secrets
@@ -694,3 +695,86 @@ def test_the_same_password_in_curl_and_a_link_leaves_the_links_host_alone():
     )
     assert scrubbed == "curl -u [secret]; psql postgres://[secret]@db.internal.test/app"
     assert flags == [] and found(scrubbed) == []
+
+
+# Review fixes, fourth round (the final /review-pr at a7e90ef)
+
+
+@pytest.mark.parametrize(
+    "text, scrubbed",
+    [
+        ("Join: _https://meet.google.com/abc-defg-hij_", "Join: _[meeting link]"),
+        ("*_https://zoom.us/j/9876543210_*", "*_[meeting link]"),
+        ("Call.https://meet.google.com/abc-defg-hij", "Call.[meeting link]"),
+        ("-https://zoom.us/j/987654321", "-[meeting link]"),
+    ],
+)
+def test_a_meeting_link_in_italics_or_after_punctuation_goes(text, scrubbed):
+    assert scrub(text) == scrubbed
+    assert found(scrub(text)) == []
+
+
+def test_a_link_in_italics_keeps_its_google_id_and_its_digits():
+    doc = "_https://docs.google.com/document/d/" + rand(44, URLSAFE) + "/edit_"
+    order = "_https://example.com/order/2025550142_"
+    assert scrub(doc) == doc
+    assert scrub(order) == order
+
+
+@pytest.mark.parametrize(
+    "email", ["{r}＠example.com", "{r}@ex​ample.com"], ids=["wide at", "hidden in domain"]
+)
+def test_a_random_run_before_a_disguised_email_still_goes(email):
+    scrubbed = scrub(f"note {email.format(r=rand(40))} ok")
+    assert "[secret?]" in scrubbed
+    assert found(scrubbed) == []
+
+
+def test_a_phone_number_after_many_other_numbers_is_still_found(monkeypatch):
+    """phonenumbers gives up after max_tries numbers it can't use, without a word. With its
+    default made small, a copy that relies on the default would miss this number."""
+    real = phonenumbers.PhoneNumberMatcher
+
+    def few_tries(*args, max_tries=50, **kwargs):
+        return real(*args, max_tries=max_tries, **kwargs)
+
+    monkeypatch.setattr(phonenumbers, "PhoneNumberMatcher", few_tries)
+    scrubbed = scrub("12 " * 200 + "call 020 7946 0958 now")
+    assert scrubbed.endswith("call [phone] now")
+
+
+@pytest.mark.parametrize(
+    "text, scrubbed",
+    [
+        ("notes_{r}_020 7946 0958", "[secret?]_[phone]"),
+        ("{one}/202.555.0123", "[secret?]/[phone]"),
+    ],
+)
+def test_a_random_run_stops_where_a_phone_number_starts(text, scrubbed):
+    result = scrub(text.format(r=rand(18), one=rand(26, string.ascii_lowercase + string.digits)))
+    assert result == scrubbed
+    assert found(result) == []
+
+
+def test_a_short_value_one_of_our_rules_finds_isnt_replaced_all_through_the_copy():
+    text = "postgres://admin:ab12@db.internal.test/app and ab12 later"
+    assert scrub(text) == "postgres://admin:[secret]@db.internal.test/app and ab12 later"
+
+
+def test_dropping_the_lazy_lead_keeps_those_rules_quick_on_a_long_word():
+    """Two lazy word runs in a row made these rules slow on a long word in Python."""
+    run_with_deadline(
+        "from diffdata.scrub import secrets\n"
+        "for rule in secrets.rules():\n"
+        "    if rule.id in ('cohere-api-token', 'okta-access-token', 'sumologic-access-id',\n"
+        "                   'cisco-meraki-api-key', 'privateai-api-token'):\n"
+        "        list(rule.pattern.finditer(' '.join(rule.keywords) + ' ' + 'a' * 50000))\n",
+        seconds=3,
+    )
+
+
+def test_a_short_secret_is_replaced_where_found_but_not_all_through_the_copy(monkeypatch):
+    """Replacing a short value everywhere would cut it out of ordinary words."""
+    rule = secrets.Rule("made-up", re.compile(r"code=(\w+)"), (), 0.0, 0)
+    monkeypatch.setattr(secrets, "rules", lambda: (rule,))
+    assert scrub("code=ab12xy and the word ab12xyz") == "code=[secret] and the word ab12xyz"

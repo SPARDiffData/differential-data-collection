@@ -54,6 +54,7 @@ import bisect
 import hashlib
 import math
 import re
+import sys
 import tomllib
 import unicodedata
 from collections import Counter
@@ -100,12 +101,13 @@ LINK_PASSWORD = re.compile(
 # The end of a link's user:[secret] part, so the @ after it isn't read as a mention.
 USERINFO_END = re.compile(r"(?i)[a-z][a-z0-9+.-]{0,30}://(?:[^\s/:@<>|]+:)?\[secret\]\Z")
 
-# Links: with a scheme, or a bare domain followed by a path. A bare domain's last part starts
+# Links: with a scheme, wherever it starts (after _ or * in Markdown italics, say), or a bare
+# domain followed by a path, which can't start inside a word. A bare domain's last part starts
 # with a letter, so a phone number written with dots, like 201.555.0123/4, isn't a link. A
 # link ends at a space or at what wraps it in Slack's markup (<url|label>) or Markdown
 # ([label](url)).
 LINK = re.compile(
-    r"(?i)(?<![\w.@/-])(?:(?:https?|ftp)://|www\.|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z][a-z0-9-]*\.?/)"
+    r"(?i)(?:(?:https?|ftp)://|(?<![\w.@/-])(?:www\.|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z][a-z0-9-]*\.?/))"
     r"[^\s<>|\"'`()\[\]]*"
 )
 # Google links keep their document, file, folder and form IDs, so they still work: a policy
@@ -386,7 +388,7 @@ def kept_links(text: str) -> list[tuple[int, int]]:
             spans.append(link.span())
         elif on_host(link[0], GOOGLE_HOSTS):
             cut = query_start(link[0])
-            for found in GOOGLE_ID.finditer(link[0], 0, cut):
+            for found in GOOGLE_ID.finditer(link[0]):
                 spans.append((link.start() + found.start("id"), link.start() + found.end("id")))
             for found in GOOGLE_QUERY_ID.finditer(link[0][cut + 1 :]):
                 at = link.start() + cut + 1
@@ -419,16 +421,17 @@ def covering(spans: list[tuple[int, ...]], starts: list[int], start: int, end: i
     return at if at >= 0 and spans[at][1] > start else -1
 
 
-def random_runs(text: str) -> list[tuple[int, int]]:
-    """Runs that look random enough to be a secret, outside Google IDs, meeting links and
-    emails (the email step takes those whole). In a link's path, each part between slashes
-    is checked on its own, so the site's name and plain path words stay readable; a value
-    in its query is checked whole."""
+def random_runs(text: str, left: list[tuple[int, int]] | None = None) -> list[tuple[int, int]]:
+    """Runs that look random enough to be a secret, outside Google IDs and meeting links.
+    `left` is what later steps replace whole (emails and phone numbers), sorted: a run
+    inside one is left to that step, and a run that reaches one is cut where it starts. In
+    a link's path, each part between slashes is checked on its own, so the site's name and
+    plain path words stay readable; a value in its query is checked whole."""
     kept = kept_links(text)
     kept_starts = [s for s, _ in kept]
     links = [(m.start(), m.end(), m.start() + query_start(m[0])) for m in LINK.finditer(text)]
     link_starts = [s for s, _, _ in links]
-    emails = [m.span() for m in EMAILISH.finditer(text)]
+    emails = left if left is not None else [m.span() for m in EMAILISH.finditer(text)]
     email_starts = [s for s, _ in emails]
     found = []
     for run in RUN.finditer(text):
@@ -502,7 +505,7 @@ def secrets(text: str) -> list[tuple[int, int, str]]:
         while at != -1:
             spans.append((at, at + len(value), True))
             at = seen.find(value, at + 1)
-    spans += [(start, end, False) for start, end in random_runs(seen)]
+    spans += [(start, end, False) for start, end in random_runs(seen, later_steps(text, where))]
     # A meeting link is replaced whole by the next step, so nothing inside it is taken now:
     # a [secret] in its user or query would split it, and it would no longer read as one.
     meetings = [(start, end) for start, end, _ in meeting_links(seen)]
@@ -516,6 +519,28 @@ def secrets(text: str) -> list[tuple[int, int, str]]:
     # Back to the real text, covering any invisible characters inside.
     real = [(where[s], where[e - 1] + 1, sure) for s, e, sure in spans]
     return [(s, e, SECRET if sure else MAYBE_SECRET) for s, e, sure in merge(real)]
+
+
+def later_steps(text: str, where: list[int]) -> list[tuple[int, int]]:
+    """What the email and phone steps will replace whole, found in the real text as those
+    steps find it, then placed in view()'s positions (`where` maps view to real), sorted.
+    Reading both the same way means a wide ＠ or an invisible character can't make the
+    randomness check leave a run to an email step that won't take it."""
+    from diffdata.scrub.text import EMAIL  # here, as text.py imports this module
+
+    real = [m.span() for m in EMAIL.finditer(text)] + [s[:2] for s in phone_numbers(text)]
+    spans = []
+    for start, end in real:
+        s, e = bisect.bisect_left(where, start), bisect.bisect_left(where, end)
+        if e > s:
+            spans.append((s, e))
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 def merge(spans: list[tuple[int, int, bool]]) -> list[tuple[int, int, bool]]:
@@ -572,7 +597,9 @@ def phone_numbers(text: str) -> list[tuple[int, int, str]]:
         masked[start:end] = MASK * (end - start)
     masked = "".join(masked)
     for region in REGIONS:
-        for number in phonenumbers.PhoneNumberMatcher(masked, region):
+        # No cap on tries: by default the matcher stops after 65,535 numbers it can't use,
+        # without a word, so a big table of numbers could hide a phone number after it.
+        for number in phonenumbers.PhoneNumberMatcher(masked, region, max_tries=sys.maxsize):
             spans.append((number.start, number.end, True))
     return [(s, e, PHONE) for s, e, _ in merge(spans)]
 
