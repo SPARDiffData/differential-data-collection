@@ -101,6 +101,17 @@ The build lists every canvas and Google file your saved Slack data links to. Not
 
 Your decisions go in `approvals.jsonl`, next to `config.toml` in `~/.diffdata/`: keys, decisions, times and your answer, never titles. Both commands refuse to write it inside a git repository or a synced folder.
 
+## Scrub your copies (SCR-1, SCR-2)
+
+Run `uv run diffdata scrub` after an export. It makes a scrubbed copy of each opted-in Slack day file and canvas in `scrubbed/` in your data folder. Your originals are only read. Each copy has:
+
+- **secrets** replaced: API keys, tokens, passwords and private keys become `[secret]`, using the rules of gitleaks v8.30.1, run in Python. Text that only looks random, like a key with no known shape, becomes `[secret?]` and is listed in `private/flags.md` by copy, never by its value. Google links keep their document IDs, so they still work, and inside other links a site's name stays readable;
+- **meeting links** (Zoom, Google Meet, Teams, Webex, Whereby, Jitsi, Calendly, GoTo) replaced whole, passcode and all, by `[meeting link]`;
+- **phone numbers** and `tel:` links replaced by `[phone]`, but not digits inside other links;
+- **emails, Slack IDs, mentions and the names in your people list** replaced by `[email]` and `[Person N]`.
+
+A last check reads each copy again. A copy with anything left is held back: no file is written, and `scrubbed/manifest.json` says what kind of thing was found, never the value. Copies are still marked "not approved for release": names of people who aren't in the people list, and links that open an original (a doc shared with anyone who has the link), aren't checked yet. So read your copies before you share them.
+
 ## Two hard rules
 
 - We never modify or delete a producer's original files or data. We read originals and only change our own copies.
