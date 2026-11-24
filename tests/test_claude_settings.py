@@ -380,3 +380,35 @@ def test_review_pr_never_offers_a_verdict_that_waits_for_paul():
     review_pr = (ROOT / ".claude" / "commands" / "review-pr.md").read_text(encoding="utf-8")
     verdict = next(line for line in review_pr.splitlines() if line.startswith("**Verdict:**"))
     assert "Paul" not in verdict
+
+
+# CON-1, #130: `diffdata setup` writes the channel list, which is the producer's opt-in, so
+# only a person typing in a terminal runs it. It refuses outside a terminal, and these rules
+# stop Claude's shell tools running it or importing its code.
+SETUP_RUNS = [
+    "Bash(uv run diffdata setup)",
+    "Bash(uv run diffdata setup --team bucket=example-bucket,folder=team-a,project=example)",
+    "Bash(echo y | script -q /dev/null uv run diffdata setup)",
+    "Bash(.venv/bin/diffdata setup)",
+    "Bash(uv run python -m diffdata setup)",
+    'Bash(uv run python -c "from diffdata.common import setup")',
+    'Bash(uv run python -c "import diffdata.common.setup")',
+    "PowerShell(uv run diffdata setup)",
+    "PowerShell(.venv\\Scripts\\diffdata.exe setup)",
+    'PowerShell(uv run python -c "from diffdata.common import setup")',
+]
+SETUP_DEVELOPMENT_RUNS = [
+    "Bash(uv run pytest tests/test_setup.py)",
+    "Bash(git add src/diffdata/common/setup.py)",
+    "Bash(uv run diffdata team-command --bucket example-bucket --folder team-a --project x)",
+]
+
+
+@pytest.mark.parametrize("command", SETUP_RUNS)
+def test_claudes_shell_tools_cant_run_setup(command):
+    assert denied(command)
+
+
+@pytest.mark.parametrize("command", SETUP_DEVELOPMENT_RUNS)
+def test_working_on_the_setup_code_isnt_blocked(command):
+    assert not denied(command)

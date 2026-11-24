@@ -18,13 +18,25 @@ uv run diffdata --help
 uv run pytest
 ```
 
-To configure it, copy `config.example.toml` to `config.toml` and `.env.example` to `.env`, both in a `.diffdata` folder in your home folder (`C:\Users\<you>\.diffdata\` on Windows, `~/.diffdata/` on a Mac), then fill them in. Both stay on your computer. Keeping them outside the repo means tools working in the repo, such as Codex, can't read them.
+To configure it, run the setup command the project team sent you, in your own Terminal or PowerShell, in the repo folder. It looks like this:
+
+```
+uv run diffdata setup --team bucket=example-bucket,folder=team-a,project=example-project
+```
+
+Setup asks three questions: the Slack channels to collect (type a name, or paste the channel's link), your workspace's address, and your producer handle. It makes your data folder, writes `config.toml` in a `.diffdata` folder in your home folder (`C:\Users\<you>\.diffdata\` on Windows, `~/.diffdata/` on a Mac), and puts the team's store key there if you give it the file. Run it again to change your answers: it asks before it changes anything, keeps every other setting, and keeps the old file as `config.toml.bak`. Setup only runs in a terminal you type in, and this repo's settings stop Claude from running it, because the channel list is your opt-in.
+
+**Your producer handle is a pseudonym.** It labels your copies in the shared store instead of your name, so it's never your real name. Setup offers a made-up one, such as `example-project-k4r7`; press Enter to take it.
+
+**For the project team:** `uv run diffdata team-command --bucket … --folder … --project …` checks the team values and prints the setup command to send each team's producers. Send it in a DM or the team's private channel, never in the repo, an Issue or a PR.
+
+You can still copy `config.example.toml` to `~/.diffdata/config.toml` and fill it in by hand. Also copy `.env.example` to `.env` there. Both stay on your computer. Keeping them outside the repo means tools working in the repo, such as Codex, can't read them.
 
 ## Export a Slack channel (DIS-1)
 
 For the pilot there's no Slack app: Claude Code reads Slack for you through its Slack connector, as you. Nothing writes to Slack. This repo's `.claude/settings.json` removes every Slack write tool from Claude while it works in this folder. During `/slack-export`, a hook also stops any read of a channel or canvas that the export run doesn't name, any search other than a files or message search of one of the run's channels, and any Slack read the export never makes, such as a file download, before it runs. The run takes its channels from `config.toml`, and its canvases from `config.toml` and your approvals. If that check can't run, the read is stopped too. The check stays on for the rest of that Claude session, so start a new session for each export, and for any other Slack work afterwards. This needs Claude Code 2.1.295 or later (`claude --version`).
 
-1. **Set up `config.toml`** in `~/.diffdata/`. List the channels to export under `slack_channels`; listing a channel is your opt-in. Edit the file yourself, in a text editor: this repo's settings stop Claude from changing it. Set `slack_workspace_url` to your workspace's address. Keep `data_dir` outside the repo and outside OneDrive, Dropbox, Google Drive and iCloud: `diffdata` refuses those.
+1. **Set up `config.toml`** in `~/.diffdata/`, with `uv run diffdata setup` (see above) or by hand. List the channels to export under `slack_channels`, by name, by ID (`C...`) or by link (`https://<workspace>.slack.com/archives/C...`); listing a channel is your opt-in. For a channel listed by ID or link, the first export reads its name from the channel itself. Edit the file yourself: this repo's settings stop Claude from changing it. Set `slack_workspace_url` to your workspace's address. Keep `data_dir` outside the repo and outside OneDrive, Dropbox, Google Drive and iCloud: `diffdata` refuses those.
 2. **Try it.** Open Claude Code in the repo folder and type `/slack-export test`. It reads only the 5 newest messages of the first channel, and skips threads.
 3. **Run it.** Type `/slack-export`. Claude reads each channel, searches it for late replies, and reads the threads. A hook saves each result unchanged to your data folder, so Claude never retypes it, and then `diffdata` builds:
    - `slack/export/<channel>/<date>.md`: one readable file per day (UTC), with thread replies under their post
@@ -117,8 +129,8 @@ A last check reads each copy again. A copy with anything left is held back: no f
 `uv run diffdata push` sends the copies the last scrub passed to your team's folder in the pilot bucket on Google Cloud Storage. Run it after `uv run diffdata scrub`.
 
 **One-time setup.**
-1. **Save the team's key.** The project team sends your team a key file. Save it as `store-key.json` in `~/.diffdata/`, next to `config.toml`. It can only add files to your team's folder: it can't read, change or delete anything there. Never share it, commit it, or open it in an AI tool. The push refuses a key inside a git repository or a synced folder. There's no Google Cloud CLI to install.
-2. **Fill in `[store]` in `config.toml`.** The project team gives your team the whole `[store]` block: `bucket`, `folder` and `project`. Only `producer`, a short handle for you (not your full name), is yours to choose. The push refuses to run while any of them is empty.
+1. **Save the team's key.** The project team sends your team a key file. `uv run diffdata setup` puts it in place for you, or save it yourself as `store-key.json` in `~/.diffdata/`, next to `config.toml`. It can only add files to your team's folder: it can't read, change or delete anything there. Never share it, commit it, or open it in an AI tool. The push refuses a key inside a git repository or a synced folder. There's no Google Cloud CLI to install.
+2. **Fill in `[store]` in `config.toml`.** `uv run diffdata setup` does this from the command the project team sends. By hand: the team gives your team `bucket`, `folder` and `project`. Only `producer` is yours to choose: a pseudonym that labels your copies in the shared store instead of your name, never your real name. The push refuses to run while any of them is empty.
 3. **Decide about copies not approved for release.** Every copy is marked not approved for now: names of people who aren't in the people list aren't checked yet. The push refuses them. To send them anyway, set `send_not_approved = "yes"` under `[store]`. They then go to a part of your team's folder that consumers are never given.
 
 **Before you push, read your copies.** They're plain text files in `scrubbed/` in your data folder. Look for anything that shouldn't leave your team: a name the scrub missed, a phone number, a password or key, a private meeting link. The scrub replaces phone numbers, keys and meeting links, but no check catches everything, and names of people who aren't in the people list aren't checked yet. You can use an AI tool to help, but it sends what it reads to the company that runs it, so pick one you'd trust with this text. If something is wrong, don't push; tell the project team. Pushing is your OK to store these copies, and you can't remove them from the bucket yourself.

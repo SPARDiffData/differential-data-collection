@@ -1,4 +1,6 @@
 # diffdata configuration.
+# The easy way: run `uv run diffdata setup` in your own terminal. It writes this file for you.
+# To do it by hand instead:
 # Copy this file to config.toml in a .diffdata folder in your home folder
 # (C:\Users\<you>\.diffdata\config.toml on Windows, ~/.diffdata/config.toml on a Mac)
 # and fill in your own values. Outside the repo, tools working in it can't read it.
@@ -7,7 +9,7 @@
 [sources]
 # CON-1: listing a channel or folder here is your opt-in to collecting it.
 # Remove it and collection stops on the next run (CON-3).
-slack_channels = ["example-channel"]  # channel names, without the '#'
+slack_channels = ["example-channel"]  # channel names without the '#', IDs ("C...") or channel links
 slack_workspace_url = "https://example.slack.com"  # your workspace's address, for message links
 slack_canvases = []                   # canvas IDs ("F...") or canvas links; read when they may have changed
 # CON-4, CON-5: Slack user IDs ("U...") of people who opted out of this channel. The project
@@ -38,7 +40,7 @@ data_dir = "~/diffdata-data"
 backend = "gcs"
 bucket = ""    # the bucket's name, from the project team
 folder = ""    # your team's folder in the bucket, from the project team
-producer = ""  # a short handle for you, like "team-a-1": not your full name
+producer = ""  # a pseudonym that labels your copies in the shared store instead of your name; never your real name
 project = ""   # your project's short name, from the project team
 # Copies are marked not approved for release: names of people who aren't in the people list
 # aren't checked yet. "yes" sends them anyway, to a part of the folder consumers never get.
