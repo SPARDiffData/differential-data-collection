@@ -1,7 +1,7 @@
 """The `diffdata` command.
 
 `discover slack` (DIS-1), `consent` (CON-1, CON-3), `collect google-docs` (COL-4, COL-5) and
-`scrub` (SCR-2) are built. The other subcommands are stubs that name the requirement IDs
+`scrub` (SCR-1, SCR-2) are built. The other subcommands are stubs that name the requirement IDs
 (docs/requirements.md) their feature Issues will build.
 """
 
@@ -25,7 +25,8 @@ COMMANDS = {
     ),
     "collect": ("Fetch each referenced source we can access.", "COL-1, COL-2, COL-4, COL-7"),
     "scrub": (
-        "Make scrubbed copies, with people, Slack IDs and emails replaced.",
+        "Make scrubbed copies, with secrets, meeting links, phone numbers, emails, Slack IDs and "
+        "people replaced.",
         "SCR-1, SCR-2",
     ),
     "push": ("Add scrubbed artifacts to central storage.", "STO-1, STO-2, STO-3"),

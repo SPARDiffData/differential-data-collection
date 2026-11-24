@@ -1191,13 +1191,22 @@ def plant(config, day: int = 3) -> dict[str, str]:
         + "api03-"
         + "".join(rng.choice(alnum) for _ in range(93))
         + "AA",
+        "link password": "".join(rng.choice(alnum) for _ in range(16)),
     }
-    split = values["anthropic"][:54] + "​" + values["anthropic"][54:]
+    # Invisible characters inside the key, also through its second half, so every raw piece
+    # of that half is under 20 characters (must-refuse 17).
+    rest = values["anthropic"][54:]
+    split = (
+        values["anthropic"][:54]
+        + "\u200b"
+        + "\u00ad".join(rest[i : i + 15] for i in range(0, len(rest), 15))
+    )
     day_file = config.data_dir / "slack" / "export" / "example-channel" / f"2026-10-0{day}.md"
     lines = (
         f"My token is {values['github']} and the other is {values['random']}.\n"
         f"Join {values['meeting']} or call {values['phone']}.\n"
         f"And split: {split}\n"
+        f"DB at postgres://admin:{values['link password']}@db.internal.test/app\n"
     )
     day_file.write_bytes(day_file.read_bytes() + lines.encode("utf-8"))
     return values
@@ -1211,6 +1220,7 @@ def test_secrets_links_and_phones_are_replaced_and_quoted_nowhere(config, export
     assert "My token is [secret] and the other is [secret?]." in later
     assert "Join [meeting link] or call [phone]." in later
     assert "And split: [secret]\n" in later
+    assert "DB at postgres://admin:[secret]@db.internal.test/app" in later
     every = [*copies(config).values(), report, flags(config)]
     fragments = {v[i : i + 12] for v in values.values() for i in range(0, len(v) - 12, 6)}
     fragments = {f for f in fragments if not f.startswith(("https://zoo", "+44 20"))}
@@ -1260,7 +1270,7 @@ def test_must_refuse_17_a_replacement_that_leaves_half_a_split_key_is_held_back(
     real = Scrubber.secrets
 
     def stops_at_the_invisible_character(self, text, flags):
-        cut = text.find("​")
+        cut = text.find("\u200b")
         return real(self, text[:cut], flags) + text[cut:] if cut != -1 else real(self, text, flags)
 
     monkeypatch.setattr(Scrubber, "secrets", stops_at_the_invisible_character)
@@ -1287,14 +1297,14 @@ def test_a_broken_or_changed_rule_file_stops_the_scrub_before_anything(
         digest = hashlib.sha256(rules_file.read_bytes()).hexdigest()
         monkeypatch.setattr(secrets, "RULES_SHA256", digest)
     monkeypatch.setattr(secrets, "RULES_FILE", rules_file)
-    secrets.rules.cache_clear()
+    secrets.compiled.cache_clear()
     before_copies, before_originals = copies(config), originals(config)
     before_private = sorted((config.data_dir / "private").iterdir())
     try:
         with pytest.raises(ScrubError) as stopped:
             scrub(config)
     finally:
-        secrets.rules.cache_clear()
+        secrets.compiled.cache_clear()
     message = str(stopped.value)
     assert "nothing was scrubbed" in message
     assert {"missing": "is missing", "changed": "isn't the pinned", "won't parse": "can't be read",

@@ -10,16 +10,20 @@ Secrets, in two parts:
     with an `entropy` setting skips a secret whose Shannon entropy isn't above it. Only the
     secret is replaced, not the words around it, and the same value anywhere else in the
     copy is replaced too. These become [secret].
-  - Our randomness check: a run of 20 or more letters, digits and + / _ - that looks
-    random becomes [secret?], for the producer to check: hex above HEX_ENTROPY, a mix of
-    cases and digits above MIXED_ENTROPY unless it reads as joined words, and a run in one
-    case at 24 or more characters on the same terms (see ONE_CASE_MIN). It skips Slack and
-    Google links up to their query, so those links keep working, and meeting links.
+  - Our randomness check (`looks_random`): a run of 20 or more letters, digits and
+    + / _ - that looks random becomes [secret?], for the producer to check: hex above
+    HEX_ENTROPY; a mix of cases and digits above MIXED_ENTROPY unless it reads as joined
+    words; and mixed-case letters alone, or one case with digits, at 24 or more characters
+    on the same terms (see ONE_CASE_MIN). It skips the IDs in Google links, so those links
+    keep working, and meeting links. Inside other links it checks each part between
+    slashes on its own, so a site's name stays readable.
 
 What we leave out of gitleaks, on purpose:
   - Its allowlists, global and per rule. They only stop a match being reported, so
     without them we replace more, never less.
-  - Rules that match a file's path. A copy has no path that means anything.
+  - Its path checks. A copy has no path that means anything, so a rule written for one
+    kind of file (a NuGet config, a Kubernetes secret...) runs on every copy, since text
+    from one can be pasted into a message. The one rule on a file's name only is skipped.
   - Decoding base64 or URL-encoded text before matching.
 
 Rules are matched against the text with invisible characters (a zero-width space, a soft
@@ -32,19 +36,21 @@ a flag like (?i) partway through applies to the rest of its group in Go, so it b
 scoped group, (?i:...); \\z becomes \\Z; and POSIX classes like [[:alnum:]] become plain
 ranges. Patterns compile with re.ASCII, so \\w, \\s and \\d mean what they mean in Go.
 Python's engine is slower than Go's on some patterns, so two changes keep every rule quick
-on a long line, without changing what it finds in ordinary text: an open .* reads at most
-DOT_STAR characters (only the two curl rules have one, so a curl command's header must
-come within 2,000 characters of "curl"), and a rule's leading lazy word run is dropped
-(see LEAD).
+on a long line. Both drop only the start of a pattern, which says where a match begins,
+never where its secret is: a rule's leading lazy word run (see LEAD), and the two curl
+rules' "curl, then anything" start (see CURL_START), which lets them find their -H or -u
+option anywhere in a copy that holds "curl".
 
 Meeting links: any link to the services in MEETING_HOSTS becomes [meeting link], with any
-passcode in it.
+passcode in it, read on past brackets in its query to a space or its markup.
 
 Phone numbers: Google's `phonenumbers` library finds them, read as UK and as US numbers,
 and only numbers it finds valid. Digits inside other links aren't read as phone numbers,
-so message and doc links keep working. A tel: link is replaced whole.
+so message and doc links keep working, and neither are digits inside an email, which the
+email step replaces. A tel: link is replaced whole, extension and all.
 """
 
+import bisect
 import hashlib
 import math
 import re
@@ -54,6 +60,7 @@ from collections import Counter
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import phonenumbers
 
@@ -88,27 +95,55 @@ ONE_CASE_MIN, ONE_CASE_WORDS, VOWELS = 24, re.compile(r"[a-z]{3,}|[A-Z]{3,}"), 0
 SEPARATORS = re.compile(r"[_/+-]")
 # A password in a link, as in https://user:password@host. gitleaks has no rule for it.
 LINK_PASSWORD = re.compile(
-    r"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{0,30}://[^\s/:@<>|]+:(?P<secret>[^\s/@<>|]+)@"
+    r"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]{0,30}://[^\s/:@<>|]+:(?!\[secret\]@)"
+    r"(?P<secret>[^\s/@<>|]+)@"
 )
+# The end of a link's user:[secret] part, so the @ after it isn't read as a mention.
+USERINFO_END = re.compile(r"(?i)[a-z][a-z0-9+.-]{0,30}://[^\s/:@<>|]+:\[secret\]\Z")
 
 # Links: with a scheme, or a bare domain followed by a path. A bare domain's last part starts
 # with a letter, so a phone number written with dots, like 201.555.0123/4, isn't a link. A
 # link ends at a space or at what wraps it in Slack's markup (<url|label>) or Markdown
 # ([label](url)).
 LINK = re.compile(
-    r"(?i)(?<![\w.@/-])(?:(?:https?|ftp)://|www\.|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z][a-z0-9-]*/)"
+    r"(?i)(?<![\w.@/-])(?:(?:https?|ftp)://|www\.|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z][a-z0-9-]*\.?/)"
     r"[^\s<>|\"'`()\[\]]*"
 )
-HOST = re.compile(r"(?i)^(?:(?:https?|ftp)://)?(?P<host>[^/?#:\s]+)")
-# Slack and Google links keep their IDs: a policy on links is for before the first release.
-KEEP_ID_HOSTS = ("slack.com", "google.com", "googleusercontent.com", "goo.gl")
+# Google links keep their document, file, folder and form IDs, so they still work: a policy
+# on links is for before the first release. Slack's IDs are too short, or digits only, for
+# the randomness check to take, so a Slack link needs no exception.
+GOOGLE_HOSTS = ("google.com", "googleusercontent.com")
+GOOGLE_QUERY_ID = re.compile(r"(?:^|&)id=(?P<id>[A-Za-z0-9_-]{20,})(?=&|$)")
+GOOGLE_ID = re.compile(r"/(?:d|e|folders)/(?P<id>[A-Za-z0-9_-]{20,})(?=/|$)")  # in the path
+# A meeting link goes on past [ ] ( and ) in its query, up to a space or the markup around
+# it; inside Markdown's (link), up to the first ).
+# Phone numbers aren't read inside an email: the email step takes it whole.
+EMAILISH = re.compile(  # starts where a run starts, so it reads a long run once
+    r"(?<![\w.+%-])[\w.+%-]+@(?:[\w-]+(?:\.[\w-]+)+|\[(?:IPv6:)?[0-9A-Fa-f.:]+\])"
+)
+# Two small rules of our own, on top of gitleaks', for credentials it lets through when a
+# shell or a link carries on right after them: a credential-named value in a link's query
+# (?password=...&next=...), and curl's -u user:password followed by ; & or |. Neither
+# matches a value that's already a placeholder, so the last check passes a scrubbed copy.
+NOT_PLACEHOLDER = r"(?!\[secret\??\](?:[&#;|\s<>\"'`]|$))"
+QUERY_SECRET = re.compile(
+    r"(?i)[?&](?:password|passwd|pwd|pass|token|access_token|refresh_token|id_token|"
+    r"api_?key|key|secret|client_secret|auth|session_?id|sid|sig|signature)="
+    + NOT_PLACEHOLDER
+    + r"(?P<secret>[^&#\s<>|\"'`()\[\]]+)"
+)
+CURL_USER = re.compile(
+    r"(?<!\S)(?:-u|--user)(?:=|[ \t]{1,5})['\"]?"
+    + NOT_PLACEHOLDER
+    + r"(?P<secret>[^\s;&|:'\"]+:[^\s;&|'\"]+)"
+)
 MEETING_HOSTS = (
     "zoom.us", "zoomgov.com", "meet.google.com", "teams.live.com", "webex.com",
     "whereby.com", "meet.jit.si", "calendly.com", "gotomeet.me", "gotomeeting.com",
 )  # fmt: skip
 # Teams shares a host with the rest of Microsoft, so only its meeting paths count.
-TEAMS = re.compile(r"(?i)^(?:https?://)?teams\.microsoft\.com/(?:l/meetup-join|meet)/")
-TEL = re.compile(r"(?i)(?<![\w-])tel:\+?[0-9 ().\-/]*[0-9]")
+TEAMS_PATH = re.compile(r"(?i)/(?:l/meetup-join|meet)/")
+TEL = re.compile(r"(?i)(?<![\w-])tel:\+?[0-9 ().\-/]*[0-9]\)*(?:;[^\s<>|\"'\])]*)?")
 REGIONS = ("GB", "US")
 # What a masked link becomes before phone numbers are read: no digit, and no letter that
 # could read as an extension, like x.
@@ -119,8 +154,12 @@ POSIX = {
     "space": r"\t\n\v\f\r ", "xdigit": "0-9A-Fa-f", "word": r"\w", "punct": r"!-/:-@\[-`{-~",
 }  # fmt: skip
 INLINE_FLAGS = re.compile(r"\(\?([a-zA-Z]+)\)")
-# How far an open .* in a rule reads: 2,000 characters, not to the end of the line.
-DOT_STAR = 2000
+# The two curl rules start with "curl", then any text, over up to 5 more lines, before the
+# -H or -u option they look for. Python's engine reads that text again from every "curl",
+# so it's slow, and capping it would miss a long command. That start only says where a
+# match begins, never where its secret is, so it's dropped: the rules then find the option
+# wherever it is in a copy that holds "curl" (their keyword). That replaces more, never less.
+CURL_START = re.compile(r"^\\bcurl\\b\(\?:\.\*\??\|\.\*\??\(\?:\[\\r\\n\]\{1,2\}\.\*\??\)\{1,5\}\)")
 # Many rules start with any 0 to 50 word characters, lazily, before their keyword. That only
 # moves where a match starts, never where its secret is, but in Python two of them in a row
 # are slow on a long word. So a pattern's leading ones are dropped. A test checks the
@@ -175,12 +214,6 @@ def go_to_python(regex: str) -> str:
                     i += len(lead)
                     break
             continue
-        if regex.startswith(".*", i):
-            # Go's engine reads a line once; Python's tries every start again, so an open
-            # .* is slow on a long line. Bound it. Only the two curl rules have one.
-            out.append(f".{{0,{DOT_STAR}}}")
-            i += 2
-            continue
         flags = INLINE_FLAGS.match(regex, i)
         if flags and out:
             # Go: the flags hold to the end of the group they're in, across any | in it.
@@ -214,9 +247,9 @@ def drop_lead(pattern: str) -> str:
     return "".join(kept) + pattern[at:]
 
 
-@cache
 def rules() -> tuple[Rule, ...]:
-    """gitleaks' rules, checked against the pinned release. Raises RulesError."""
+    """gitleaks' rules, read and checked against the pinned release on every call, so a
+    file changed or removed while diffdata runs is still refused. Raises RulesError."""
     try:
         raw = RULES_FILE.read_bytes()
     except OSError:
@@ -230,16 +263,25 @@ def rules() -> tuple[Rule, ...]:
             f"{RULES_RELEASE} copy, so nothing was scrubbed. Restore it from the repository "
             "and run again."
         )
+    return compiled(raw)
+
+
+@cache
+def compiled(raw: bytes) -> tuple[Rule, ...]:
+    """The rules in a checked rule file, compiled once."""
     try:
         config = tomllib.loads(raw.decode("utf-8"))
         found = []
         for rule in config["rules"]:
-            if "path" in rule or "regex" not in rule:
-                continue  # a rule on file paths: a copy has none
+            if "regex" not in rule:
+                continue  # a rule on a file's name only: a copy has none
+            # A rule for one kind of file (its "path") runs on every copy: it can only
+            # replace more.
+            regex = CURL_START.sub("", rule["regex"])
             found.append(
                 Rule(
                     id=rule["id"],
-                    pattern=re.compile(drop_lead(go_to_python(rule["regex"])), re.ASCII),
+                    pattern=re.compile(drop_lead(go_to_python(regex)), re.ASCII),
                     keywords=tuple(k.lower() for k in rule.get("keywords", ())),
                     entropy=float(rule.get("entropy", 0)),
                     group=int(rule.get("secretGroup", 0)),
@@ -293,57 +335,120 @@ def secret_span(match: re.Match, group: int) -> tuple[int, int]:
     return match.span()
 
 
+def split_link(link: str):
+    """A link's parts, read by urllib, with or without its scheme. None if it can't be read."""
+    try:
+        return urlsplit(link if "://" in link[:40] else "//" + link)
+    except ValueError:
+        return None
+
+
+def host_of(link: str) -> str:
+    """A link's host name: small letters, without a user, password, port or trailing dot."""
+    parts = split_link(link)
+    try:
+        return (parts.hostname or "").rstrip(".") if parts else ""
+    except ValueError:
+        return ""
+
+
 def on_host(link: str, hosts: tuple[str, ...]) -> bool:
     """Whether a link goes to one of these hosts or a subdomain of one."""
-    host = HOST.match(link)
-    name = host["host"].lower() if host else ""
+    name = host_of(link)
     return any(name == h or name.endswith("." + h) for h in hosts)
 
 
 def is_meeting(link: str) -> bool:
-    return bool(TEAMS.match(link)) or on_host(link, MEETING_HOSTS)
+    if host_of(link) == "teams.microsoft.com":
+        parts = split_link(link)
+        return bool(parts and TEAMS_PATH.match(parts.path))
+    return on_host(link, MEETING_HOSTS)
+
+
+def query_start(link: str) -> int:
+    """Where a link's query or fragment starts, or its length if it has neither."""
+    found = re.search(r"[?#]", link)
+    return found.start() if found else len(link)
 
 
 def kept_links(text: str) -> list[tuple[int, int]]:
-    """What the randomness check leaves alone: a Slack or Google link up to its query, so its
-    IDs stay (anything after ? or # is still checked), and a meeting link, which becomes
-    [meeting link] whole."""
+    """What the randomness check leaves alone, sorted: the IDs in a Google link's path (or
+    its id= value), so they still work, and meeting links, which become [meeting link]
+    whole."""
     spans = []
     for link in LINK.finditer(text):
         if is_meeting(link[0]):
             spans.append(link.span())
-        elif on_host(link[0], KEEP_ID_HOSTS):
-            path = re.match(r"[^?#]*", link[0])[0]
-            spans.append((link.start(), link.start() + len(path)))
-    return spans
+        elif on_host(link[0], GOOGLE_HOSTS):
+            cut = query_start(link[0])
+            for found in GOOGLE_ID.finditer(link[0], 0, cut):
+                spans.append((link.start() + found.start("id"), link.start() + found.end("id")))
+            for found in GOOGLE_QUERY_ID.finditer(link[0][cut + 1 :]):
+                at = link.start() + cut + 1
+                spans.append((at + found.start("id"), at + found.end("id")))
+    return sorted(spans)
+
+
+def looks_random(value: str) -> bool:
+    """Whether a run of 20 or more characters looks random enough to be a secret."""
+    digits = any(c.isdigit() for c in value)
+    upper, lower = any(c.isupper() for c in value), any(c.islower() for c in value)
+    if digits and HEX.fullmatch(value):
+        return any(c.isalpha() for c in value) and entropy(value) > HEX_ENTROPY
+    if upper and lower and (digits or len(value) >= ONE_CASE_MIN):
+        # Letters alone only at 24 or more: a shorter mixed-case word run is likely a name.
+        wordy = sum(len(w) for w in WORDS.findall(value)) / len(value)
+        return entropy(value) > MIXED_ENTROPY and wordy < WORDY
+    if digits and (upper or lower) and len(value) >= ONE_CASE_MIN:
+        if SEPARATORS.search(value):
+            return False
+        words = [w for w in ONE_CASE_WORDS.findall(value) if vowel_share(w) >= VOWELS]
+        return entropy(value) > MIXED_ENTROPY and sum(map(len, words)) / len(value) < WORDY
+    return False
+
+
+def covering(spans: list[tuple[int, ...]], starts: list[int], start: int, end: int) -> int:
+    """The index of the span in a sorted, non-overlapping list that touches start..end, or
+    -1. A binary search, so many links or emails don't make a long copy slow."""
+    at = bisect.bisect_right(starts, end - 1) - 1
+    return at if at >= 0 and spans[at][1] > start else -1
 
 
 def random_runs(text: str) -> list[tuple[int, int]]:
-    """Runs that look random enough to be a secret, outside Slack and Google links."""
+    """Runs that look random enough to be a secret, outside Google IDs, meeting links and
+    emails (the email step takes those whole). In a link's path, each part between slashes
+    is checked on its own, so the site's name and plain path words stay readable; a value
+    in its query is checked whole."""
     kept = kept_links(text)
+    kept_starts = [s for s, _ in kept]
+    links = [(m.start(), m.end(), m.start() + query_start(m[0])) for m in LINK.finditer(text)]
+    link_starts = [s for s, _, _ in links]
+    emails = [m.span() for m in EMAILISH.finditer(text)]
+    email_starts = [s for s, _ in emails]
     found = []
     for run in RUN.finditer(text):
-        start, end = run.span()
-        # Strip the symbols at its edges: "--" or "==" around a word isn't part of it.
-        while start < end and text[start] in "+/_=-":
-            start += 1
-        while end > start and text[end - 1] in "+/_=-":
-            end -= 1
-        if end - start < MIN_RUN or any(s <= start and end <= e for s, e in kept):
-            continue
-        value = text[start:end]
-        if not any(c.isdigit() for c in value):
-            continue
-        if HEX.fullmatch(value):
-            if any(c.isalpha() for c in value) and entropy(value) > HEX_ENTROPY:
-                found.append((start, end))
-        elif any(c.isupper() for c in value) and any(c.islower() for c in value):
-            wordy = sum(len(w) for w in WORDS.findall(value)) / len(value)
-            if entropy(value) > MIXED_ENTROPY and wordy < WORDY:
-                found.append((start, end))
-        elif len(value) >= ONE_CASE_MIN and not SEPARATORS.search(value):
-            words = [w for w in ONE_CASE_WORDS.findall(value) if vowel_share(w) >= VOWELS]
-            if entropy(value) > MIXED_ENTROPY and sum(map(len, words)) / len(value) < WORDY:
+        pieces = [run.span()]
+        link = covering(links, link_starts, *run.span())
+        if link != -1:
+            if run.start() < links[link][2]:
+                pieces = [
+                    (m.start() + run.start(), m.end() + run.start())
+                    for m in re.finditer(r"[^/]+", run[0])
+                ]
+        for start, end in pieces:
+            # Strip the symbols at its edges: "--" or "==" around a word isn't part of it.
+            while start < end and text[start] in "+/_=-":
+                start += 1
+            while end > start and text[end - 1] in "+/_=-":
+                end -= 1
+            if end - start < MIN_RUN:
+                continue
+            k = covering(kept, kept_starts, start, end)
+            if k != -1 and kept[k][0] <= start and end <= kept[k][1]:
+                continue
+            if covering(emails, email_starts, start, end) != -1:
+                continue
+            if looks_random(text[start:end]):
                 found.append((start, end))
     return found
 
@@ -366,9 +471,11 @@ def secrets(text: str) -> list[tuple[int, int, str]]:
                 continue
             spans.append((start, end, True))
             values.add(value)
-    for match in LINK_PASSWORD.finditer(seen):
-        spans.append((*match.span("secret"), True))
-        values.add(match["secret"])
+    ours = [LINK_PASSWORD, QUERY_SECRET] + ([CURL_USER] if "curl" in low else [])
+    for pattern in ours:
+        for match in pattern.finditer(seen):
+            spans.append((*match.span("secret"), True))
+            values.add(match["secret"])
     # A secret found once is replaced everywhere it appears in the copy.
     for value in values:
         if len(value) < 8:
@@ -378,6 +485,16 @@ def secrets(text: str) -> list[tuple[int, int, str]]:
             spans.append((at, at + len(value), True))
             at = seen.find(value, at + 1)
     spans += [(start, end, False) for start, end in random_runs(seen)]
+    # A meeting link is replaced whole by the next step, so nothing inside it is taken now:
+    # a [secret] in its user or query would split it, and it would no longer read as one.
+    meetings = [(start, end) for start, end, _ in meeting_links(seen)]
+    starts = [start for start, _ in meetings]
+    spans = [
+        (s, e, sure)
+        for s, e, sure in spans
+        if (k := covering(meetings, starts, s, e)) == -1
+        or not (meetings[k][0] <= s and e <= meetings[k][1])
+    ]
     # Back to the real text, covering any invisible characters inside.
     real = [(where[s], where[e - 1] + 1, sure) for s, e, sure in spans]
     return [(s, e, SECRET if sure else MAYBE_SECRET) for s, e, sure in merge(real)]
@@ -395,16 +512,42 @@ def merge(spans: list[tuple[int, int, bool]]) -> list[tuple[int, int, bool]]:
     return [tuple(span) for span in merged]
 
 
+def meeting_end(text: str, end: int) -> int:
+    """Where a meeting link ends: on past brackets in its query, but not past a space, its
+    markup, or a ) it didn't open (Markdown's [label](link))."""
+    depth = 0
+    while end < len(text):
+        c = text[end]
+        if c.isspace() or c in "<>|\"'`":
+            break
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            if depth == 0:
+                break
+            depth -= 1
+        end += 1
+    return end
+
+
 def meeting_links(text: str) -> list[tuple[int, int, str]]:
-    """Where the meeting links are: the whole link, passcode and all."""
-    return [(*link.span(), MEETING) for link in LINK.finditer(text) if is_meeting(link[0])]
+    """Where the meeting links are: the whole link, passcode and all. A link inside one
+    already found is part of it."""
+    found: list[tuple[int, int, str]] = []
+    for link in LINK.finditer(text):
+        if found and link.start() < found[-1][1]:
+            continue
+        if is_meeting(link[0]):
+            found.append((link.start(), meeting_end(text, link.end()), MEETING))
+    return found
 
 
 def phone_numbers(text: str) -> list[tuple[int, int, str]]:
     """Where the phone numbers are, and tel: links, but not digits inside other links."""
     spans = [(*m.span(), True) for m in TEL.finditer(text)]
     masked = list(text)
-    for start, end in [m.span() for m in LINK.finditer(text)] + [s[:2] for s in spans]:
+    masks = [m.span() for m in LINK.finditer(text)] + [m.span() for m in EMAILISH.finditer(text)]
+    for start, end in masks + [s[:2] for s in spans]:
         masked[start:end] = MASK * (end - start)
     masked = "".join(masked)
     for region in REGIONS:

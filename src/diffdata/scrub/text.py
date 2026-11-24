@@ -105,11 +105,11 @@ LATIN_BEFORE, LATIN_AFTER = rf"(?<![{LATIN}])", rf"(?![{LATIN}])"
 # past invisible characters, inside a word and anywhere in the spacing between two, which
 # needs a space or tab. Each word and gap has its own group, so the label is never split
 # again: a split that tries every place in a long run of Hangul fillers is slow. Emails are
-# gone by then. An @ right after [secret] is a link's user:password@host, not a mention.
+# gone by then.
 WORD = rf"(?:[\w.'’{INVISIBLE}-]*\w)?"
 GAP = rf"[{INVISIBLE}]*[ \t][ \t{INVISIBLE}]*"
 MENTION = re.compile(
-    rf"(?<![\w@])(?<!\[secret\])@(?P<label>(?P<w0>[^\W\d]{WORD})"
+    rf"(?<![\w@])@(?P<label>(?P<w0>[^\W\d]{WORD})"
     rf"(?:(?P<g1>{GAP})(?P<w1>[^\W\d_]{WORD})(?:(?P<g2>{GAP})(?P<w2>[^\W\d_]{WORD}))?)?)"
 )
 MENTION_PARTS = ("w0", "g1", "w1", "g2", "w2")
@@ -274,6 +274,11 @@ class Scrubber:
 
     def mentions(self, text: str, flags: list[Flag]) -> str:
         def replace(match: re.Match) -> str:
+            # A link's user:[secret]@host: the @ starts its host, not a mention.
+            if secrets.USERINFO_END.search(
+                match.string, max(0, match.start() - 300), match.start()
+            ):
+                return match[0]
             # The words after the handle that start with a capital; the rest is ordinary text.
             words = [match[part] for part in MENTION_PARTS if match[part] is not None]
             end = 1

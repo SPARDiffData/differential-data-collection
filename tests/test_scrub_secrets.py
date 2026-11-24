@@ -9,6 +9,8 @@ numbers are in fictional ranges (US 555-01xx, UK Ofcom drama numbers)."""
 import random
 import re
 import string
+import subprocess
+import sys
 import time
 import tomllib
 
@@ -64,8 +66,9 @@ def found(text: str) -> list[str]:
 def test_every_rule_compiles_and_the_file_is_the_pinned_release():
     raw = secrets.RULES_FILE.read_bytes()
     config = tomllib.loads(raw.decode("utf-8"))
-    text_rules = [r for r in config["rules"] if "regex" in r and "path" not in r]
+    text_rules = [r for r in config["rules"] if "regex" in r]  # file-type rules included
     assert len(secrets.rules()) == len(text_rules) > 200
+    assert {"nuget-config-password", "kubernetes-secret-yaml"} <= {r.id for r in secrets.rules()}
     assert "v8.30.1" in secrets.RULES_RELEASE
     assert "v8.30.1" in (secrets.RULES_FILE.parent / "README.md").read_text("utf-8")
 
@@ -160,10 +163,15 @@ def test_a_known_secret_shape_becomes_secret(kind):
 def test_an_aws_secret_key_and_a_password_line_become_secret_and_only_the_value_goes():
     key, password = rand(40, ALNUM + "+/"), fake("password")
     text = f'aws_secret_access_key = {key}\npassword = "{password}"\nDB_PASSWORD: {password}'
-    assert (
-        scrub(text)
-        == 'aws_secret_access_key = [secret]\npassword = "[secret]"\nDB_PASSWORD: [secret]'
-    )
+    scrubbed = scrub(text)
+    assert key not in scrubbed and password not in scrubbed
+    # The words before each value stay. (gitleaks' Terraform rule counts a password's quotes
+    # as part of it, so they may go too.)
+    lines = scrubbed.splitlines()
+    assert lines[0] == "aws_secret_access_key = [secret]"
+    assert lines[1] in ('password = "[secret]"', "password = [secret]")
+    assert lines[2] == "DB_PASSWORD: [secret]"
+    assert found(scrubbed) == []
 
 
 def test_a_password_in_a_link_becomes_secret_and_the_link_stays_readable():
@@ -174,6 +182,11 @@ def test_a_password_in_a_link_becomes_secret_and_the_link_stays_readable():
     )
     query = f"https://example.com/login?user=a&password={password}"
     assert scrub(query) == "https://example.com/login?user=a&password=[secret]"
+    # The last check doesn't read the placeholder as a password, so the copy is kept.
+    for scheme in ("postgres", "mysql", "ftp", "https"):
+        scrubbed = scrub(f"{scheme}://admin:{password}@db.example.com/app")
+        assert scrubbed == f"{scheme}://admin:[secret]@db.example.com/app"
+        assert found(scrubbed) == []
 
 
 def test_a_settings_line_with_no_secret_in_it_isnt_replaced():
@@ -284,6 +297,9 @@ def test_slack_and_google_links_come_through_whole():
         "https://whereby.com/example-room",
         "https://meet.jit.si/ExampleRoom{code}",
         "https://calendly.com/example/30min",
+        "https://gotomeet.me/ExampleRoom",
+        "https://global.gotomeeting.com/join/123456789",
+        "https://example.zoomgov.com/j/1612345678?pwd={code}",
     ],
 )
 def test_a_meeting_link_becomes_meeting_link_passcode_and_all(link):
@@ -418,7 +434,7 @@ def test_a_random_run_in_one_case_becomes_secret_maybe(alphabet):
         "123e4567-e89b-12d3-a456-426614174000",  # a UUID: an ID, left alone
         "my_project_notes_2024_final and q4_planning_2026_draft_v2",
         "export-slack-channel-history-2 and MAX_UPLOAD_SIZE_BYTES_2048",
-        "differentialdatacollection2026 and weeklyupdate20261123lachlanpaul",
+        "differentialdatacollection2026 and weeklyupdate20261123alexsample",
         "CHANGELOG2026NOVEMBERDRAFT and thequickbrownfox2024jumpsoverthelazydog",
     ],
 )
@@ -437,3 +453,182 @@ def test_a_phone_number_with_dots_before_a_slash_isnt_read_as_a_link(number):
 def test_a_random_value_in_a_google_links_query_is_still_checked():
     doc = "https://docs.google.com/document/d/" + rand(44, URLSAFE) + "/edit"
     assert scrub(f"{doc}?x={rand(40)}") == f"{doc}?x=[secret?]"
+
+
+# Review fixes, second round (#126: the second /review-pr and Codex)
+
+
+def run_with_deadline(code: str, seconds: float = 20) -> None:
+    """Run Python code in its own process and fail if it takes longer than `seconds`, so a
+    rule that backtracks without end fails the test instead of hanging it."""
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=seconds)
+
+
+def test_no_rule_backtracks_without_end_on_runs_of_line_breaks():
+    run_with_deadline(
+        "from diffdata.scrub import secrets\n"
+        "for piece in ('\\r', '\\n', '\\r\\n', '\\t'):\n"
+        "    text = 'curl' + piece * 50 + ' x -H x -u x'\n"
+        "    for rule in secrets.rules():\n"
+        "        list(rule.pattern.finditer(text * 200))\n"
+    )
+
+
+def test_a_long_curl_command_still_loses_its_credentials_and_nothing_is_flagged():
+    token = rand(14)
+    text = "curl " + "a" * 2050 + f' -H "Authorization: Bearer @{token}" https://api.example.com'
+    scrubbed, flags = Scrubber(People()).scrub(text)
+    assert token not in scrubbed and "Bearer [secret]" in scrubbed
+    assert flags == [] and found(scrubbed) == []
+
+
+@pytest.mark.parametrize(
+    "link, scrubbed",
+    [
+        ("https://meet.google.com./abc-defg-hij", "[meeting link]"),
+        ("meet.google.com./abc-defg-hij", "[meeting link]"),
+        ("https://zoom.us/j/12345678901?note[]=test&pwd=Demo5 ok", "[meeting link] ok"),
+        ("[join](https://zoom.us/j/12345678901?pwd=Demo5) now", "[join]([meeting link]) now"),
+    ],
+)
+def test_a_meeting_link_with_a_trailing_dot_or_brackets_goes_whole(link, scrubbed):
+    assert scrub(link) == scrubbed
+    assert found(scrub(link)) == []
+
+
+def test_a_rule_for_one_kind_of_file_runs_on_pasted_text():
+    text = '<add key="ClearTextPassword" value="D0g.Frog!" />'
+    scrubbed = scrub(text)
+    assert "D0g.Frog!" not in scrubbed and found(scrubbed) == []
+
+
+def test_mixed_case_letters_alone_at_24_or_more_become_secret_maybe():
+    value = "".join(RANDOM.choice(string.ascii_letters) for _ in range(28))
+    assert scrub(f"key {value} end") == "key [secret?] end"
+    assert scrub("ExportSlackChannelHistoryNotes") == "ExportSlackChannelHistoryNotes"
+
+
+def test_a_random_value_in_a_slack_link_path_is_checked_and_a_sites_name_stays():
+    assert scrub("https://example.slack.com/api/demo/" + rand(30)) == (
+        "https://example.slack.com/api/demo/[secret?]"
+    )
+    value = rand(30)
+    assert scrub(f"https://example.com/a/{value}/b and example.com/{value}") == (
+        "https://example.com/a/[secret?]/b and example.com/[secret?]"
+    )
+
+
+def test_a_tel_link_goes_with_its_extension():
+    assert scrub("<tel:+12025550142;ext=7899|call>") == "<[phone]|call>"
+
+
+def test_digits_in_an_email_are_left_for_the_email_step_and_nothing_is_flagged():
+    scrubbed, flags = Scrubber(People()).scrub("mail 2025550142@example.org today")
+    assert scrubbed == "mail [email] today" and flags == []
+
+
+def test_an_at_after_secret_outside_a_link_is_still_a_mention():
+    assert scrub("[secret]@private.handle") == "[secret]@[name?]"
+    assert scrub("x://u:[secret]@host.example") == "x://u:[secret]@host.example"
+
+
+def test_must_refuse_17_the_last_check_reads_past_invisible_characters_in_what_survives():
+    """Every raw piece of the surviving half is under 20 characters, so only reading past
+    the invisible characters finds it."""
+    half = fake("anthropic")[54:]
+    spread = "\u200b".join(half[i : i + 15] for i in range(0, len(half), 15))
+    assert all(len(piece) < 20 for piece in spread.split("\u200b"))
+    assert found(f"left: [secret]\u200b{spread}") == ["a secret"]
+
+
+def test_the_rule_file_is_checked_again_on_every_scrub(monkeypatch, tmp_path):
+    secrets.rules()  # compiled and cached
+    monkeypatch.setattr(secrets, "RULES_FILE", tmp_path / "missing.toml")
+    with pytest.raises(secrets.RulesError, match="is missing"):
+        secrets.rules()
+
+
+# Review fixes, Codex's second run
+
+
+@pytest.mark.parametrize(
+    "text, scrubbed",
+    [
+        ("curl -u admin:{p}; echo done", "curl -u [secret]; echo done"),
+        ("curl --user=admin:{p} && ls", "curl --user=[secret] && ls"),
+        (
+            "https://example.test/login?password={p}&next=/home",
+            "https://example.test/login?password=[secret]&next=/home",
+        ),
+        (
+            "https://api.example.test/v1?api_key={p}#top",
+            "https://api.example.test/v1?api_key=[secret]#top",
+        ),
+    ],
+)
+def test_a_credential_followed_by_a_shell_or_link_separator_is_replaced(text, scrubbed):
+    result = scrub(text.format(p=fake("password")))
+    assert result == scrubbed
+    assert found(result) == []  # the placeholder itself never fails the last check
+
+
+def test_a_placeholder_in_a_query_passes_the_last_check():
+    assert found("https://example.test/x?key=[secret?]&token=[secret]") == []
+
+
+def test_only_ids_in_a_google_links_path_are_kept():
+    value = rand(24)
+    redirect = f"https://docs.google.com/document/d/public-doc/edit?redirect=/d/{value}"
+    assert value not in scrub(redirect)
+    doc_id = rand(33, URLSAFE)
+    assert scrub(f"https://drive.google.com/open?id={doc_id}") == (
+        f"https://drive.google.com/open?id={doc_id}"
+    )
+
+
+def test_a_query_value_is_checked_whole_even_with_a_slash_in_it():
+    value = rand(12) + "/" + rand(12)
+    assert (
+        scrub(f"https://example.com/cb?state={value}") == "https://example.com/cb?state=[secret?]"
+    )
+
+
+@pytest.mark.parametrize(
+    "text, scrubbed",
+    [
+        ("https://TEAMS.MICROSOFT.COM./meet/1234?p=Demo5", "[meeting link]"),
+        ("https://user:pw@zoom.us:443/j/123?pwd=Demo5 x", "[meeting link] x"),
+        (
+            "[join](https://zoom.us/j/12345678901?note=(demo)&pwd=Demo5) after",
+            "[join]([meeting link]) after",
+        ),
+        ("https://zoom.us/j/1?ret=(https://meet.google.com/abc)&pwd=Demo5 x", "[meeting link] x"),
+        ("(see https://zoom.us/j/1?pwd=Demo5) after", "(see [meeting link]) after"),
+    ],
+)
+def test_meeting_links_are_read_by_their_real_host_and_bracket_balance(text, scrubbed):
+    assert scrub(text) == scrubbed
+    assert found(scrub(text)) == []
+
+
+def test_a_tel_extension_after_a_closing_bracket_goes_too():
+    assert scrub("<tel:+1-(202-555-0142);ext=7899|call>") == "<[phone]|call>"
+
+
+@pytest.mark.parametrize(
+    "email",
+    ["2025550142@[192.0.2.1]", "{r}@private.example", "{r}@[IPv6:2001:db8::1]"],
+)
+def test_an_email_is_left_whole_for_the_email_step(email):
+    scrubbed, flags = Scrubber(People()).scrub(f"mail {email.format(r=rand(24))} today")
+    assert scrubbed == "mail [email] today" and flags == []
+
+
+def test_many_links_are_read_in_step_with_their_number():
+    took = []
+    for n in (2_000, 8_000):
+        text = "https://example.com/aaaaaaaaaaaaaaaaaaaaaaaa " * n
+        started = time.perf_counter()
+        found(scrub(text))
+        took.append(time.perf_counter() - started)
+    assert took[1] < 8 * max(took[0], 0.01)  # four times the links: about 4x
