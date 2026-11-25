@@ -382,11 +382,11 @@ def test_must_refuse_3_the_key_is_never_printed(out, capsys):
     assert f"Team file: {out / 'team-a.diffdata-team.json'}" in said
 
 
-def test_must_refuse_3_a_stop_after_the_key_doesnt_print_it(out):
+def test_must_refuse_4_a_folder_where_the_team_file_goes_stops_before_any_change(out):
     fake = FakeGcloud()
     out.mkdir()
-    (out / "team-a.diffdata-team.json").mkdir()  # appears while gcloud runs, in the test below
-    with pytest.raises(AdminError) as stopped:
+    (out / "team-a.diffdata-team.json").mkdir()  # in the way before the run starts
+    with pytest.raises(AdminError, match="never replaces one") as stopped:
         run(team(out), fake=fake)
     assert MARKER not in str(stopped.value)
     assert fake.changes() == []  # caught before any change
