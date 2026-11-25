@@ -8,6 +8,7 @@ Names are examples only.
 
 import json
 import os
+import re
 import socket
 import stat
 import tomllib
@@ -94,22 +95,29 @@ def fixed(char="k"):
     return lambda chars: char
 
 
+def enters(channels: str) -> list[str]:
+    """Enter at each channel's notice question (revision 6): no entry is written."""
+    return [""] * len(setup.parse_channels(channels)[0])
+
+
 def quick_answers(channels: str = f"example-channel, {LINK}") -> list[str]:
     """Answers for a first setup with a team file (revision 5): the channels, the workspace
-    if no channel is a link, y on the summary screen, keep the team file."""
+    if no channel is a link, Enter at each notice, y on the summary screen, keep the team
+    file."""
     space = [] if "/archives/" in channels else ["example.slack.com"]
-    return [channels, *space, "y", "n"]
+    return [channels, *space, *enters(channels), "y", "n"]
 
 
-# A first setup's answers before c on the summary screen: valid channels, then c.
-TO_STEPS = [f"example-channel, {LINK}", "c"]
+# A first setup's answers before c on the summary screen: valid channels, Enter at both
+# notices, then c.
+TO_STEPS = [f"example-channel, {LINK}", "", "", "c"]
 
 
 def fresh_answers(channels: str = f"example-channel, {LINK}") -> list[str]:
     """Answers for a first setup with a team file, one question at a time (after c on the
     summary screen, which `run` answers first): use the team values, the data folder, the
-    channels, the workspace, the handle, write, keep the team file."""
-    return ["y", "", channels, "example.slack.com", "", "y", "n"]
+    channels, the workspace, Enter at each notice, the handle, write, keep the team file."""
+    return ["y", "", channels, "example.slack.com", *enters(channels), "", "y", "n"]
 
 
 def run(
@@ -167,8 +175,8 @@ send_not_approved = "yes"
 """
 
 # A re-run with no team file: change it; use the old team values; keep the data folder; new
-# channels; keep the workspace and the handle; write.
-CHANGE = ["y", "y", "", "new-channel", "", "", "y"]
+# channels; keep the workspace; Enter at the notice; keep the handle; write.
+CHANGE = ["y", "y", "", "new-channel", "", "", "", "y"]
 
 
 def existing(home: Path) -> Path:
@@ -222,8 +230,8 @@ def test_the_handle_is_called_a_pseudonym_when_it_is_offered(home):
 
 def test_a_no_at_the_last_question_writes_nothing(home):
     answers = fresh_answers()
-    answers[5] = "n"  # Write this?
-    code, script = run(home, *answers[:6])
+    answers[7] = "n"  # Write this?
+    code, script = run(home, *answers[:8])
     assert code == 0
     assert not settings(home).parent.exists()
     assert not (home / "diffdata-data").exists()
@@ -421,7 +429,7 @@ def test_an_os_error_after_the_write_says_the_config_was_written(home, monkeypat
     answers = fresh_answers()
     monkeypatch.setattr(setup, "install_team_file", cant_make)
     with pytest.raises(SetupError, match="was written, but then something failed"):
-        run(home, *answers[:6])
+        run(home, *answers[:8])
     assert settings(home).exists()
 
 
@@ -517,9 +525,9 @@ def test_must_refuse_7_a_refused_default_goes_straight_to_choosing(home, monkeyp
     for name in ("HOME", "USERPROFILE"):
         monkeypatch.setenv(name, str(synced))
     typed = home / "typed-data"
-    answers = fresh_answers()
-    answers[1:2] = [str(typed), ""]  # no picker: typed path; then use it
-    code, script = run(home, *answers, team=path)
+    # The default is refused before any question, so no picker: the typed path; it's shown
+    # again; Enter uses it. Then the short setup.
+    code, script = run(home, str(typed), "", *quick_answers(), team=path, steps=False)
     assert code == 0
     assert "OneDrive" in script.text
     assert typed.is_dir()
@@ -606,7 +614,7 @@ def test_must_refuse_8_a_team_file_that_is_a_link_is_refused(home):
 
 def test_must_refuse_8_a_bad_handle_is_asked_again(home):
     answers = fresh_answers()
-    answers[4:5] = ["my name", "a/b", "team-a-1"]
+    answers[6:7] = ["my name", "a/b", "team-a-1"]
     code, _ = run(home, *answers)
     assert code == 0
     assert tomllib.loads(settings(home).read_text())["store"]["producer"] == "team-a-1"
@@ -704,7 +712,7 @@ def test_must_refuse_18_a_key_write_cut_short_leaves_no_key(home, monkeypatch):
     monkeypatch.setattr(setup.os, "open", open_and_note)
     monkeypatch.setattr(setup.os, "fdopen", fdopen)
     with pytest.raises(KeyboardInterrupt):
-        run(home, *fresh_answers()[:6])
+        run(home, *fresh_answers()[:8])
     assert key_fds and not key.exists()
 
 
@@ -845,7 +853,7 @@ def test_must_refuse_19_the_screen_shows_every_chosen_value_before_the_yes(home)
 
 def test_must_refuse_16_n_on_the_screen_writes_nothing(home):
     path = team_file(home)
-    code, script = run(home, f"example-channel, {LINK}", "n", team=path, steps=False)
+    code, script = run(home, f"example-channel, {LINK}", "", "", "n", team=path, steps=False)
     assert code == 0
     assert setup.NOTHING_WRITTEN in script.text
     assert not settings(home).exists()
@@ -856,7 +864,7 @@ def test_must_refuse_16_n_on_the_screen_writes_nothing(home):
 
 @pytest.mark.parametrize("other", ["", "yes", "x", "write", "Y N"])
 def test_must_refuse_16_only_y_n_or_c_answers_the_screen(home, other):
-    code, script = run(home, f"example-channel, {LINK}", other, "n", steps=False)
+    code, script = run(home, f"example-channel, {LINK}", "", "", other, "n", steps=False)
     assert code == 0
     assert asked(script, "Write this?") == 2
     assert "Please type y, n or c." in script.text
@@ -865,7 +873,7 @@ def test_must_refuse_16_only_y_n_or_c_answers_the_screen(home, other):
 
 def test_c_asks_each_question_with_the_shown_values_then_shows_the_screen_again(home):
     # c; then yes to the team values and Enter at every question; then y; keep the team file.
-    answers = [f"example-channel, {LINK}", "c", "y", "", "", "", "", "y", "n"]
+    answers = [f"example-channel, {LINK}", "", "", "c", "y", "", "", "", "", "", "", "y", "n"]
     code, script = run(home, *answers, steps=False)
     assert code == 0
     assert asked(script, "Write this?") == 2
@@ -878,7 +886,7 @@ def test_c_asks_each_question_with_the_shown_values_then_shows_the_screen_again(
 
 
 def test_c_changes_a_value_and_n_on_the_second_screen_writes_nothing(home):
-    answers = [f"example-channel, {LINK}", "c", "y", "", "other-channel", "", "", "n"]
+    answers = [f"example-channel, {LINK}", "", "", "c", "y", "", "other-channel", "", "", "", "n"]
     code, script = run(home, *answers, steps=False)
     assert code == 0
     assert "  Channels:         other-channel" in script.text
@@ -941,7 +949,7 @@ def test_a_link_with_a_bad_workspace_asks_for_the_channels_again(home):
 def test_a_bad_link_workspace_after_c_asks_for_the_channels_again(home):
     bad = "https://-example.slack.com/archives/C00000002"
     # c; yes to the team values; data folder; a bad link, then a good one; workspace; handle.
-    answers = [f"example-channel, {LINK}", "c", "y", "", bad, LINK, "", "", "y", "n"]
+    answers = [f"example-channel, {LINK}", "", "", "c", "y", "", bad, LINK, "", "", "", "y", "n"]
     code, script = run(home, *answers, steps=False)
     assert code == 0
     assert "Give the channels again." in script.text
@@ -981,10 +989,10 @@ def test_a_safety_question_takes_only_y_or_n():
 @pytest.mark.parametrize(
     ("where", "question", "steps"),
     [
-        (1, "Write this?", False),  # the summary screen
-        (2, "Delete the team file", False),
+        (3, "Write this?", False),  # the summary screen
+        (4, "Delete the team file", False),
         (0, "Use these?", True),  # after c
-        (6, "Delete the team file", True),
+        (8, "Delete the team file", True),
     ],
 )
 def test_must_refuse_16_enter_at_a_first_setup_question_asks_again(home, where, question, steps):
@@ -1212,3 +1220,331 @@ def test_a_path_typed_at_the_data_folder_prompt_gets_the_same_checks(home, place
     assert "Choose another folder" in script.text
     assert tomllib.loads(settings(home).read_text())["local"]["data_dir"] == str(good)
     assert not (home / place).exists()
+
+
+# --- revision 6: each channel's notice link (must-refuse 20 to 24) -----------------------
+
+# Made-up notice links. LINK's channel is C00000002.
+NOTICE = "https://example.slack.com/archives/C00000002/p1700000000000100"
+OTHER_CHANNEL = "https://example.slack.com/archives/C00000003/p1700000000000200"
+OTHER_SPACE = "https://other.slack.com/archives/C00000002/p1700000000000100"
+REPLY = f"{NOTICE}?thread_ts=1700000000.000050&cid=C00000002"
+ASK_NOTICE = "type none if everyone in it agreed directly"
+
+
+def notices(home: Path) -> dict | None:
+    raw = tomllib.loads(settings(home).read_text(encoding="utf-8"))
+    return raw["sources"].get("slack_notices")
+
+
+def first(home, *notice_answers: str, channels: str = f"example-channel, {LINK}"):
+    """A short first setup with these answers at the notice questions (and any asked again)."""
+    space = [] if "/archives/" in channels else ["example.slack.com"]
+    return run(home, channels, *space, *notice_answers, "y", "n", steps=False)
+
+
+def test_each_channel_gets_one_notice_question_after_the_channels(home):
+    code, script = first(home, "", "")
+    assert code == 0
+    assert asked(script, ASK_NOTICE) == 2
+    help_lines = [line for line in script.shown if line.startswith("Notice link for")]
+    assert help_lines == [
+        "Notice link for example-channel: paste the pinned notice's link (its menu, Copy link),",
+        "Notice link for C00000002 (a channel ID): paste the pinned notice's link (its menu, "
+        "Copy link),",
+    ]
+    assert "or press Enter to add it later: " in script.text
+    assert script.text.index("Channels") < script.text.index("Notice link for")
+
+
+def test_enter_at_every_notice_still_gives_a_working_setup(home):
+    code, script = first(home, "", "")
+    assert code == 0
+    assert notices(home) is None
+    push = setup.push
+    push.settings(config_module.load_config(settings(home)))  # passes every check
+    assert script.text.count(setup.NOT_ADDED) == 2
+    assert (
+        "No notice link yet for: example-channel, C00000002 (a channel ID). /slack-export "
+        "stops until each listed channel has one." in script.text
+    )
+    assert setup.NEXT_STEP not in script.text
+
+
+def test_must_refuse_20_enter_never_writes_none(home):
+    first(home, "", "")
+    text = settings(home).read_text(encoding="utf-8").lower()
+    assert not [line for line in text.splitlines() if "none" in line and not line.startswith("#")]
+    assert notices(home) is None
+
+
+@pytest.mark.parametrize("typed", ["none", "NONE", " None "])
+def test_must_refuse_20_a_typed_none_is_written(home, typed):
+    code, script = first(home, typed, "none")
+    assert code == 0
+    assert notices(home) == {"example-channel": "none", "C00000002": "none"}
+    assert script.text.count(setup.NONE_SHOWN) == 2
+    assert setup.NEXT_STEP in script.text
+    assert "No notice link yet" not in script.text
+
+
+def test_a_link_for_the_channel_is_written_and_shown_by_its_time(home):
+    code, script = first(home, "", NOTICE)
+    assert code == 0
+    assert notices(home) == {"C00000002": NOTICE}
+    assert f"C00000002 (a channel ID): the notice posted {setup.notice_time('1700000000')}" in (
+        script.text
+    )
+    assert NOTICE not in script.text
+    assert "No notice link yet for: example-channel." in script.text
+
+
+def test_a_notice_time_is_shown_in_local_time():
+    shown = setup.notice_time("1700000000")
+    assert shown.startswith(("2023-11-14", "2023-11-15"))
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "not a link",
+        LINK,  # the channel's link, not the notice's
+        REPLY,  # a reply in a thread
+        "https://example.slack.com/docs/T00000001/F00000001",  # a canvas
+        OTHER_SPACE,
+        OTHER_CHANNEL,
+        "https://example.slack.com/archives/D00000004/p1700000000000100",  # a DM
+    ],
+    ids=["text", "channel-link", "reply", "canvas", "other-workspace", "other-channel", "dm"],
+)
+def test_must_refuse_21_a_bad_link_is_asked_again_and_not_printed(home, bad):
+    code, script = first(home, "", bad, NOTICE)
+    assert code == 0
+    assert asked(script, ASK_NOTICE) == 3
+    assert bad not in script.text
+    assert NOTICE not in script.text
+    assert notices(home) == {"C00000002": NOTICE}
+
+
+def test_must_refuse_21_another_workspace_and_channel_say_why(home):
+    _, script = first(home, "", OTHER_SPACE, OTHER_CHANNEL, NOTICE)
+    assert "That link is from another workspace, not https://example.slack.com." in script.text
+    assert "That link is to a message in another channel." in script.text
+
+
+def test_must_refuse_21_a_name_listed_channel_cant_take_another_listed_channels_link(home):
+    # example-channel is listed by name, so its ID isn't known offline; C00000002 is listed.
+    code, script = first(home, NOTICE, "", "")
+    assert code == 0
+    assert "another channel" in script.text
+    assert notices(home) is None
+
+
+def test_must_refuse_21_two_name_listed_channels_cant_share_a_link(home):
+    code, script = first(
+        home, OTHER_CHANNEL, OTHER_CHANNEL, "none", channels="alpha-channel, beta-channel"
+    )
+    assert code == 0
+    assert "another channel" in script.text
+    assert notices(home) == {"alpha-channel": OTHER_CHANNEL, "beta-channel": "none"}
+
+
+def test_must_refuse_21_a_link_keyed_channel_is_matched_by_its_id():
+    with pytest.raises(SetupError, match="another channel"):
+        setup.check_notice(OTHER_CHANNEL, "C00000002", "https://example.slack.com", {})
+    assert setup.check_notice(NOTICE, "C00000002", "https://example.slack.com", {}) == NOTICE
+
+
+# A re-run: change it; use the team values; keep the data folder; these channels; keep the
+# workspace; then the notice answers; keep the handle; write.
+def rerun(home, channels: str, *notice_answers: str):
+    return run(home, "y", "y", "", channels, "", *notice_answers, "", "y", team=None)
+
+
+KEPT = {
+    "old-channel": "none",
+    "C00000002": "https://example.slack.com/archives/C00000002/p1790900000000000",
+}
+
+
+def test_must_refuse_22_enter_keeps_every_entry_on_a_rerun(home):
+    existing(home)
+    code, script = rerun(home, f"old-channel, {LINK}", "", "")
+    assert code == 0
+    assert notices(home) == KEPT
+    assert f"press Enter to keep {setup.NONE_SHOWN}: " in script.text
+    assert f"press Enter to keep the notice posted {setup.notice_time('1790900000')}: " in (
+        script.text
+    )
+    assert KEPT["C00000002"] not in script.text
+
+
+def test_must_refuse_22_entries_for_unlisted_channels_stay(home):
+    existing(home)
+    code, script = run(home, *CHANGE, team=None)  # only new-channel, Enter at its notice
+    assert code == 0
+    assert notices(home) == KEPT
+    assert "No notice link yet for: new-channel." in script.text
+
+
+def test_must_refuse_22_a_typed_answer_changes_only_its_entry(home):
+    existing(home)
+    code, _ = rerun(home, f"old-channel, {LINK}", "", NOTICE)
+    assert code == 0
+    assert notices(home) == {**KEPT, "C00000002": NOTICE}
+
+
+def test_a_rerun_keeps_an_entry_keyed_by_link_under_its_key(home):
+    path = existing(home)
+    text = path.read_text(encoding="utf-8").replace(
+        "slack_notices.C00000002", f'slack_notices."{LINK}"'
+    )
+    path.write_text(text, encoding="utf-8")
+    code, script = rerun(home, f"old-channel, {LINK}", "", NOTICE)
+    assert code == 0
+    assert notices(home) == {"old-channel": "none", LINK: NOTICE}
+    assert "press Enter to keep the notice posted" in script.text
+
+
+def test_must_refuse_23_the_link_check_makes_no_network_call(home, monkeypatch):
+    def no_network(*args, **kwargs):
+        raise AssertionError("setup opened a network connection")
+
+    monkeypatch.setattr(socket, "socket", no_network)
+    monkeypatch.setattr(socket, "create_connection", no_network)
+    code, _ = first(home, "none", OTHER_CHANNEL, NOTICE)
+    assert code == 0
+    assert notices(home) == {"C00000002": NOTICE, "example-channel": "none"}
+
+
+def test_must_refuse_24_each_notice_is_on_the_screen_before_the_yes(home):
+    code, script = first(home, "none", NOTICE)
+    assert code == 0
+    screen = script.shown.index(next(s for s in script.shown if s.startswith("Write this?")))
+    before = script.shown[:screen]
+    assert f"  Notices:          example-channel: {setup.NONE_SHOWN}" in before
+    assert (
+        f"                    C00000002 (a channel ID): the notice posted "
+        f"{setup.notice_time('1700000000')}" in before
+    )
+
+
+def test_must_refuse_24_a_rerun_shows_each_notice_before_its_yes(home):
+    existing(home)
+    _, script = rerun(home, "new-channel, old-channel", "", "")
+    screen = script.shown.index(next(s for s in script.shown if s.startswith("Write this to")))
+    before = script.shown[:screen]
+    assert f"  Notices:          new-channel: {setup.NOT_ADDED}" in before
+    assert f"                    old-channel: {setup.NONE_SHOWN}" in before
+
+
+def test_c_asks_each_notice_with_the_shown_one_as_default(home):
+    # Notices: Enter, then a link; c; yes to the team values; Enter at every question
+    # (the notices too); y; keep the team file.
+    answers = [f"example-channel, {LINK}", "", NOTICE, "c", "y", "", "", "", "", "", ""]
+    code, script = run(home, *answers, "y", "n", steps=False)
+    assert code == 0
+    assert "press Enter to keep the notice posted" in script.text
+    assert notices(home) == {"C00000002": NOTICE}
+
+
+def test_a_slack_notices_that_isnt_a_table_stops_a_rerun(home):
+    path = existing(home)
+    text = path.read_text(encoding="utf-8")
+    text = text.replace('slack_notices.old-channel = "none"\n', "").replace(
+        f'slack_notices.C00000002 = "{KEPT["C00000002"]}"', 'slack_notices = "none"'
+    )
+    path.write_text(text, encoding="utf-8")
+    before = path.read_bytes()
+    with pytest.raises(SetupError, match="slack_notices in your config.toml isn't a table"):
+        rerun(home, "old-channel", "")
+    assert path.read_bytes() == before
+
+
+def test_a_kept_link_from_another_workspace_says_so(home):
+    existing(home)
+    # Change it; team values; data folder; the channel; a new workspace; Enter keeps the
+    # notice; handle; write.
+    code, script = run(home, "y", "y", "", "C00000002", "other.slack.com", "", "", "y", team=None)
+    assert code == 0
+    assert "keep the notice posted" in script.text
+    assert script.text.count(", from another workspace") == 2  # the question and the screen
+    assert notices(home) == KEPT
+
+
+def test_a_new_link_also_changes_the_same_notice_keyed_by_id(home):
+    path = existing(home)
+    text = path.read_text(encoding="utf-8").replace(
+        'slack_notices.old-channel = "none"',
+        f'slack_notices.old-channel = "{KEPT["C00000002"]}"',
+    )
+    path.write_text(text, encoding="utf-8")
+    code, script = rerun(home, "old-channel", NOTICE)
+    assert code == 0
+    assert notices(home) == {"old-channel": NOTICE, "C00000002": NOTICE}
+    assert "old-channel: the notice posted" in script.text
+    assert ", also under its channel ID" in script.text
+    setup.push.settings(config_module.load_config(settings(home)))
+
+
+def test_a_link_to_another_channel_never_changes_the_id_keyed_entry(home):
+    path = existing(home)
+    text = path.read_text(encoding="utf-8").replace(
+        'slack_notices.old-channel = "none"',
+        f'slack_notices.old-channel = "{KEPT["C00000002"]}"',
+    )
+    path.write_text(text, encoding="utf-8")
+    code, _ = rerun(home, "old-channel", OTHER_CHANNEL)
+    assert code == 0
+    assert notices(home) == {"old-channel": OTHER_CHANNEL, "C00000002": KEPT["C00000002"]}
+
+
+def test_none_never_changes_the_id_keyed_entry(home):
+    path = existing(home)
+    text = path.read_text(encoding="utf-8").replace(
+        'slack_notices.old-channel = "none"',
+        f'slack_notices.old-channel = "{KEPT["C00000002"]}"',
+    )
+    path.write_text(text, encoding="utf-8")
+    code, _ = rerun(home, "old-channel", "none")
+    assert code == 0
+    assert notices(home) == {"old-channel": "none", "C00000002": KEPT["C00000002"]}
+
+
+def test_a_link_keyed_entry_with_the_same_notice_is_changed_too(home):
+    path = existing(home)
+    text = (
+        path.read_text(encoding="utf-8")
+        .replace(
+            'slack_notices.old-channel = "none"',
+            f'slack_notices.old-channel = "{KEPT["C00000002"]}"',
+        )
+        .replace(
+            f'slack_notices.C00000002 = "{KEPT["C00000002"]}"',
+            f'slack_notices."{LINK}" = "{KEPT["C00000002"]}/"',
+        )
+    )
+    path.write_text(text, encoding="utf-8")
+    code, _ = rerun(home, "old-channel", NOTICE)
+    assert code == 0
+    assert notices(home) == {"old-channel": NOTICE, LINK: NOTICE}
+
+
+def test_a_notice_time_has_a_short_offset_not_a_zone_name():
+    assert re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d UTC[+-]\d{4}", setup.notice_time("1700000000"))
+
+
+def test_a_channel_named_like_the_opt_out_list_can_have_a_notice(home):
+    code, _ = first(home, "none", channels="opt-out-feedback")
+    assert code == 0
+    assert notices(home) == {"opt-out-feedback": "none"}
+
+
+def test_after_c_a_notice_for_a_channel_taken_off_isnt_written(home):
+    # Notices: none and none; c; team values; data folder; only beta-channel; workspace;
+    # Enter keeps its none; handle; then y.
+    answers = ["alpha-channel, beta-channel", "example.slack.com", "none", "none", "c"]
+    answers += ["y", "", "beta-channel", "", "", "", "y", "n"]
+    code, script = run(home, *answers, steps=False)
+    assert code == 0
+    assert notices(home) == {"beta-channel": "none"}

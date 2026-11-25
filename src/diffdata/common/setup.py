@@ -2,9 +2,9 @@
 
 Setup runs in the producer's own terminal and writes ~/.diffdata/config.toml for them. On a
 first run it asks only for the channels (and the workspace address, if no channel link gives
-it), chooses the data folder and a made-up handle, and shows everything on one screen: y
-writes it, n stops, and c asks each question in turn (revision 5 of #130). A re-run asks each
-question in turn, as before. It takes the team
+it) and each channel's notice link (revision 6), chooses the data folder and a made-up
+handle, and shows everything on one screen: y writes it, n stops, and c asks each question
+in turn (revision 5 of #130). A re-run asks each question in turn, as before. It takes the team
 values (bucket, folder, project), the store key and the Google client file from the team
 file the project team sends, makes the data folder, and puts the key and the client file in
 place. So nobody edits TOML by hand, or saves a key by hand.
@@ -64,6 +64,17 @@ reworded for the team file, and 16 as Lachlan changed it, approved on 2026-11-25
   19  to write a value the producer hasn't seen: every value setup chose by itself (data
       folder, workspace, team values, handle) is on the summary screen before the yes, with
       the pseudonym line (revision 5, approved on 2026-11-25)
+
+Each channel's notice link (revision 6, approved on 2026-11-25), after the channels question:
+  20  to write "none" by itself: Enter leaves the entry out; only a typed none writes it
+  21  a link that isn't a Slack message link, or is for another channel or workspace: it's
+      asked again, and the link isn't printed
+  22  to drop or change an existing entry without a typed answer: Enter keeps it, and every
+      entry for a channel no longer listed stays as it was (#119 keeps them for saved data)
+  23  to read Slack or anything online to check a link: the check is offline, from the
+      link's own parts
+  24  to write a notice entry the producer hasn't seen: each channel's notice line is on the
+      summary screen before the yes
 """
 
 import json
@@ -79,6 +90,7 @@ import unicodedata
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from diffdata.common import config as config_module
@@ -86,6 +98,9 @@ from diffdata.common.config import (
     CHANNEL_ID,
     CHANNEL_NAME,
     DM_ID,
+    NO_NOTICE,
+    NOTICE_LINK,
+    NOTICES_KEY,
     WORKSPACE_URL,
     ConfigError,
     channel_id,
@@ -110,10 +125,11 @@ NOT_A_TERMINAL = (
     "Terminal or PowerShell and run it there. Nothing was written."
 )
 NOTHING_WRITTEN = "Nothing was written."
-NEXT_STEP = (
-    "Next: add each channel's notice link under slack_notices in config.toml (see the "
-    "README), then open Claude Code in the repo folder and run /slack-export."
-)
+NEXT_STEP = "Next: open Claude Code in the repo folder and run /slack-export."
+NOTICE_HELP = "Notice link for {channel}: paste the pinned notice's link (its menu, Copy link),"
+NOTICE_QUESTION = "type none if everyone in it agreed directly, or press Enter to {enter}: "
+NOT_ADDED = "not added yet"
+NONE_SHOWN = "none (everyone agreed directly)"
 TEAM_FORMAT = "diffdata-team"
 TEAM_VERSION = 1
 TEAM_FILE_KEYS = {"format", "version", *TEAM_KEYS, "store_key", "google_client"}
@@ -603,6 +619,7 @@ def config_step(
     channels, space = channels_and_workspace(
         prompter, keep, old_space if isinstance(old_space, str) else "", always_ask=True
     )
+    notices = notices_step(prompter, channels, space, notice_table(sources))
 
     prompter.say(PSEUDONYM)
     try:
@@ -615,7 +632,17 @@ def config_step(
         f"Producer handle [Enter for {handle_default}]: ",
         lambda t: check_handle(t if t.strip() else handle_default),
     )
-    return with_answers(raw, channels, space, folder, values, handle), team
+    return with_answers(raw, channels, space, folder, values, handle, notices), team
+
+
+def notice_table(sources: dict) -> dict:
+    table = sources.get(NOTICES_KEY, {})
+    if not isinstance(table, dict):
+        raise SetupError(
+            f"slack_notices in your config.toml isn't a table of channels and notice links. Fix "
+            f"it by hand, or move the file away, then run setup again. {NOTHING_WRITTEN}"
+        )
+    return table
 
 
 def ask_channels(prompter: Prompter, keep: str) -> tuple[list[str], str | None]:
@@ -690,6 +717,138 @@ def ask_workspace(prompter: Prompter, link_space: str | None, old_space: str) ->
         return space
 
 
+def shown_channel(entry: str) -> str:
+    return f"{entry} (a channel ID)" if CHANNEL_ID.fullmatch(entry) else entry
+
+
+def notice_entry(table: dict, entry: str) -> tuple[str, object] | None:
+    """This channel's slack_notices key and value, keyed by its name, its ID or a link to it,
+    as config.py reads them. None if it has none."""
+    for key, value in table.items():
+        if (channel_id(key) or channel_name(key)) == entry:
+            return key, value
+    return None
+
+
+def notice_time(ts: str) -> str:
+    """A notice's time from its link's ts, in this computer's time zone, as Slack shows it."""
+    when = datetime.fromtimestamp(int(ts), tz=UTC).astimezone()
+    # An offset, not %Z: Windows gives long zone names, such as "W. Europe Standard Time".
+    return when.strftime("%Y-%m-%d %H:%M UTC%z")
+
+
+def describe_notice(value: object, space: str = "") -> str:
+    """A notice entry as setup shows it: never the link itself, which is a real message's
+    address (config.py doesn't print it either). A link from a workspace other than `space`
+    says so: it was kept from before the workspace changed."""
+    if not isinstance(value, str):
+        return "a value setup can't read (fix it in config.toml)"
+    if value.strip().lower() == NO_NOTICE:
+        return NONE_SHOWN
+    link = NOTICE_LINK.fullmatch(value.strip())
+    if link is None:
+        return "a value setup can't read (fix it in config.toml)"
+    elsewhere = space and not value.strip().startswith(f"{space}/")
+    return f"the notice posted {notice_time(link[2])}" + (
+        ", from another workspace" if elsewhere else ""
+    )
+
+
+def linked_channel(value: object) -> str | None:
+    """The channel ID in a notice link, or None for "none" or anything else."""
+    link = NOTICE_LINK.fullmatch(value.strip()) if isinstance(value, str) else None
+    return link[1] if link else None
+
+
+def same_notice(one: object, other: object) -> bool:
+    """Whether two notice values name the same message, as config.py reads them."""
+    a = NOTICE_LINK.fullmatch(one.strip()) if isinstance(one, str) else None
+    b = NOTICE_LINK.fullmatch(other.strip()) if isinstance(other, str) else None
+    return a is not None and b is not None and a.groups() == b.groups()
+
+
+def check_notice(text: str, entry: str, space: str, others: dict[str, str]) -> str:
+    """A typed notice answer: "none", or a Slack message link from this workspace and this
+    channel. `others` holds the channel ID each other listed channel is known to have (its
+    listed ID, or its notice link's channel). Checked offline, from the link's own parts
+    (must-refuse 23). A message never quotes the link (must-refuse 21)."""
+    value = text.strip()
+    if value.lower() == NO_NOTICE:
+        return NO_NOTICE
+    link = NOTICE_LINK.fullmatch(value)
+    if link is None:
+        raise SetupError(
+            "That isn't a link to a Slack message (https://<workspace>.slack.com/archives/C.../"
+            "p...). Use Copy link on the pinned notice itself, not a reply to it."
+        )
+    if not value.startswith(f"{space}/"):
+        raise SetupError(
+            f"That link is from another workspace, not {space}. Copy the link of the notice "
+            "pinned in this channel."
+        )
+    linked = link[1]
+    if CHANNEL_ID.fullmatch(entry):
+        wrong = linked != entry
+    else:
+        wrong = linked in others.values()
+    if wrong:
+        raise SetupError(
+            "That link is to a message in another channel. Copy the link of the notice pinned "
+            "in this channel."
+        )
+    return value
+
+
+def notices_step(prompter: Prompter, channels: list[str], space: str, table: dict) -> dict:
+    """Each listed channel's notice (revision 6). Returns slack_notices with only the typed
+    answers changed: every other entry, for a listed channel or not, stays (must-refuse 22),
+    and Enter writes nothing new (must-refuse 20)."""
+    new = dict(table)
+    known: dict[str, str] = {}
+    for entry in channels:
+        found = notice_entry(new, entry)
+        linked = linked_channel(found[1]) if found else None
+        if CHANNEL_ID.fullmatch(entry):
+            known[entry] = entry
+        elif linked:
+            known[entry] = linked
+    for entry in channels:
+        found = notice_entry(new, entry)
+        enter = f"keep {describe_notice(found[1], space)}" if found else "add it later"
+        prompter.say(NOTICE_HELP.format(channel=shown_channel(entry)))
+        others = {k: v for k, v in known.items() if k != entry}
+        answer = ask_until(
+            prompter,
+            NOTICE_QUESTION.format(enter=enter),
+            lambda t, e=entry, o=others: check_notice(t, e, space, o) if t.strip() else None,
+        )
+        if answer is None:
+            continue
+        old_link = linked_channel(found[1]) if found else None
+        new[found[0] if found else entry] = answer
+        if old_link and not CHANNEL_ID.fullmatch(entry) and linked_channel(answer) == old_link:
+            # The same notice was also keyed by the channel's ID (or a link to it): change it
+            # too, or the two entries would disagree and the build would stop. Only for a new
+            # link to that same channel: a "none" or another channel's link is never written
+            # under that ID unseen, and the build stops on the mismatch instead.
+            for key, value in list(new.items()):
+                if channel_id(key) == old_link and same_notice(value, found[1]):
+                    new[key] = answer
+        linked = linked_channel(answer)
+        if linked and not CHANNEL_ID.fullmatch(entry):
+            known[entry] = linked
+        elif not CHANNEL_ID.fullmatch(entry):
+            known.pop(entry, None)
+    return new
+
+
+def missing_notices(new: dict) -> list[str]:
+    """The listed channels with no slack_notices entry."""
+    sources = new["sources"]
+    table = sources.get(NOTICES_KEY, {})
+    return [e for e in sources["slack_channels"] if notice_entry(table, e) is None]
+
+
 def with_answers(
     raw: dict,
     channels: list[str],
@@ -697,12 +856,15 @@ def with_answers(
     folder: str,
     values: dict[str, str],
     handle: str,
+    notices: dict,
 ) -> dict:
     """`raw` with only setup's keys changed (must-refuse 3)."""
     new = deepcopy(raw)
     new_sources = new.setdefault("sources", {})
     new_sources["slack_channels"] = channels
     new_sources["slack_workspace_url"] = space
+    if notices or NOTICES_KEY in new_sources:
+        new_sources[NOTICES_KEY] = notices
     new.setdefault("local", {})["data_dir"] = folder
     new_store = new.setdefault("store", {})
     new_store["backend"] = "gcs"
@@ -731,8 +893,9 @@ def quick_step(
         # folder_step says why, and asks.
         folder = folder_step(prompter, picker, DEFAULT_DATA_DIR)
     channels, space = channels_and_workspace(prompter, "", "", always_ask=False)
+    notices = notices_step(prompter, channels, space, {})
     handle = new_handle(team.values["project"], choose)
-    return with_answers({}, channels, space, folder, team.values, handle), team
+    return with_answers({}, channels, space, folder, team.values, handle, notices), team
 
 
 def key_step(prompter: Prompter, folder: Path) -> None:
@@ -855,11 +1018,22 @@ def show_summary(
     store = new["store"]
     prompter.say("")
     prompter.say(f"Setup will write this to {settings}:" if first else "You chose:")
-    shown = [
-        f"{entry} (a channel ID)" if CHANNEL_ID.fullmatch(entry) else entry
-        for entry in new["sources"]["slack_channels"]
-    ]
-    prompter.say(f"  Channels:         {', '.join(shown)}")
+    channels = new["sources"]["slack_channels"]
+    prompter.say(f"  Channels:         {', '.join(shown_channel(e) for e in channels)}")
+    table = new["sources"].get(NOTICES_KEY, {})
+    for number, entry in enumerate(channels):
+        found = notice_entry(table, entry)
+        space = new["sources"]["slack_workspace_url"]
+        notice = describe_notice(found[1], space) if found else NOT_ADDED
+        linked = linked_channel(found[1]) if found and not CHANNEL_ID.fullmatch(entry) else None
+        if linked and any(
+            key != found[0] and channel_id(key) == linked and same_notice(value, found[1])
+            for key, value in table.items()
+        ):
+            # Written under the channel's ID too (notices_step): on the screen as well (24).
+            notice += ", also under its channel ID"
+        label = "  Notices:         " if number == 0 else "                   "
+        prompter.say(f"{label} {shown_channel(entry)}: {notice}")
     prompter.say(f"  Workspace:        {new['sources']['slack_workspace_url']}")
     prompter.say(f"  Data folder:      {data_dir(new['local']['data_dir'])}")
     prompter.say(
@@ -960,6 +1134,15 @@ def setup(
             return 0
         # c: each question in turn, with the shown values as the defaults; then the screen again.
         new, team = config_step(prompter, team, new, picker, choose)
+        # A first run has no earlier notices: one for a channel taken off the list after c
+        # would be written without being on the screen (must-refuse 24).
+        table = new["sources"].get(NOTICES_KEY, {})
+        listed = new["sources"]["slack_channels"]
+        kept = {k: v for k, v in table.items() if (channel_id(k) or channel_name(k)) in listed}
+        if kept:
+            new["sources"][NOTICES_KEY] = kept
+        else:
+            new["sources"].pop(NOTICES_KEY, None)
     try:
         if not write_config(settings, new, prompter):
             return 1
@@ -979,5 +1162,14 @@ def setup(
     prompter.say("")
     prompter.say(f"Settings:     {folder}")
     prompter.say(f"Data folder:  {data}")
-    prompter.say(NEXT_STEP)
+    missing = missing_notices(new)
+    if missing:
+        prompter.say(
+            f"No notice link yet for: {', '.join(shown_channel(e) for e in missing)}. "
+            "/slack-export stops until each listed channel has one. When the notice is "
+            "posted, run `uv run diffdata setup` again, answer y to Change it, and paste "
+            "the link."
+        )
+    else:
+        prompter.say(NEXT_STEP)
     return 0

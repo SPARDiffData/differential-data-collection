@@ -572,3 +572,69 @@ def test_a_broken_folder_check_keeps_the_tool_gaps(monkeypatch, capsys):
     monkeypatch.setattr(cli.producer_check, "repo_item", broken)
     assert cli.main(["setup"]) == 0
     assert GIT_FIX in capsys.readouterr().out
+
+
+# --- notices (plan #130, revision 6) -------------------------------------------------------
+
+NOTICE = "https://example.slack.com/archives/C00000002/p1700000000000100"
+
+
+def notices_config(tmp_path: Path, notices: str) -> Path:
+    settings = settings_in(tmp_path)
+    settings.write_text(
+        "[sources]\n"
+        'slack_channels = ["example-channel", "C00000002", "other-channel"]\n'
+        'slack_workspace_url = "https://example.slack.com"\n'
+        f"slack_notices = {{ {notices} }}\n"
+        "[local]\n"
+        f'data_dir = "{(tmp_path / "data").as_posix()}"\n',
+        encoding="utf-8",
+    )
+    return settings
+
+
+def test_a_listed_channel_with_no_notice_is_a_fix_line(tmp_path):
+    settings = notices_config(tmp_path, f'"example-channel" = "none", C00000002 = "{NOTICE}"')
+    items = check.state_items(settings)
+    fixes = [item for item in items if item.name == "Notice"]
+    assert len(fixes) == 1
+    assert not fixes[0].ok
+    assert fixes[0].detail.startswith("Channel 3 in slack_channels (other-channel) has no notice")
+    assert "uv run diffdata setup" in fixes[0].detail
+    assert "answer y to Change it" in fixes[0].detail
+    assert NOTICE not in fixes[0].detail
+    shown = "\n".join(check.lines(items))
+    assert "  FIX  Notice" in shown
+
+
+def test_a_channel_listed_by_id_is_matched_by_a_link_key(tmp_path):
+    link_key = '"https://example.slack.com/archives/C00000002"'
+    settings = notices_config(
+        tmp_path, f'"example-channel" = "none", {link_key} = "{NOTICE}", other-channel = "none"'
+    )
+    items = by_name(check.state_items(settings))
+    assert "Notice" not in items
+    assert items["Notices"].ok
+
+
+def test_a_channel_listed_by_id_with_no_notice_says_so(tmp_path):
+    settings = notices_config(tmp_path, '"example-channel" = "none", other-channel = "none"')
+    fixes = [item for item in check.state_items(settings) if item.name == "Notice"]
+    assert [f.detail.split(" has")[0] for f in fixes] == [
+        "Channel 2 in slack_channels (C00000002, a channel ID)"
+    ]
+
+
+def test_an_empty_key_never_counts_as_a_channels_notice(tmp_path):
+    settings = notices_config(tmp_path, '"" = "none"')
+    fixes = [item for item in check.state_items(settings) if item.name == "Notice"]
+    assert len(fixes) == 3
+
+
+def test_an_unlisted_id_key_may_be_a_named_channels_and_check_says_so(tmp_path):
+    settings = notices_config(
+        tmp_path, f'C00000002 = "{NOTICE}", C00000009 = "none", other-channel = "none"'
+    )
+    fixes = [item for item in check.state_items(settings) if item.name == "Notice"]
+    assert len(fixes) == 1
+    assert "(An entry keyed by a channel's ID may be this one's" in fixes[0].detail
