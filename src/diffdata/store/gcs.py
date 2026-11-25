@@ -115,6 +115,8 @@ def fetch(bucket: str, key: dict, name: str) -> tuple[bytes, datetime] | None:
             return None
         # That same version, even if the list is written again meanwhile.
         data = blob.download_as_bytes(if_generation_match=blob.generation)
+    except api.PreconditionFailed:
+        raise StoreError("The list changed while it was read. Run again.") from None
     except api.NotFound:
         return None
     except (auth.RefreshError, api.Unauthorized):

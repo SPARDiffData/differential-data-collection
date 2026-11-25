@@ -9,11 +9,6 @@ feature Issue will build.
 
 import argparse
 import sys
-
-try:
-    import termios  # macOS and Linux, where admin runs
-except ImportError:  # Windows
-    termios = None
 from pathlib import Path
 
 from diffdata import __version__
@@ -27,6 +22,11 @@ from diffdata.scrub import run as scrub_run
 from diffdata.store import admin as store_admin
 from diffdata.store import push as store_push
 from diffdata.store.backend import StoreError
+
+try:
+    import termios  # macOS and Linux, where admin runs
+except ImportError:  # Windows
+    termios = None
 
 # subcommand -> (help text, requirement IDs it will implement)
 COMMANDS = {

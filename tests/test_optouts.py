@@ -102,9 +102,10 @@ def test_must_refuse_when_there_is_no_list(tmp_path, team_lists):
 
 
 def test_must_refuse_when_the_list_cant_be_fetched(tmp_path, team_lists):
-    team_lists.error = StoreError("Couldn't reach Google Cloud Storage.")
-    with pytest.raises(SlackExportError, match="Couldn't fetch your team's opt-out list"):
+    team_lists.error = StoreError("Google turned down the store key. Nothing was sent.")
+    with pytest.raises(SlackExportError, match="Couldn't fetch your team's opt-out list") as e:
         start(team_config(tmp_path), DAY_7)
+    assert "sent" not in str(e.value)
 
 
 @pytest.mark.parametrize(
@@ -343,7 +344,11 @@ def test_the_store_read_uses_the_read_only_scope_and_that_version(monkeypatch):
                 raise found
             return found
 
-    blobs = {LIST: Blob(), "denied": api.Forbidden("no")}
+    class Rewritten(Blob):
+        def download_as_bytes(self, if_generation_match):
+            raise api.PreconditionFailed("changed")
+
+    blobs = {LIST: Blob(), "denied": api.Forbidden("no"), "rewritten": Rewritten()}
 
     def from_info(key, scopes):
         seen["scopes"] = scopes
@@ -364,6 +369,8 @@ def test_the_store_read_uses_the_read_only_scope_and_that_version(monkeypatch):
     assert gcs.fetch("fake-bucket", KEY, "missing") is None
     with pytest.raises(StoreError, match="can't read its _config folder"):
         gcs.fetch("fake-bucket", KEY, "denied")
+    with pytest.raises(StoreError, match="changed while it was read"):
+        gcs.fetch("fake-bucket", KEY, "rewritten")
 
 
 # --- item 9: diffdata admin optouts ------------------------------------------------------------

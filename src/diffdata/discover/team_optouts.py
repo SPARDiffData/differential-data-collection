@@ -143,8 +143,9 @@ def fetch_list(config: Config, closes: datetime | None, fetch: Fetcher | None = 
     try:
         found = (fetch or gcs_fetch)(bucket, key, f"{folder}/{LIST_NAME}")
     except StoreError as e:
+        said = str(e).replace("Nothing was sent.", "").strip()  # gcs.py's sign-in messages
         raise ListError(
-            f"Couldn't fetch your team's opt-out list, so the export can't start: {e} "
+            f"Couldn't fetch your team's opt-out list, so the export can't start: {said} "
             "Nothing was read."
         ) from None
     if found is None:
