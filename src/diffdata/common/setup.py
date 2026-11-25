@@ -73,6 +73,7 @@ from pathlib import Path
 
 from diffdata.common import config as config_module
 from diffdata.common.config import (
+    CHANNEL_ID,
     CHANNEL_NAME,
     WORKSPACE_URL,
     ConfigError,
@@ -567,7 +568,20 @@ def config_step(
         if keep
         else "Channels: "
     )
-    channels, link_space = ask_until(prompter, question, channels_or_keep)
+    typed: list[str] = []
+
+    def channels_or_keep_noting(text: str):
+        found = channels_or_keep(text)
+        typed[:] = [p for p in re.split(r"[,\s]+", text) if CHANNEL_ID.fullmatch(p)]
+        return found
+
+    channels, link_space = ask_until(prompter, question, channels_or_keep_noting)
+    for entry in typed:
+        # Typed, not from a link: it could be a name in capitals that happens to hold a digit.
+        prompter.say(
+            f"{entry} is stored as a channel ID. If it's a channel's name, run setup again and "
+            "type it in lowercase."
+        )
 
     old_space = sources.get("slack_workspace_url")
     space_default = link_space or (old_space if isinstance(old_space, str) else "")
@@ -765,7 +779,11 @@ def setup(
     store = new["store"]
     prompter.say("")
     prompter.say("You chose:")
-    prompter.say(f"  Channels:         {', '.join(new['sources']['slack_channels'])}")
+    shown = [
+        f"{entry} (a channel ID)" if CHANNEL_ID.fullmatch(entry) else entry
+        for entry in new["sources"]["slack_channels"]
+    ]
+    prompter.say(f"  Channels:         {', '.join(shown)}")
     prompter.say(f"  Workspace:        {new['sources']['slack_workspace_url']}")
     prompter.say(f"  Data folder:      {data_dir(new['local']['data_dir'])}")
     prompter.say(

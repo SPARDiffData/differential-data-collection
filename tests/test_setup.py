@@ -559,7 +559,10 @@ def test_must_refuse_8_a_bad_team_file_is_refused_without_quoting_it(home, chang
     assert not settings(home).parent.exists()
 
 
-@pytest.mark.parametrize("content", ["not json", "[1, 2]", "x" * 300_000])
+# Short ids: a test's id goes in an environment variable, which Windows caps at 32,767 characters.
+@pytest.mark.parametrize(
+    "content", ["not json", "[1, 2]", "x" * 300_000], ids=["not json", "a list", "too big"]
+)
 def test_must_refuse_8_a_file_that_isnt_json_or_is_too_big_is_refused(home, content):
     path = home / "Downloads" / "odd.diffdata-team.json"
     path.parent.mkdir()
@@ -870,3 +873,13 @@ def test_with_no_change_a_team_file_for_another_folder_warns_before_the_offer(ho
     assert sum(line.startswith("Put the team file's") for line in script.shown) == 2
     assert path.read_bytes() == before
     assert not (home / ".diffdata" / "store-key.json").exists()
+
+
+def test_an_id_typed_by_hand_is_marked_and_lowercase_is_suggested(home):
+    _, script = run(home, *fresh_answers(f"GROUP2026, {LINK}, example-channel"))
+    text = script.text
+    assert "GROUP2026 is stored as a channel ID" in text and "lowercase" in text
+    assert "C00000002 is stored as a channel ID" not in text  # from a link: no note
+    assert "GROUP2026 (a channel ID), C00000002 (a channel ID), example-channel" in text
+    channels = tomllib.loads(settings(home).read_text())["sources"]["slack_channels"]
+    assert channels == ["GROUP2026", "C00000002", "example-channel"]
