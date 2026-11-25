@@ -20,7 +20,9 @@ Secrets, in two parts:
   - Three small rules of our own, for what gitleaks lets through: a password in a link
     (user:password@host), a credential-named value in a link's query or after curl's -u,
     and a password someone chose, after its name (PASSWORD_VALUE: password=..., "the db
-    password: ...", "my password is ..."), however plain it is. These become [secret].
+    password: ...", "my password is ...", "Password is ..." where a sentence starts),
+    however plain it is. These become [secret]. Such a password with a letter and a digit
+    is replaced everywhere it appears in the copy, from 6 characters.
 
 What we leave out of gitleaks, on purpose:
   - Its allowlists, global and per rule. They only stop a match being reported, so
@@ -132,6 +134,13 @@ EMAILISH = re.compile(  # starts where a run starts, so it reads a long run once
 PLACEHOLDER_ONLY = re.compile(r"[\"'`]*\[(?:secret\??|phone|email|meeting link|name\??)\][\"'`]*")
 # A value one of our own rules finds is replaced everywhere in the copy only above this.
 OURS_SPREAD_ENTROPY = 3.0
+# A password PASSWORD_VALUE finds is replaced everywhere from this length if it holds a letter
+# and a digit, whatever its entropy (repeats()).
+CHOSEN_SPREAD_MIN = 6
+# Left off a chosen password's edges before it's repeated: Markdown, quotes, brackets, and
+# the end of a sentence.
+REPEAT_LEAD = "*_~\"'`([{"
+REPEAT_TRAIL = "*_~\"'`)]}!.,?;:"
 # Two small rules of our own, on top of gitleaks', for credentials it lets through when a
 # shell or a link carries on right after them: a credential-named value in a link's query
 # (?password=...&next=..., ?db_password=...), and curl's -u user:password followed by ; & or |.
@@ -149,7 +158,8 @@ CURL_USER = re.compile(
 # skips a value that doesn't look random, so password=hunter2hunter2 got through it, and so
 # did some random ones. This takes the value however plain it is: after password, passwd, pwd
 # or passcode (a prefix joined by _ . or -, like DB_PASSWORD, is part of the name), then =, :
-# or :=; or in "my/our/your/the [word] password is ...". Markdown's * _ ~ around the name or
+# or :=; or in "my/our/your/the [word] password is ...", or "[word] password is ..." where
+# a sentence starts (SENTENCE_START); 's reads like is. Markdown's * _ ~ around the name or
 # "is" are read past (_Password:_ ..., my password _is_ ...), but not the _ in is_valid.
 # Only the value goes. A name inside a longer word (passwords, password_field, password
 # issue), after a word and _ or - (the "password" in db_password on its own) or in a
@@ -159,17 +169,40 @@ CURL_USER = re.compile(
 # space or Slack's markup. With nothing after the name on its line, a next line holding one
 # word only is the value (password:\n  hunter2).
 PASSWORD_WORD = r"(?:password|passwd|pwd|passcode)"
+# "is" or 's after the name in the sentence form: "my password is", "The password's".
+PASSWORD_IS = (
+    r"[*_~]{0,3}(?:[ \t]+[*_~]{0,3}is(?![A-Za-z0-9-])(?![*_~]+[A-Za-z0-9])|['\u2019]s(?=[ \t*_~]))"
+    r"[*_~]{0,3}(?:[ \t]*:)?[*_~]{0,3}"
+)
+# Without my, our, your or the, the sentence form is read only where a sentence starts: at a
+# line's start (after a bullet or "1."), or after . ! ? ; : or , and a space. Not after (,
+# as in code: "if (password is expected):". Up to 2 words may come before the name ("wifi
+# password is ..."), but not a word that makes it a question or code: "Which password is
+# better?", "No password is needed", "if password is None:".
+SENTENCE_START = (
+    r"(?:(?<![^\n])[ \t]*(?:[-*\u2022>+][ \t]+|[0-9]{1,3}[.)][ \t]+)?"
+    r"|(?<=[.!?;:,])[ \t]+)"
+)
+PASSWORD_STOP = (
+    r"(?:which|what|whose|if|elif|while|when|whether|why|how|where|no|each|every|any|a|an|"
+    r"and|or|not|return|assert)"
+)
 PASSWORD_VALUE = re.compile(
     r"(?i)(?:"
     r"(?:(?<![A-Za-z0-9?&./_-])|(?<![A-Za-z0-9?&./-]_)(?<=_)|(?<![^\s-]-)(?<=-))"
     r"(?:[a-z0-9]{1,30}[_.-]){0,4}"
     + PASSWORD_WORD
     + r"(?![A-Za-z0-9-])[\"'`*_~]{0,3}[ \t]*(?P<sep>:=|=|:)[*_~]{0,3}"
-    r"|(?<![A-Za-z0-9])(?:my|our|your|the)[ \t]+(?:[\w-]{1,20}[ \t]+)?"
+    r"|(?:(?<![A-Za-z0-9])(?:my|our|your|the)[ \t]+(?:[\w-]{1,20}[ \t]+)?"
+    r"|"
+    + SENTENCE_START
+    + r"[*_~]{0,3}(?:(?!"
+    + PASSWORD_STOP
+    + r"(?![\w-]))[\w-]{1,20}[ \t]+){0,2}"
+    r")"
     + PASSWORD_WORD
-    + r"[*_~]{0,3}[ \t]+[*_~]{0,3}is(?![A-Za-z0-9-])(?![*_~]+[A-Za-z0-9])"
-    r"[*_~]{0,3}(?:[ \t]*:)?[*_~]{0,3}"
-    r")(?:[ \t]*(?:\"(?P<dq>(?:[^\"\\\n]|\\.)+)\"|'(?P<sq>(?:[^'\\\n]|\\.)+)'"
+    + PASSWORD_IS
+    + r")(?:[ \t]*(?:\"(?P<dq>(?:[^\"\\\n]|\\.)+)\"|'(?P<sq>(?:[^'\\\n]|\\.)+)'"
     r"|`(?P<bq>[^`\n]+)`|(?P<bare>[^\s<>|]+))"
     r"|[ \t]*\r?\n[ \t]*(?P<line>[^\s<>|]+)[ \t]*(?=\r?\n|\Z))"
 )
@@ -183,7 +216,8 @@ PASSWORD_TRAIL = ".,;:)]}\"'`"
 PLACEHOLDER_AT = re.compile(
     r"\[(?:secret\??|phone|email|meeting link|name\??|Person [1-9][0-9]*)\]"
 )
-LINK_AT = re.compile(r"(?i)https?://|www\.|\[[^\]\n]*\]\(")
+# A Markdown link's label may hold a placeholder: [[secret] notes](https://...).
+LINK_AT = re.compile(r"(?i)https?://|www\.|\[(?:[^\[\]\n]|\[[^\[\]\n]*\])*\]\(")
 # A value that's a word of plain prose, not a password: "password: see vault", "the password
 # is in 1Password", "password: same as before". Only for a value without quotes after : or
 # "is": after = it's code, so password=wrong goes. A real password that's one of these stays.
@@ -193,7 +227,12 @@ PROSE = frozenset(
     "empty blank not no yes wrong incorrect correct invalid expired changed reset too still "
     "case also below above here there dm please it its it's this that now set hidden redacted "
     "removed needed missing ok okay fine weak strong long short protected enabled disabled "
-    "encrypted hashed".split()
+    "encrypted hashed hard easy good bad better best worse worst different "
+    "important mandatory case-sensitive sensitive secure insecure safe unsafe compromised "
+    "leaked known private temporary new old generated random true false length strength hash "
+    "expiry policy rules format requirements managed locked broken being been just only very "
+    "really so quite more less my your our their what which how why when where like given "
+    "rotated updated typed entered visible shown owner expiration".split()
 )
 MEETING_HOSTS = (
     "zoom.us", "zoomgov.com", "meet.google.com", "teams.live.com", "webex.com",
@@ -575,10 +614,26 @@ def secrets(text: str) -> list[tuple[int, int, str]]:
             # where it's found, but only a value that looks random is replaced everywhere.
             if entropy(match["secret"]) > OURS_SPREAD_ENTROPY:
                 values.add(match["secret"])
+    # A chosen password with a letter and a digit is replaced everywhere from 6 characters,
+    # however plain it is: "pwd: hunter2 ... try hunter2 again". The letter and the digit
+    # keep a plain word or number from being wiped all through the copy. One that looks
+    # random is also replaced inside longer text, as other rules' values are.
+    chosen = set()
     for start, end in chosen_passwords(seen, low):
         spans.append((start, end, True))
-        if entropy(seen[start:end]) > OURS_SPREAD_ENTROPY:
-            values.add(seen[start:end])
+        value = seen[start:end]
+        # Without Markdown or punctuation at its edges: "Password is **fluffy42**!" is
+        # repeated as fluffy42.
+        core = value.lstrip(REPEAT_LEAD).rstrip(REPEAT_TRAIL)
+        if repeats(core):
+            chosen.add(core.lower())
+        if entropy(value) > OURS_SPREAD_ENTROPY:
+            values.add(value)
+    # A chosen password is repeated in any case (Fluffy42 too), but only as a whole token,
+    # so it isn't cut out of a longer word or a Google doc's ID.
+    for value in chosen:
+        for match in re.finditer(r"(?<![\w-])" + re.escape(value) + r"(?![\w-])", seen, re.I):
+            spans.append((*match.span(), True))
     # A secret found once is replaced everywhere it appears in the copy.
     for value in values:
         if len(value) < 8:
@@ -601,6 +656,16 @@ def secrets(text: str) -> list[tuple[int, int, str]]:
     # Back to the real text, covering any invisible characters inside.
     real = [(where[s], where[e - 1] + 1, sure) for s, e, sure in spans]
     return [(s, e, SECRET if sure else MAYBE_SECRET) for s, e, sure in merge(real)]
+
+
+def repeats(value: str) -> bool:
+    """A chosen password that's replaced everywhere in the copy, however plain: 6 or more
+    characters, with a letter and a digit."""
+    return (
+        len(value) >= CHOSEN_SPREAD_MIN
+        and any(c.isalpha() for c in value)
+        and any(c.isdigit() for c in value)
+    )
 
 
 def chosen_passwords(seen: str, low: str) -> list[tuple[int, int]]:
@@ -628,7 +693,7 @@ def chosen_passwords(seen: str, low: str) -> list[tuple[int, int]]:
         if LINK_AT.match(value):
             continue
         plain = group in ("bare", "line") and match["sep"] in (":", None)
-        if plain and value.lower() in PROSE:
+        if plain and value.lower().rstrip("?") in PROSE:
             continue
         found.append((start, end))
         at = match.end()
