@@ -692,8 +692,9 @@ FAKE_TOKEN = "gh" + "p_" + "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5"
         FAKE_TOKEN,
         "https://meet.google.com/abc-defg-hij",
         "+44 20 7946 0958",
+        "the db password: hunter2hunter2",
     ],
-    ids=["name", "email", "slack id", "secret", "meeting link", "phone number"],
+    ids=["name", "email", "slack id", "secret", "meeting link", "phone number", "password"],
 )
 def test_a_copy_with_anything_the_scrub_replaces_left_in_it_is_refused(tmp_path, leftover):
     data = tmp_path / "data"
