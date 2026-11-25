@@ -124,6 +124,7 @@ def test_dropping_a_rules_lazy_lead_finds_the_same_secrets():
 
 WORST = ("a", "A", "0", "-", "=", "/", " ", "\t", "\n", ".", "_", "'", '"', ":", "ey")
 WORST += ("a+", "x+%40", "key=", "curl -H ", "https://a:", "sk-ant-api03-", "-----BEGIN ")
+WORST += ("password=", "db_pwd: ", "my password is ", 'password: "', "a_b-c.", "pwd:\n", '"\\')
 
 
 def test_no_rule_is_slow_on_long_worst_case_text():
@@ -795,3 +796,116 @@ def test_a_random_run_on_both_sides_of_an_email_or_phone_number_is_checked(text,
     result = scrub(text.format(**values))
     assert result == scrubbed
     assert found(result) == []
+
+
+# Passwords people choose (Paul's pre-pilot note on #127): our PASSWORD_VALUE rule
+
+
+@pytest.mark.parametrize(
+    "text, scrubbed",
+    [
+        ("password=hunter2hunter2", "password=[secret]"),
+        ("the db password: {p12}", "the db password: [secret]"),
+        ("pwd={p12} and passwd: {p12}", "pwd=[secret] and passwd: [secret]"),
+        ("Zoom passcode: 482913", "Zoom passcode: [secret]"),
+        ("my password is fluffy42!", "my password is [secret]"),
+        ("The wifi password is: sunshine99.", "The wifi password is: [secret]."),
+        ('DB_PASSWORD="correct horse battery"', 'DB_PASSWORD="[secret]"'),
+        ('{{"password": "dragon7"}}', '{{"password": "[secret]"}}'),
+        ("*Password:* monkey12", "*Password:* [secret]"),
+        ("app.db.password := letmein1", "app.db.password := [secret]"),
+        ("(password: abc123)", "(password: [secret])"),
+        ("*My password is* fluffy42", "*My password is* [secret]"),
+        ("password:\n  fluffy42\nthanks!", "password:\n  [secret]\nthanks!"),
+        ('{{"password": "owl\\"hoot7"}}', '{{"password": "[secret]"}}'),
+        ('password="wrong" and pwd=none', 'password="[secret]" and pwd=[secret]'),
+        ('password: "unclosed7', "password: [secret]"),
+        ("password=" + "a" * 250, "password=[secret]"),
+        ("_Password:_ hunter2hunter2", "_Password:_ [secret]"),
+        ("_password_: fluffy42 and ~pwd~: owl7", "_password_: [secret] and ~pwd~: [secret]"),
+        ("_My password is_ fluffy42", "_My password is_ [secret]"),
+        ("mysql -u root --password=hunter2hunter2", "mysql -u root --password=[secret]"),
+        ("psql --db-password=fluffy42 db", "psql --db-password=[secret] db"),
+        ("--pwd: owl7 then -passcode=kite9", "--pwd: [secret] then -passcode=[secret]"),
+        (
+            "My password _is_ owl7, _my pwd is_: kite9",
+            "My password _is_ [secret], _my pwd is_: [secret]",
+        ),
+        (
+            'Password: "[secret] for staging; demo password=owl7"',
+            'Password: "[secret] for staging; demo password=[secret]"',
+        ),
+        ("{{password: abc123}} [pwd: owl7]", "{{password: [secret]}} [pwd: [secret]]"),
+    ],
+)
+def test_must_refuse_a_chosen_password_after_its_name_is_replaced(text, scrubbed):
+    p12 = rand(12)
+    text = text.format(p12=p12)
+    # The last check (and so push's re-check) finds it in a copy that wasn't scrubbed.
+    assert found(text) == ["a secret"]
+    result = scrub(text)
+    assert result == scrubbed.format()
+    assert found(result) == []
+
+
+def test_must_refuse_every_random_16_character_password_is_replaced():
+    """gitleaks' generic rule skips about 8% of these: their entropy is under its floor."""
+    values = [rand(16) for _ in range(500)]
+    left = [v for v in values if scrub(f"password={v}") != "password=[secret]"]
+    assert left == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Please fill in the password field and reset your password.",
+        "Passwords: use the vault. password_field: x, passwordless: true",
+        "password: see vault",
+        "Password is required, and the password is in 1Password.",
+        "password: same as before",
+        "the password is wrong",
+        "password: ********",
+        "reset your password: https://example.test/reset",
+        "mypassword: abc and pwdx=abc",
+        'password: [secret] and pwd: [secret?] and passcode: "[secret]"',
+        "the password: [Person 3] knows it",
+        "Please report the password issue in the ticket.",
+        "The password is_valid flag defaults to true.",
+        "See https://example.test/reset-password: done.",
+        "Password:\nsee the vault",
+        'password: "[meeting link] (weekly call)" and pwd: [Zoom]([meeting link])',
+    ],
+)
+def test_a_password_word_in_ordinary_prose_or_before_a_placeholder_is_left_alone(text):
+    assert scrub(text) == text
+    assert found(text) == []
+
+
+@pytest.mark.parametrize("name", ["password", "db_password", "passcode", "_password"])
+def test_a_password_in_a_query_stays_query_secrets_and_the_link_goes_on(name):
+    text = f"https://example.test/login?{name}={rand(12)}&next=/home"
+    assert scrub(text) == f"https://example.test/login?{name}=[secret]&next=/home"
+
+
+def test_a_link_after_a_password_name_isnt_taken_as_the_password():
+    """A meeting link still becomes [meeting link], and a Colab link stays whole."""
+    colab = "https://colab.research.google.com/drive/1" + rand(32, URLSAFE)
+    text = f'Password: "https://meet.google.com/abc-defg-hij (weekly call)", pwd: [nb]({colab})'
+    scrubbed = scrub(text)
+    assert scrubbed == f'Password: "[meeting link] (weekly call)", pwd: [nb]({colab})'
+    assert found(scrubbed) == []
+
+
+def test_a_chosen_password_that_looks_random_is_replaced_everywhere_in_the_copy():
+    value = rand(14)
+    assert scrub(f"pwd: {value}\nlater: {value}") == "pwd: [secret]\nlater: [secret]"
+
+
+# Colab links
+
+
+def test_a_colab_link_keeps_its_notebook_id():
+    for tail in ("", "?usp=sharing", "#scrollTo=" + rand(12)):
+        link = "https://colab.research.google.com/drive/1" + rand(32, URLSAFE) + tail
+        assert scrub(f"Notebook: {link}") == f"Notebook: {link}"
+        assert found(link) == []
