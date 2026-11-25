@@ -935,6 +935,31 @@ def test_a_link_with_a_bad_workspace_asks_for_the_channels_again(home):
     assert raw["sources"]["slack_workspace_url"] == "https://example.slack.com"
 
 
+def test_a_bad_link_workspace_after_c_asks_for_the_channels_again(home):
+    bad = "https://-example.slack.com/archives/C00000002"
+    # c; yes to the team values; data folder; a bad link, then a good one; workspace; handle.
+    answers = [f"example-channel, {LINK}", "c", "y", "", bad, LINK, "", "", "y", "n"]
+    code, script = run(home, *answers, steps=False)
+    assert code == 0
+    assert "Give the channels again." in script.text
+
+
+def test_a_team_file_path_with_control_characters_is_shown_safely(home):
+    path = team_file(home, name="team\x1b[2Ja")
+    _, script = run(home, *quick_answers(), team=path, steps=False)
+    assert "\x1b" not in script.text
+    assert "team?[2Ja.diffdata-team.json" in script.text
+
+
+def test_a_first_run_never_reads_a_config(home, monkeypatch):
+    calls = []
+    real = setup.read_raw
+    monkeypatch.setattr(setup, "read_raw", lambda p: calls.append(p) or real(p))
+    code, _ = run(home, *quick_answers(), steps=False)
+    assert code == 0
+    assert calls == []  # a first run never reads a config
+
+
 # --- round 3: explicit y/n, key install on "no change", capital names ----------------------
 
 

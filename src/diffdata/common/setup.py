@@ -53,8 +53,9 @@ reworded for the team file, and 16 as Lachlan changed it, approved on 2026-11-25
       existing config.toml
   16  to use team values without showing them first and getting a typed yes. On a first
       run, the yes on the summary screen counts, since the screen shows the team values and
-      where they come from. Every question takes only the letters it lists: Enter alone, or
-      any other answer, asks again
+      where they come from. Every question takes only the answers it lists (y or n, also
+      typed as yes or no; y, n or c on the summary screen): Enter alone, or any other
+      answer, asks again
   17  a direct message or a group DM as a channel (CON-5); the save hook also refuses a read
       of a group DM (discover/slack_inbox.py)
   18  to print anything from the store key or the Google client file in a team file, to put
@@ -74,6 +75,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import unicodedata
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
@@ -115,6 +117,12 @@ TEAM_FILE_KEYS = {"format", "version", *TEAM_KEYS, "store_key", "google_client"}
 TEAM_FILE_LIMIT = 256_000
 CLIENT_NAME = "google-client.json"
 BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def printable(path: Path) -> str:
+    """A path to show: control characters (which a terminal could act on, for example to
+    clear what setup showed above) become "?"."""
+    return "".join("?" if unicodedata.category(c).startswith("C") else c for c in str(path))
 
 
 class SetupError(Exception):
@@ -520,7 +528,9 @@ def team_step(
         if team is not None:
             values = team.values
             parts = "a store key" + (" and a Google client file" if team.google_client else "")
-            prompter.say(f"The team file {team.path} holds {parts}, and these team values:")
+            prompter.say(
+                f"The team file {printable(team.path)} holds {parts}, and these team values:"
+            )
         else:
             prompter.say("Your config.toml has these team values:")
         assert values is not None
@@ -581,9 +591,10 @@ def config_step(
 
     old_channels = sources.get("slack_channels")
     keep = ", ".join(old_channels) if isinstance(old_channels, list) and old_channels else ""
-    channels, link_space = ask_channels(prompter, keep)
     old_space = sources.get("slack_workspace_url")
-    space = ask_workspace(prompter, link_space, old_space if isinstance(old_space, str) else "")
+    channels, space = channels_and_workspace(
+        prompter, keep, old_space if isinstance(old_space, str) else "", always_ask=True
+    )
 
     prompter.say(PSEUDONYM)
     try:
@@ -630,6 +641,26 @@ def ask_channels(prompter: Prompter, keep: str) -> tuple[list[str], str | None]:
             "type it in lowercase."
         )
     return channels, link_space
+
+
+def channels_and_workspace(
+    prompter: Prompter, keep: str, old_space: str, always_ask: bool
+) -> tuple[list[str], str]:
+    """The channels and the workspace. A link's workspace gets the same check as a typed
+    address; if it fails, the channels are asked again, so no question can trap the person.
+    With always_ask False, a link's workspace is used without a question."""
+    while True:
+        channels, link_space = ask_channels(prompter, keep)
+        link: str | None = None
+        if link_space:
+            try:
+                link = parse_workspace(link_space)
+            except SetupError as e:
+                prompter.say(f"{e} Give the channels again.")
+                continue
+        if link and not always_ask:
+            return channels, link
+        return channels, ask_workspace(prompter, link, old_space)
 
 
 def ask_workspace(prompter: Prompter, link_space: str | None, old_space: str) -> str:
@@ -691,17 +722,7 @@ def quick_step(
     except (UnsafeDataDirError, SetupError):
         # folder_step says why, and asks.
         folder = folder_step(prompter, picker, DEFAULT_DATA_DIR)
-    while True:
-        channels, link_space = ask_channels(prompter, "")
-        if not link_space:
-            space = ask_workspace(prompter, None, "")
-            break
-        try:
-            # The same check as a typed address.
-            space = parse_workspace(link_space)
-            break
-        except SetupError as e:
-            prompter.say(f"{e} Give the channels again.")
+    channels, space = channels_and_workspace(prompter, "", "", always_ask=False)
     handle = new_handle(team.values["project"], choose)
     return with_answers({}, channels, space, folder, team.values, handle), team
 
@@ -801,11 +822,11 @@ def install_team_file(prompter: Prompter, folder: Path, team: TeamFile) -> None:
         # It may be the producer's only copy of the team's key: never offered for deletion
         # until every part of it is in place.
         prompter.say(
-            f"Kept the team file at {team.path}, because its {' and '.join(missing)} "
+            f"Kept the team file at {printable(team.path)}, because its {' and '.join(missing)} "
             f"{'is' if len(missing) == 1 else 'are'} not in place."
         )
         return
-    if prompter.yes(f"Delete the team file at {team.path}?"):
+    if prompter.yes(f"Delete the team file at {printable(team.path)}?"):
         team.path.unlink()
         prompter.say("Deleted the team file.")
 
@@ -840,7 +861,8 @@ def show_summary(
     if team is not None:
         parts = "a store key" + (" and a Google client file" if team.google_client else "")
         prompter.say(
-            f"                    (from the team file {team.path}, which also holds {parts})"
+            f"                    (from the team file {printable(team.path)}, "
+            f"which also holds {parts})"
         )
     prompter.say(f"  Producer handle:  {store['producer']} (a pseudonym)")
 
@@ -874,7 +896,7 @@ def setup(
     # Decided once, before any question: a config that goes away while setup waits never
     # turns a re-run into a first run (which would drop its other settings).
     first = not settings.exists()
-    if settings.exists():
+    if not first:
         raw = read_raw(settings)
         prompter.say(f"You have a config.toml already, at {settings}.")
         if not prompter.yes("Change it?"):
