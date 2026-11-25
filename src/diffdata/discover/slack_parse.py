@@ -275,14 +275,29 @@ def split_details(lines: list[str]) -> tuple[list[str], dict[str, str]]:
     end = len(lines)
     while end and (not lines[end - 1].strip() or FORWARDED.fullmatch(lines[end - 1].rstrip())):
         end -= 1
-    forwarded = [line for line in lines[end:] if line.strip()]
+    forwarded = trim_blank(lines[end:])
     text, meta = lines[:end], {}
     while text and (not text[-1].strip() or detail_line(text[-1])):
         if detail := detail_line(text.pop()):
-            meta[detail[0]] = detail[1]
-    if not meta:  # no detail lines under them: the lines stay exactly as they came
-        return lines, meta
+            # The scan runs from the end, so the first one found is the connector's own line.
+            # A look-alike typed higher up in the text can't overwrite it.
+            meta.setdefault(detail[0], detail[1])
+    if not meta:  # no detail lines under them: as before #124, only blank lines at the end go
+        end = len(lines)
+        while end and not lines[end - 1].strip():
+            end -= 1
+        return lines[:end], meta
     return [*text, *forwarded], meta
+
+
+def trim_blank(lines: list[str]) -> list[str]:
+    """The lines without blank or space-only lines at either end."""
+    start, end = 0, len(lines)
+    while start < end and not lines[start].strip():
+        start += 1
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    return lines[start:end]
 
 
 def detail_line(line: str) -> tuple[str, str] | None:

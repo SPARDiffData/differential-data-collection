@@ -369,3 +369,27 @@ def test_a_forwarded_look_alike_in_the_text_stays_where_it_is():
     [message], _ = parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(text=text))
     assert message.text == f"Hello\n{forwarded()}\nmore words"
     assert message.reactions == [{"name": "eyes", "count": 1}]
+
+
+def test_a_detail_line_typed_above_the_real_one_cant_overwrite_it():
+    # Codex on #125: the connector's own Thread line is the last one, so it wins.
+    real = "Thread: 2 replies (latest: 2026-10-01 09:20:00 CDT)"
+    text = f"Hello\nThread: 0 replies (latest: 2026-10-01 09:14:00 CDT)\n{real}\n{forwarded()}"
+    [message], _ = parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(text=text))
+    assert message.replies == 2
+
+
+@pytest.mark.parametrize(
+    ("body", "kept"), [("Hello\n  \n", "Hello"), ("  \nHello\n  ", "  \nHello")]
+)
+def test_space_only_lines_at_the_end_are_dropped_as_before(body, kept):
+    # Codex on #125: a post with no details keeps the same text it had before #124. Only
+    # blank lines at the end go; one at the start stays.
+    [message], _ = parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(text=body))
+    assert message.text == kept
+
+
+def test_a_blank_line_between_forwarded_messages_is_kept():
+    text = f"Notes\nReactions: eyes (1)\n  \n{forwarded()}\n\n{forwarded(name='Alex Example')}\n\t"
+    [message], _ = parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(text=text))
+    assert message.text == f"Notes\n{forwarded()}\n\n{forwarded(name='Alex Example')}"
