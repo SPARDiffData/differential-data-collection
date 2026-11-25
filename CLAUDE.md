@@ -60,7 +60,7 @@ These rules keep real data out of the repo and out of other companies' AI tools.
 
 ```
 src/diffdata/
-  cli.py            the `diffdata` command; `discover slack`, `consent`, `collect google-docs`, `scrub` and `push` are built
+  cli.py            the `diffdata` command; `setup`, `discover slack`, `consent`, `collect google-docs`, `scrub` and `push` are built
   consent/ discover/ collect/ organize/ scrub/ store/    one package per stage
   consent/approvals.py   the approvals file next to config.toml (CON-1, CON-3): approved, skipped or withdrawn, per canvas or Google file; it only grows
   consent/review.py   `diffdata consent review` and `withdraw`: a person approves new items from the reference log, typed in a terminal; they refuse to run anywhere else, as in Claude's tools
@@ -74,6 +74,7 @@ src/diffdata/
   store/            `diffdata push` (STO-1 to STO-3, STO-9, STO-11): sends the passed scrubbed copies, create-only, through one `Store` interface (backend.py); the Google Cloud Storage version is gcs.py
   common/           shared pieces; paths.py holds the data folder guards, config.py reads config.toml
   common/documents.py   the shared document format (ORG-2): raw, versions, event log, clean copies
+  common/setup.py   `diffdata setup` (#130): reads the team file, asks for the channels, shows every value on one screen before writing config.toml, and puts the store key in place; it refuses to run anywhere but a terminal a person types in
 tests/              pytest; fixtures/ holds synthetic data only
 docs/requirements.md
 config.example.toml copy to ~/.diffdata/config.toml, outside the repo, and fill in

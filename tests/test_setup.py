@@ -94,15 +94,36 @@ def fixed(char="k"):
     return lambda chars: char
 
 
+def quick_answers(channels: str = f"example-channel, {LINK}") -> list[str]:
+    """Answers for a first setup with a team file (revision 5): the channels, the workspace
+    if no channel is a link, y on the summary screen, keep the team file."""
+    space = [] if "/archives/" in channels else ["example.slack.com"]
+    return [channels, *space, "y", "n"]
+
+
+# A first setup's answers before c on the summary screen: valid channels, then c.
+TO_STEPS = [f"example-channel, {LINK}", "c"]
+
+
 def fresh_answers(channels: str = f"example-channel, {LINK}") -> list[str]:
-    """Answers for a first setup with a team file: use the team values, the default data
-    folder, the channels, the workspace, the made-up handle, write, keep the team file."""
+    """Answers for a first setup with a team file, one question at a time (after c on the
+    summary screen, which `run` answers first): use the team values, the data folder, the
+    channels, the workspace, the handle, write, keep the team file."""
     return ["y", "", channels, "example.slack.com", "", "y", "n"]
 
 
-def run(home, *answers, team="default", picker=no_picker, choose=None) -> tuple[int, Script]:
+def run(
+    home, *answers, team="default", picker=no_picker, choose=None, steps=None
+) -> tuple[int, Script]:
+    """Run setup with these answers. On a first setup with a team file given, `steps` (the
+    default) answers the summary screen with c first, so `answers` go through each question
+    in turn, as fresh_answers() does. steps=False runs the short first setup as it is."""
     if team == "default":
         team = team_file(home)
+    if steps is None:
+        steps = team is not None and not settings(home).exists()
+    if steps:
+        answers = (*TO_STEPS, *answers)
     script = Script(*answers)
     code = setup.setup(team_file=team, prompter=script, picker=picker, choose=choose or fixed())
     return code, script
@@ -216,7 +237,7 @@ def test_a_team_file_with_no_google_client_still_works(home):
 
 def test_with_no_team_file_and_no_config_setup_asks_for_one(home):
     path = team_file(home)
-    code, script = run(home, "", str(path), *fresh_answers(), team=None)
+    code, script = run(home, "", str(path), *quick_answers(), team=None)
     assert code == 0
     assert "Give the team file" in script.text
     assert sum(line.startswith("Team file's path") for line in script.shown) == 2
@@ -416,9 +437,9 @@ def test_an_os_error_after_the_write_says_the_config_was_written(home, monkeypat
     ],
 )
 def test_must_refuse_6_a_channel_answer_that_isnt_channels_is_asked_again(home, bad):
-    answers = fresh_answers()
-    answers[2:3] = [bad, "example-channel"]
-    code, script = run(home, *answers)
+    answers = quick_answers("example-channel")
+    answers[0:1] = [bad, "example-channel"]
+    code, script = run(home, *answers, steps=False)
     assert code == 0
     channels = tomllib.loads(settings(home).read_text())["sources"]["slack_channels"]
     assert channels == ["example-channel"]
@@ -745,7 +766,7 @@ def test_must_refuse_15_a_team_file_lying_around_is_never_read(home):
             encoding="utf-8",
         )
     path = team_file(home)
-    code, script = run(home, str(path), *fresh_answers(), team=None)
+    code, script = run(home, str(path), *quick_answers(), team=None)
     assert code == 0
     assert "found" not in settings(home).read_text(encoding="utf-8")
     assert "Give the team file" in script.text
@@ -775,6 +796,175 @@ def test_team_command_and_the_team_flag_are_gone(capsys):
         cli.main(["setup", "--team", "bucket=x,folder=y,project=z"])
 
 
+# --- revision 5: the short first setup ------------------------------------------------------
+
+
+def asked(script: Script, start: str) -> int:
+    return sum(line.startswith(start) for line in script.shown)
+
+
+def test_a_short_first_setup_takes_three_answers(home):
+    code, script = run(home, *quick_answers(), steps=False)
+    assert code == 0
+    assert script.answers == []  # channels, y on the screen, keep the team file: nothing more
+    raw = tomllib.loads(settings(home).read_text(encoding="utf-8"))
+    assert raw["sources"]["slack_channels"] == ["example-channel", "C00000002"]
+    assert raw["sources"]["slack_workspace_url"] == "https://example.slack.com"
+    assert raw["local"]["data_dir"] == setup.DEFAULT_DATA_DIR
+    assert {k: raw["store"][k] for k in VALUES} == VALUES
+    assert raw["store"]["producer"] == "example-project-kkkk"
+    assert raw["store"]["send_not_approved"] == "no"
+    assert (home / "diffdata-data").is_dir()
+    assert (home / ".diffdata" / "store-key.json").exists()
+    for question in ("Use these?", "Workspace", "Producer handle"):
+        assert asked(script, question) == 0
+    assert "Press Enter to use it" not in script.text  # the data folder question
+
+
+def test_must_refuse_19_the_screen_shows_every_chosen_value_before_the_yes(home):
+    path = team_file(home)
+    _, script = run(home, *quick_answers(), team=path, steps=False)
+    question = next(i for i, line in enumerate(script.shown) if line.startswith("Write this?"))
+    before = "\n".join(script.shown[:question])
+    for shown in (
+        "example-channel, C00000002 (a channel ID)",
+        "https://example.slack.com",
+        str(home / "diffdata-data"),
+        "bucket example-bucket, folder team-a, project example-project",
+        f"from the team file {path}",
+        "a store key and a Google client file",
+        "example-project-kkkk (a pseudonym)",
+        PSEUDONYM,
+    ):
+        assert shown in before, shown
+    assert no_marker(script.text)
+
+
+def test_must_refuse_16_n_on_the_screen_writes_nothing(home):
+    path = team_file(home)
+    code, script = run(home, f"example-channel, {LINK}", "n", team=path, steps=False)
+    assert code == 0
+    assert setup.NOTHING_WRITTEN in script.text
+    assert not settings(home).exists()
+    assert not (home / ".diffdata" / "store-key.json").exists()
+    assert not (home / "diffdata-data").exists()
+    assert path.exists()
+
+
+@pytest.mark.parametrize("other", ["", "yes", "x", "write", "Y N"])
+def test_must_refuse_16_only_y_n_or_c_answers_the_screen(home, other):
+    code, script = run(home, f"example-channel, {LINK}", other, "n", steps=False)
+    assert code == 0
+    assert asked(script, "Write this?") == 2
+    assert "Please type y, n or c." in script.text
+    assert not settings(home).exists()
+
+
+def test_c_asks_each_question_with_the_shown_values_then_shows_the_screen_again(home):
+    # c; then yes to the team values and Enter at every question; then y; keep the team file.
+    answers = [f"example-channel, {LINK}", "c", "y", "", "", "", "", "y", "n"]
+    code, script = run(home, *answers, steps=False)
+    assert code == 0
+    assert asked(script, "Write this?") == 2
+    assert asked(script, "Use these?") == 1
+    assert "Channels [Enter keeps: example-channel, C00000002" in script.text
+    assert "Producer handle [Enter for example-project-kkkk]" in script.text
+    raw = tomllib.loads(settings(home).read_text(encoding="utf-8"))
+    assert raw["sources"]["slack_channels"] == ["example-channel", "C00000002"]
+    assert raw["store"]["producer"] == "example-project-kkkk"
+
+
+def test_c_changes_a_value_and_n_on_the_second_screen_writes_nothing(home):
+    answers = [f"example-channel, {LINK}", "c", "y", "", "other-channel", "", "", "n"]
+    code, script = run(home, *answers, steps=False)
+    assert code == 0
+    assert "  Channels:         other-channel" in script.text
+    assert not settings(home).exists()
+
+
+def test_with_no_channel_link_the_workspace_is_asked(home):
+    code, script = run(home, *quick_answers("example-channel"), steps=False)
+    assert code == 0
+    assert asked(script, "Workspace address") == 1
+    raw = tomllib.loads(settings(home).read_text(encoding="utf-8"))
+    assert raw["sources"]["slack_workspace_url"] == "https://example.slack.com"
+
+
+def test_a_refused_default_data_folder_is_asked_before_the_screen(home):
+    (home / "diffdata-data").write_text("not a folder", encoding="utf-8")
+    good = home / "good-data"
+    # No picker: type the path; it's shown again; Enter uses it. Then the short setup.
+    code, script = run(home, str(good), "", *quick_answers(), steps=False)
+    assert code == 0
+    assert "is a file, not a folder" in script.text
+    raw = tomllib.loads(settings(home).read_text(encoding="utf-8"))
+    assert raw["local"]["data_dir"] == str(good.resolve())
+
+
+def test_a_rerun_still_asks_each_question_and_has_no_c(home):
+    existing(home)
+    before = settings(home).read_bytes()
+    _, script = run(home, *CHANGE[:-1], "c", "n", team=None)
+    assert asked(script, "Write this to") == 2  # c isn't an answer there: asked again
+    assert asked(script, "Write this?") == 0
+    assert settings(home).read_bytes() == before
+
+
+def test_a_config_that_goes_away_during_change_it_stays_a_rerun(home):
+    path = existing(home)
+
+    class Moving(Script):
+        def _ask(self, question):
+            if question.startswith("Change it?"):
+                path.rename(path.with_name("moved.toml"))
+            return super()._ask(question)
+
+    script = Moving("y", *CHANGE[1:])
+    setup.setup(team_file=None, prompter=script, picker=no_picker, choose=fixed())
+    assert "Your config.toml has these team values:" in script.text
+    assert asked(script, "Write this?") == 0
+    assert "slack_opted_out" in path.read_text(encoding="utf-8")
+
+
+def test_a_link_with_a_bad_workspace_asks_for_the_channels_again(home):
+    bad = "https://-example.slack.com/archives/C00000002"
+    code, script = run(home, bad, *quick_answers(), steps=False)
+    assert code == 0
+    assert asked(script, "Channels") == 2
+    raw = tomllib.loads(settings(home).read_text(encoding="utf-8"))
+    assert raw["sources"]["slack_workspace_url"] == "https://example.slack.com"
+
+
+def test_a_bad_link_workspace_after_c_asks_for_the_channels_again(home):
+    bad = "https://-example.slack.com/archives/C00000002"
+    # c; yes to the team values; data folder; a bad link, then a good one; workspace; handle.
+    answers = [f"example-channel, {LINK}", "c", "y", "", bad, LINK, "", "", "y", "n"]
+    code, script = run(home, *answers, steps=False)
+    assert code == 0
+    assert "Give the channels again." in script.text
+
+
+def test_printable_replaces_control_characters():
+    assert setup.printable(Path("team\x1b[2Ja\x07.json")) == "team?[2Ja?.json"
+
+
+@POSIX  # Windows refuses control characters in file names
+def test_a_team_file_path_with_control_characters_is_shown_safely(home):
+    path = team_file(home, name="team\x1b[2Ja")
+    _, script = run(home, *quick_answers(), team=path, steps=False)
+    assert "\x1b" not in script.text
+    assert "team?[2Ja.diffdata-team.json" in script.text
+
+
+def test_a_first_run_never_reads_a_config(home, monkeypatch):
+    calls = []
+    real = setup.read_raw
+    monkeypatch.setattr(setup, "read_raw", lambda p: calls.append(p) or real(p))
+    code, _ = run(home, *quick_answers(), steps=False)
+    assert code == 0
+    assert calls == []  # a first run never reads a config
+
+
 # --- round 3: explicit y/n, key install on "no change", capital names ----------------------
 
 
@@ -786,13 +976,18 @@ def test_a_safety_question_takes_only_y_or_n():
 
 
 @pytest.mark.parametrize(
-    ("where", "question"),
-    [(0, "Use these?"), (5, "Write this to"), (6, "Delete the team file")],
+    ("where", "question", "steps"),
+    [
+        (1, "Write this?", False),  # the summary screen
+        (2, "Delete the team file", False),
+        (0, "Use these?", True),  # after c
+        (6, "Delete the team file", True),
+    ],
 )
-def test_must_refuse_16_enter_at_a_first_setup_question_asks_again(home, where, question):
-    answers = fresh_answers()
+def test_must_refuse_16_enter_at_a_first_setup_question_asks_again(home, where, question, steps):
+    answers = quick_answers() if not steps else fresh_answers()
     answers.insert(where, "")
-    code, script = run(home, *answers)
+    code, script = run(home, *answers, steps=steps)
     assert code == 0
     asked = [line for line in script.shown if line.startswith(question)]
     assert len(asked) == 2
