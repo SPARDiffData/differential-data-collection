@@ -1,16 +1,19 @@
 """The `diffdata` command.
 
-`discover slack` (DIS-1), `consent` (CON-1, CON-3), `collect google-docs` (COL-4, COL-5),
-`scrub` (SCR-1, SCR-2) and `push` (STO-1, STO-2, STO-3) are built. Any other subcommand
+`setup` (ENG-1, CON-1, STO-1), `discover slack` (DIS-1), `consent` (CON-1,
+CON-3), `collect google-docs` (COL-4, COL-5), `scrub` (SCR-1, SCR-2) and `push` (STO-1, STO-2,
+STO-3) are built. Any other subcommand
 added before it's built is a stub that names the requirement IDs (docs/requirements.md) its
 feature Issue will build.
 """
 
 import argparse
 import sys
+from pathlib import Path
 
 from diffdata import __version__
 from diffdata.collect import google_fetch, google_signin
+from diffdata.common import setup as producer_setup
 from diffdata.common.config import ConfigError, load_config
 from diffdata.common.paths import UnsafeDataDirError
 from diffdata.consent import review
@@ -21,6 +24,10 @@ from diffdata.store.backend import StoreError
 
 # subcommand -> (help text, requirement IDs it will implement)
 COMMANDS = {
+    "setup": (
+        "Answer a few questions in your own terminal, and diffdata writes config.toml for you.",
+        "ENG-1, CON-1, STO-1",
+    ),
     "discover": ("Find Slack messages and the sources they reference.", "DIS-1, DIS-2, DIS-3"),
     "consent": (
         "Approve, skip or withdraw the canvases and Google files found, in your own terminal.",
@@ -40,8 +47,8 @@ COMMANDS = {
 STUBS: tuple[str, ...] = ()
 
 SLACK_STEPS = {
-    "channels": "List the opted-in channels from config.toml, and which file it read.",
-    "begin": "Open an export run for channels given as name=ID (run by /slack-export).",
+    "channels": "List the opted-in channels (names or IDs) from config.toml, and its path.",
+    "begin": "Open an export run for channels given as name=ID or ID (run by /slack-export).",
     "check": "Stop a Slack read the open run doesn't name (run by the /slack-export hook).",
     "save": "Save one Slack result from stdin to the inbox (run by the /slack-export hook).",
     "canvases-due": "List the canvases this run should read, and why (run by /slack-export).",
@@ -72,6 +79,9 @@ def build_parser() -> argparse.ArgumentParser:
                 steps.add_parser(step, help=step_help, description=step_help)
         if name == "collect":
             add_collect_sources(command)
+        if name == "setup":
+            team_help = "The team file the project team sent you (<team>.diffdata-team.json)."
+            command.add_argument("team_file", nargs="?", metavar="TEAM_FILE", help=team_help)
     return parser
 
 
@@ -100,7 +110,7 @@ def add_discover_sources(discover: argparse.ArgumentParser) -> None:
     for name, help_text in SLACK_STEPS.items():
         step = steps.add_parser(name, help=help_text, description=help_text)
         if name == "begin":
-            step.add_argument("channels", nargs="+", metavar="NAME=ID")
+            step.add_argument("channels", nargs="+", metavar="NAME=ID|ID")
             full_help = "Read every channel from the start, and every listed canvas."
             step.add_argument("--full", action="store_true", help=full_help)
 
@@ -111,6 +121,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 0
+    if args.command == "setup":
+        return run_setup(args)
     if args.command == "discover":
         return run_slack_step(args)
     if args.command == "consent":
@@ -128,6 +140,26 @@ def main(argv: list[str] | None = None) -> int:
         file=sys.stderr,
     )
     return 1
+
+
+def run_setup(args: argparse.Namespace) -> int:
+    # First: setup writes the person's opt-in, so only a person typing may answer.
+    if not review.in_terminal(sys.stdin, sys.stdout):
+        print(f"diffdata: {producer_setup.NOT_A_TERMINAL}", file=sys.stderr)
+        return 1
+    try:
+        team = Path(args.team_file) if args.team_file else None
+        return producer_setup.setup(team_file=team)
+    except (producer_setup.SetupError, ConfigError, UnsafeDataDirError) as e:
+        print(f"diffdata setup: {e}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        # setup() says what it wrote; this is the last net, with no traceback.
+        print(f"diffdata setup: stopped: {e}", file=sys.stderr)
+        return 1
+    except (KeyboardInterrupt, EOFError):
+        print("\ndiffdata setup: stopped. A config.toml is changed only after your last yes.")
+        return 130
 
 
 def run_consent_step(args: argparse.Namespace) -> int:
@@ -153,9 +185,11 @@ def run_slack_step(args: argparse.Namespace) -> int:
     try:
         config = load_config()
         if args.step == "channels":
-            if not config.slack_channels:
+            # In config.toml's order: a test run reads only the first one.
+            channels = list(config.listed_channels)
+            if not channels:
                 raise ConfigError(f"No channels are listed under slack_channels in {config.path}.")
-            report = "\n".join([f"Opted-in channels, from {config.path}:", *config.slack_channels])
+            report = "\n".join([f"Opted-in channels, from {config.path}:", *channels])
         elif args.step == "begin":
             report = slack_inbox.begin(config, args.channels, full=args.full)
         elif args.step == "abort":

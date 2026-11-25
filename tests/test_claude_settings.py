@@ -380,3 +380,62 @@ def test_review_pr_never_offers_a_verdict_that_waits_for_paul():
     review_pr = (ROOT / ".claude" / "commands" / "review-pr.md").read_text(encoding="utf-8")
     verdict = next(line for line in review_pr.splitlines() if line.startswith("**Verdict:**"))
     assert "Paul" not in verdict
+
+
+# CON-1, #130: `diffdata setup` writes the channel list, which is the producer's opt-in, so
+# only a person typing in a terminal runs it. It refuses outside a terminal, and these rules
+# stop Claude's shell tools running it or importing its code.
+SETUP_RUNS = [
+    "Bash(uv run diffdata setup)",
+    "Bash(uv run diffdata setup ~/Downloads/team-a.diffdata-team.json)",
+    "Bash(echo y | script -q /dev/null uv run diffdata setup)",
+    "Bash(.venv/bin/diffdata setup)",
+    "Bash(uv run python -m diffdata setup)",
+    'Bash(uv run python -c "from diffdata.common import setup")',
+    'Bash(uv run python -c "import diffdata.common.setup")',
+    "PowerShell(uv run diffdata setup)",
+    "PowerShell(.venv\\Scripts\\diffdata.exe setup)",
+    'PowerShell(uv run python -c "from diffdata.common import setup")',
+]
+SETUP_DEVELOPMENT_RUNS = [
+    "Bash(uv run pytest tests/test_setup.py)",
+    "Bash(git add src/diffdata/common/setup.py)",
+]
+
+
+@pytest.mark.parametrize("command", SETUP_RUNS)
+def test_claudes_shell_tools_cant_run_setup(command):
+    assert denied(command)
+
+
+@pytest.mark.parametrize("command", SETUP_DEVELOPMENT_RUNS)
+def test_working_on_the_setup_code_isnt_blocked(command):
+    assert not denied(command)
+
+
+# #132: a team file holds the team's store key, so no AI tool reads, writes or names one.
+# In Claude Code, a Read or Edit rule with no prefix covers only the folder Claude runs in,
+# and `//` anchors it at the filesystem root, so the rules use `//**/` to cover a team file
+# anywhere, such as in ~/Downloads (https://code.claude.com/docs/en/permissions, "Read and
+# Edit"). fnmatch here only shows the rules exist and match absolute paths; it can't prove
+# Claude Code's own path rules. The hands-on check on #131 asks Claude to read one.
+TEAM_FILE_RULES = ["Read(//**/*.diffdata-team.json)", "Edit(//**/*.diffdata-team.json)"]
+TEAM_FILE_USES = [
+    "Read(//Users/example/Downloads/team-a.diffdata-team.json)",
+    "Edit(//tmp/team-a.diffdata-team.json)",
+    "Bash(cat ~/Downloads/team-a.diffdata-team.json)",
+    "PowerShell(Get-Content team-a.diffdata-team.json)",
+]
+
+
+@pytest.mark.parametrize("use", TEAM_FILE_USES)
+def test_claudes_tools_cant_read_write_or_name_a_team_file(use):
+    assert denied(use)
+
+
+def test_the_team_file_rules_are_anchored_at_the_filesystem_root():
+    rules = deny_rules()
+    assert all(rule in rules for rule in TEAM_FILE_RULES)
+    # No Read or Edit rule for a team file without `//`: it would cover the repo folder only.
+    loose = [r for r in rules if "diffdata-team" in r and r.startswith(("Read(", "Edit("))]
+    assert all(rule.startswith(("Read(//", "Edit(//")) for rule in loose)

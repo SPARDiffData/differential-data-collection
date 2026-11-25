@@ -53,7 +53,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from diffdata.collect import slack_canvas
-from diffdata.common.config import Config, ConfigError, channel_name, load_config
+from diffdata.common.config import (
+    CHANNEL_ID,
+    Config,
+    ConfigError,
+    channel_name,
+    is_group_dm_name,
+    load_config,
+)
 from diffdata.common.paths import UnsafeDataDirError
 from diffdata.consent import approvals
 from diffdata.discover import slack_state
@@ -83,7 +90,6 @@ SAVED_TOOLS = ("slack_read_channel", "slack_read_thread")
 OVERFLOW = re.compile(r"saved to:?\s+(?P<path>.+?\.(?:txt|json))\b", re.IGNORECASE)
 # Public channels start with C, older private ones with G. DMs (D) need both people's
 # consent first (CON-5), so they're refused.
-CHANNEL_ID = re.compile(r"[CG][A-Z0-9]{6,}")
 # The reads `check()` lets through only when the open run names what they read, and the
 # input field that names it. The command's PreToolUse hook matches these and the search.
 CHECKED_READS = {
@@ -245,7 +251,14 @@ def left_out_locked(data: Path) -> Iterator[None]:
     at once, two hooks can finish together: without this, each would write back only its own
     names over the other's, and a name lost there would let plain-text mentions of that
     person through the scrub. If another holds it, wait for it, briefly."""
-    lock = left_out_path(data).with_name("left_out.json.lock")
+    with file_locked(left_out_path(data).with_name("left_out.json.lock"), "slack/left_out.json"):
+        yield
+
+
+@contextmanager
+def file_locked(lock: Path, what: str) -> Iterator[None]:
+    """Hold `lock` while one hook reads, changes and writes a shared file. If another holds
+    it, wait for it, briefly."""
     lock.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + LEFT_OUT_WAIT_SECONDS
     while True:
@@ -255,14 +268,26 @@ def left_out_locked(data: Path) -> Iterator[None]:
         except FileExistsError as e:
             if time.monotonic() > deadline:
                 raise SlackExportError(
-                    "another save held slack/left_out.json for too long. If no Slack export "
-                    "is running, delete slack/left_out.json.lock in the data folder"
+                    f"another save held {what} for too long. If no Slack export is running, "
+                    f"delete {what}.lock in the data folder"
                 ) from e
             time.sleep(0.05)
     try:
         yield
     finally:
         lock.unlink(missing_ok=True)
+
+
+def record_channel_name(data: Path, run_id: str, channel_id: str, name: str) -> None:
+    """Add a channel's name, learned from its first read, to the open run. Under a lock, and
+    from the run as it is now, so two hooks that finish together keep both names."""
+    path = run_path(data)
+    with file_locked(path.with_name(f"{path.name}.lock"), "slack/run.json"):
+        run = open_run(data)
+        if run is None or run.run_id != run_id:
+            raise SlackExportError("the export run closed while the read was saved")
+        run.channels[channel_id] = name
+        write_json(path, asdict(run))
 
 
 def record_left_out(data: Path, seen: dict[str, set[str]]) -> None:
@@ -321,35 +346,55 @@ def require_workspace(config: Config) -> None:
 
 
 def run_channel_names(data: Path) -> dict[str, str]:
-    """Channel ID to name, from every run so far. The newest name wins after a rename."""
+    """Channel ID to name, from every run so far. The newest name wins after a rename. A
+    channel listed by ID has no name in a run until its first read shows it, so an empty
+    name never replaces a known one."""
     names: dict[str, str] = {}
     paths = sorted((slack_dir(data) / "runs").glob("*.json")) + [run_path(data)]
     for path in paths:
         if path.is_file():
-            names.update(json.loads(path.read_text(encoding="utf-8"))["channels"])
+            channels = json.loads(path.read_text(encoding="utf-8"))["channels"]
+            names.update({channel_id: name for channel_id, name in channels.items() if name})
     return names
 
 
+def shown_channel(run: Run, channel_id: str) -> str:
+    """How a message names a run's channel: #name, or, before the first read of a channel
+    listed by ID, a phrase with no ID, since Claude may see the message."""
+    name = run.channels.get(channel_id, "")
+    return f"#{name}" if name else "the channel listed by its ID"
+
+
 def begin(config: Config, pairs: list[str], now: datetime | None = None, full: bool = False) -> str:
-    """Open an export run for `pairs` like "example-channel=C00000001". Returns a report,
-    which says where each channel's read and search start. A full run starts every channel
-    from the beginning."""
+    """Open an export run for `pairs` like "example-channel=C00000001", or a bare ID for a
+    channel config.toml lists by ID. Returns a report, which says where each channel's read
+    and search start. A full run starts every channel from the beginning."""
     now = now or datetime.now(UTC)
     require_workspace(config)
     channels: dict[str, str] = {}
     for pair in pairs:
         name, sep, channel_id = pair.partition("=")
+        if not sep:  # a bare ID
+            name, channel_id = "", name
         name, channel_id = channel_name(name), channel_id.strip()
-        if not sep or not name or not CHANNEL_ID.fullmatch(channel_id):
+        if name and is_group_dm_name(name):
             raise SlackExportError(
-                f"'{pair}' isn't a channel as name=ID, with an ID starting with C or G."
+                "A channel given to begin is a group DM. diffdata never collects those (CON-5)."
             )
-        if name not in config.slack_channels:
+        if (sep and not name) or not CHANNEL_ID.fullmatch(channel_id):
             raise SlackExportError(
-                f"#{name} isn't in slack_channels in config.toml. Listing a channel there "
+                "A channel given to begin isn't name=ID or a bare ID, with an ID starting "
+                "with C or G."
+            )
+        if not config.lists_channel(channel_id, name):
+            which = f"#{name}" if name else "A channel ID given to begin"
+            raise SlackExportError(
+                f"{which} isn't in slack_channels in config.toml. Listing a channel there "
                 "is the opt-in to collecting it (CON-1)."
             )
-        channels[channel_id] = name
+        # Its name is kept only if config.toml lists it by name: a channel listed by ID gets
+        # its name from its first read, which the save hook checks against the ID.
+        channels[channel_id] = name if name in config.slack_channels else ""
 
     notes = []
     previous = open_run(config.data_dir)
@@ -598,22 +643,36 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
             return fail(str(e))
 
     channel_id = read_id
+    learned = ""
     if tool == "slack_read_channel":
         header = CHANNEL_HEADER.match(result_text(response).lstrip())
+        expected = run.channels[channel_id]
         if (
             header is None
             or header["id"] != channel_id
-            or channel_name(header["name"]) != run.channels[channel_id]
+            or (expected and channel_name(header["name"]) != expected)
+            or not channel_name(header["name"])
         ):
             return fail(
                 f"This channel read doesn't show the channel opted in as "
-                f"#{run.channels[channel_id]} in config.toml, so it wasn't saved (CON-1). "
+                f"{shown_channel(run, channel_id)} in config.toml, so it wasn't saved (CON-1). "
                 "Stop the export."
             )
+        if is_group_dm_name(header["name"]):
+            # A group DM listed by ID gets past begin, so its first read is the check (CON-5).
+            return fail(
+                "This read is of a group DM. diffdata never collects those: the other people in "
+                "it never agreed (CON-5). It wasn't saved. Stop the export, and remove it from "
+                "slack_channels in config.toml."
+            )
+        if not expected:
+            # Listed by ID: the read's ID matched, so its name is the channel's name. The run
+            # keeps it, so the export and the scrub name the channel's folder.
+            learned = channel_name(header["name"])
     elif not channel_checked(config.data_dir, run, channel_id):
         return fail(
-            f"A thread in #{run.channels[channel_id]} was read before the channel itself, so "
-            "diffdata couldn't check the channel and didn't save it. Stop the export."
+            f"A thread in {shown_channel(run, channel_id)} was read before the channel itself, "
+            "so diffdata couldn't check the channel and didn't save it. Stop the export."
         )
 
     path = inbox_dir(config.data_dir) / channel_id / run.run_id / f"{tool}-{call}.json"
@@ -622,6 +681,16 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
             record_left_out(config.data_dir, left_names)
         except (OSError, SlackExportError) as e:
             return fail(f"Couldn't record who was left out, so nothing was saved: {e}")
+    if learned:
+        # Before the read is saved: a saved read with no name would leave its channel
+        # nameless for the build and the scrub. A name with no saved read does no harm: it
+        # came from the read whose ID matched.
+        try:
+            record_channel_name(config.data_dir, run.run_id, channel_id, learned)
+        except (OSError, SlackExportError) as e:
+            return fail(
+                f"Couldn't record the channel's name in the export run, so nothing was saved: {e}"
+            )
     try:
         write_json(path, record)
     except OSError as e:

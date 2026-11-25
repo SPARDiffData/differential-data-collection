@@ -31,6 +31,7 @@ import shutil
 import tempfile
 import time
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -127,11 +128,12 @@ class Source:
     copy: str  # where its copy goes, under scrubbed/
 
 
-def opted_in(config: Config) -> tuple[set[str], set[str]]:
-    """The channels (by name) and canvases (by ID) that get a scrubbed copy: the ones listed
-    in config.toml right now (CON-1). Anything else gets none, and its earlier copy is gone
-    after the next run. This rule lives only here, so the approval step can add to it."""
-    return set(config.slack_channels), set(config.slack_canvases)
+def opted_in(config: Config) -> tuple[Callable[[str, str], bool], set[str]]:
+    """The channels (a test on ID and name) and canvases (by ID) that get a scrubbed copy: the
+    ones listed in config.toml right now, by name or by ID (CON-1). Anything else gets none,
+    and its earlier copy is gone after the next run. This rule lives only here, so the
+    approval step can add to it."""
+    return config.lists_channel, set(config.slack_canvases)
 
 
 def sources(config: Config) -> tuple[list[Source], int]:
@@ -141,7 +143,7 @@ def sources(config: Config) -> tuple[list[Source], int]:
     channels, canvases = opted_in(config)
     found = []
     for channel_id, name in sorted(run_channel_names(data).items()):
-        if name not in channels or not SAFE_ID.fullmatch(channel_id):
+        if not channels(channel_id, name) or not SAFE_ID.fullmatch(channel_id):
             continue
         # The view's folder, named as slack_export.build names it.
         folder = slack_dir(data) / "export" / re.sub(r"[^a-z0-9_-]", "-", name.lower())

@@ -216,6 +216,16 @@ def read_key(path: Path) -> dict:
         info = json.loads(raw.decode("utf-8")) if len(raw) < 64_000 else None
     except (UnicodeDecodeError, ValueError):
         raise PushError(not_a_key) from None
+    return check_key_info(info)
+
+
+def check_key_info(info) -> dict:
+    """The key's contents, checked: a service account key that signs in only with Google.
+    Used by read_key() and by setup, for the key in a team file. Never shows the contents."""
+    not_a_key = (
+        f"{KEY_SHOWN} isn't a Google service account key. Ask the project team for a new one. "
+        f"{NOTHING_SENT}"
+    )
     if not (
         isinstance(info, dict)
         and info.get("type") == "service_account"

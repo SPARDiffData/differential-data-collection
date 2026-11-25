@@ -18,6 +18,28 @@ CONFIG_NAME = "config.toml"
 # A canvas is listed by its ID, or by its link: https://<workspace>.slack.com/docs/<team>/<ID>
 CANVAS_ID = re.compile(r"F[A-Z0-9]{6,}")
 CANVAS_LINK = re.compile(r"https://[a-z0-9-]+\.slack\.com/docs/T[A-Z0-9]+/(F[A-Z0-9]{6,})/?")
+# A channel is listed by its name, its ID, or a link to it or to one of its messages:
+# https://<workspace>.slack.com/archives/<ID>, maybe followed by /p<digits>. Names are lowercase,
+# IDs uppercase, so an ID is told apart before the name is made lowercase.
+# A real ID always has a digit, so a name typed in capitals (GENERAL) stays a name.
+CHANNEL_ID = re.compile(r"[CG](?=[A-Z]*[0-9])[A-Z0-9]{6,}")
+CHANNEL_LINK = re.compile(
+    r"https://([a-z0-9-]+)\.slack\.com/archives/([CG](?=[A-Z]*[0-9])[A-Z0-9]{6,})"
+    r"(?:/p\d+)?/?(?:\?.*)?"
+)
+# CON-5: a direct message ("D..." ID or link) or a group DM (Slack names it "mpdm-...") is never
+# collected: the other people in it never agreed. Listing one is refused, and the save hook
+# refuses a read of a channel whose name says it's a group DM.
+DM_ID = re.compile(r"D(?=[A-Z]*[0-9])[A-Z0-9]{6,}")
+DM_LINK = re.compile(
+    r"https://[a-z0-9-]+\.slack\.com/archives/D(?=[A-Z]*[0-9])[A-Z0-9]{6,}(?:/p\d+)?/?(?:\?.*)?"
+)
+GROUP_DM_PREFIX = "mpdm-"
+# What setup takes as a channel name: no spaces, dots, slashes or other marks a pasted
+# sentence or link has. load_config() doesn't check it yet, so no existing config breaks.
+CHANNEL_NAME = re.compile(r"[^\s./#,:;<>@'\"]{1,80}")
+# A workspace's address: https://<name>.slack.com
+WORKSPACE_URL = re.compile(r"https://[a-z0-9][a-z0-9-]*\.slack\.com")
 # A Google Doc is listed by its ID, or by its link, from the address bar or Drive's "open" form.
 DOC_ID = re.compile(r"[A-Za-z0-9_-]{20,}")
 DOC_LINK = re.compile(
@@ -86,6 +108,10 @@ class Config:
     data_dir: Path
     # CON-1: listing a channel is the opt-in to collecting it. Names, without the '#'.
     slack_channels: tuple[str, ...]
+    # CON-1: channels listed by their ID, or by a link, in slack_channels. IDs.
+    slack_channel_ids: tuple[str, ...] = ()
+    # Every channel as slack_channels lists it, in its order: a name, or an ID.
+    listed_channels: tuple[str, ...] = ()
     # The workspace's address, like https://example.slack.com, for message links.
     slack_workspace_url: str = ""
     # CON-1: listing a canvas is the opt-in to collecting it (COL-2). Canvas IDs.
@@ -111,10 +137,43 @@ class Config:
     # Which config.toml these settings came from.
     path: Path | None = None
 
+    def lists_channel(self, channel_id: str, name: str = "") -> bool:
+        """Whether slack_channels lists this channel, by its ID or by its name (CON-1)."""
+        return channel_id in self.slack_channel_ids or (
+            bool(name) and channel_name(name) in self.slack_channels
+        )
+
 
 def channel_name(name: str) -> str:
     """Slack channel names are lowercase; people sometimes type the '#'."""
     return name.strip().lstrip("#").lower()
+
+
+def channel_id(value: str) -> str | None:
+    """A channel's ID, from its ID or a link to it. None if it's neither."""
+    value = value.strip()
+    if CHANNEL_ID.fullmatch(value):
+        return value
+    link = CHANNEL_LINK.fullmatch(value)
+    return link[2] if link else None
+
+
+def is_group_dm_name(name: str) -> bool:
+    """Whether a channel name is Slack's name for a group DM."""
+    return channel_name(name).startswith(GROUP_DM_PREFIX)
+
+
+def is_direct_message(value: str) -> bool:
+    """Whether a slack_channels entry is a DM or a group DM: a D... ID, a link to one, or an
+    mpdm-... name (CON-5)."""
+    value = value.strip()
+    return bool(DM_ID.fullmatch(value) or DM_LINK.fullmatch(value)) or is_group_dm_name(value)
+
+
+def link_workspace(value: str) -> str | None:
+    """The workspace address in a channel link, like https://example.slack.com."""
+    link = CHANNEL_LINK.fullmatch(value.strip())
+    return f"https://{link[1]}.slack.com" if link else None
 
 
 def canvas_id(value: str) -> str | None:
@@ -177,10 +236,41 @@ def load_config(path: str | Path | None = None) -> Config:
     sources = raw.get("sources", {})
     channels = sources.get("slack_channels", [])
     if not isinstance(channels, list) or not all(isinstance(c, str) for c in channels):
-        raise ConfigError(f"slack_channels in {path} must be a list of channel names.")
+        raise ConfigError(
+            f"slack_channels in {path} must be a list of channel names, IDs or links."
+        )
     workspace = sources.get("slack_workspace_url", "")
     if not isinstance(workspace, str) or (workspace and not workspace.startswith("https://")):
         raise ConfigError(f"slack_workspace_url in {path} must start with https://")
+    channel_names: list[str] = []
+    channel_ids: dict[str, int] = {}  # ID to its entry number
+    listed_channels: list[str] = []
+    for number, listed in enumerate(channels, start=1):
+        if is_direct_message(listed):
+            raise ConfigError(
+                f"Entry {number} in slack_channels in {path} is a direct message or a group DM. "
+                "diffdata never collects those: the other people in them never agreed (CON-5). "
+                "Remove it. If it's a channel's name typed in capitals, type it in lowercase. "
+                "Nothing was collected."
+            )
+        found = channel_id(listed)
+        if found is not None:
+            if found in channel_ids:
+                raise ConfigError(
+                    f"Entries {channel_ids[found]} and {number} in slack_channels in {path} are "
+                    "the same channel. Remove one, or replace it with the channel you meant."
+                )
+            channel_ids[found] = number
+            listed_channels.append(found)
+        elif listed.strip().lower().startswith(("http://", "https://")):
+            # Messages name the entry's place, not the link, so no ID reaches shared output.
+            raise ConfigError(
+                f"Entry {number} in slack_channels in {path} is a link, but not to a Slack "
+                "channel (https://<workspace>.slack.com/archives/C...)."
+            )
+        else:
+            channel_names.append(channel_name(listed))
+            listed_channels.append(channel_name(listed))
     canvases = sources.get("slack_canvases", [])
     if not isinstance(canvases, list) or not all(isinstance(c, str) for c in canvases):
         raise ConfigError(f"slack_canvases in {path} must be a list of canvas IDs or links.")
@@ -280,7 +370,9 @@ def load_config(path: str | Path | None = None) -> Config:
 
     return Config(
         data_dir=data_dir(configured),
-        slack_channels=tuple(channel_name(c) for c in channels),
+        slack_channels=tuple(channel_names),
+        slack_channel_ids=tuple(channel_ids),
+        listed_channels=tuple(listed_channels),
         slack_workspace_url=workspace.rstrip("/"),
         slack_canvases=tuple(canvas_ids),
         canvas_refresh_days=refresh_days,

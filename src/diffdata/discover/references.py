@@ -472,7 +472,7 @@ def set_states(
     def opted_in(place: dict) -> bool:
         if place["canvas_id"]:
             return place["canvas_id"] in canvases
-        return channels.get(place["channel_id"]) in config.slack_channels
+        return config.lists_channel(place["channel_id"], channels.get(place["channel_id"], ""))
 
     for key, entry in log.items():
         if key.startswith("slack-file:") and (key in listed_canvases or key in read_keys):
