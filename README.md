@@ -8,7 +8,18 @@
 
 ## Quick start
 
-You need [Git](https://git-scm.com/downloads) and [uv](https://docs.astral.sh/uv/getting-started/installation/). uv installs Python 3.12 for you.
+### Before you start
+
+| You need | Why | How to check |
+|---|---|---|
+| [Git](https://git-scm.com/downloads) | to get the tool | `git --version` |
+| [uv](https://docs.astral.sh/uv/getting-started/installation/) | runs the tool, and installs Python 3.12 for it | `uv --version` |
+| [Claude Code](https://claude.com/claude-code) 2.1.295 or later: the `claude` command, or the Claude desktop app | runs `/slack-export` with this repo's safety rules | `claude --version`, or the app's About screen |
+| The Slack connector in Claude, signed in to your workspace | reads your channels, as you | in Claude: `/mcp` |
+| A Google account | only if you collect Google Docs | |
+| The team file | your team's settings and upload key | from the project team |
+
+Once the tool is installed (below), `uv run diffdata check` checks the first three, that you're in the repo folder, and that setup is done. It changes nothing. Setup runs the same checks first, and lists anything missing at the end. A terminal can't see Claude's connectors, so the Slack connector and the Google account aren't checked.
 
 ```
 git clone https://github.com/SPARDiffData/differential-data-collection
@@ -119,7 +130,7 @@ Your decisions go in `approvals.jsonl`, next to `config.toml` in `~/.diffdata/`:
 
 Run `uv run diffdata scrub` after an export. It makes a scrubbed copy of each opted-in Slack day file and canvas in `scrubbed/` in your data folder. Your originals are only read. Each copy has:
 
-- **secrets** replaced: API keys, tokens, passwords and private keys become `[secret]`, using the rules of gitleaks v8.30.1, run in Python. Text that only looks random, like a key with no known shape, becomes `[secret?]` and is listed in `private/flags.md` by copy, never by its value. Google links keep their document IDs, so they still work, and inside other links a site's name stays readable;
+- **secrets** replaced: API keys, tokens, passwords and private keys become `[secret]`, using the rules of gitleaks v8.30.1, run in Python. A password written after its name (`password=…`, `the db password: …`, `my password is …`, `Password is …`) goes however plain it is, and if it has 6 or more characters with a letter and a digit, it goes everywhere it appears in the copy. Text that only looks random, like a key with no known shape, becomes `[secret?]` and is listed in `private/flags.md` by copy, never by its value. Google links keep their document IDs, so they still work, and inside other links a site's name stays readable;
 - **meeting links** (Zoom, Google Meet, Teams, Webex, Whereby, Jitsi, Calendly, GoTo) replaced whole, passcode and all, by `[meeting link]`;
 - **phone numbers** and `tel:` links replaced by `[phone]`, but not digits inside other links;
 - **emails, Slack IDs, mentions and the names in your people list** replaced by `[email]` and `[Person N]`.

@@ -127,7 +127,7 @@ The PR says it got this review by ticking the template's box for it. The daily u
 
 ## For the project team
 
-**Setting up a pilot team** (#132). Run this yourself, in your own terminal on macOS or Linux, signed in to `gcloud` as the Cloud project's owner account (`gcloud auth login`). Claude's tools may not run it.
+**Setting up a pilot team** (#132). You need the Google Cloud CLI (`gcloud`): `curl https://sdk.cloud.google.com | bash`, then open a new terminal (see [Google's install page](https://cloud.google.com/sdk/docs/install) for other ways). Producers never need it. Run this yourself, in your own terminal on macOS or Linux, signed in to `gcloud` as the Cloud project's owner account (`gcloud auth login`). Claude's tools may not run it.
 
 ```bash
 uv run diffdata admin add-team team-a --bucket example-bucket --project example-project --gcp-project example-gcp-project --producer producer@example.com --google-client ~/Downloads/client.json --optout-form "https://…/viewform?usp=pp_url&entry.123="
