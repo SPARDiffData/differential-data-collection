@@ -821,6 +821,18 @@ def test_a_random_run_on_both_sides_of_an_email_or_phone_number_is_checked(text,
         ('password="wrong" and pwd=none', 'password="[secret]" and pwd=[secret]'),
         ('password: "unclosed7', "password: [secret]"),
         ("password=" + "a" * 250, "password=[secret]"),
+        ("_Password:_ hunter2hunter2", "_Password:_ [secret]"),
+        ("_password_: fluffy42 and ~pwd~: owl7", "_password_: [secret] and ~pwd~: [secret]"),
+        ("_My password is_ fluffy42", "_My password is_ [secret]"),
+        (
+            "My password _is_ owl7, _my pwd is_: kite9",
+            "My password _is_ [secret], _my pwd is_: [secret]",
+        ),
+        (
+            'Password: "[secret] for staging; demo password=owl7"',
+            'Password: "[secret] for staging; demo password=[secret]"',
+        ),
+        ("{{password: abc123}} [pwd: owl7]", "{{password: [secret]}} [pwd: [secret]]"),
     ],
 )
 def test_must_refuse_a_chosen_password_after_its_name_is_replaced(text, scrubbed):
@@ -855,6 +867,7 @@ def test_must_refuse_every_random_16_character_password_is_replaced():
         'password: [secret] and pwd: [secret?] and passcode: "[secret]"',
         "the password: [Person 3] knows it",
         "Please report the password issue in the ticket.",
+        "The password is_valid flag defaults to true.",
         "Password:\nsee the vault",
         'password: "[meeting link] (weekly call)" and pwd: [Zoom]([meeting link])',
     ],
@@ -864,7 +877,7 @@ def test_a_password_word_in_ordinary_prose_or_before_a_placeholder_is_left_alone
     assert found(text) == []
 
 
-@pytest.mark.parametrize("name", ["password", "db_password", "passcode"])
+@pytest.mark.parametrize("name", ["password", "db_password", "passcode", "_password"])
 def test_a_password_in_a_query_stays_query_secrets_and_the_link_goes_on(name):
     text = f"https://example.test/login?{name}={rand(12)}&next=/home"
     assert scrub(text) == f"https://example.test/login?{name}=[secret]&next=/home"

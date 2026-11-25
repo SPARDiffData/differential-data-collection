@@ -136,7 +136,7 @@ OURS_SPREAD_ENTROPY = 3.0
 # shell or a link carries on right after them: a credential-named value in a link's query
 # (?password=...&next=..., ?db_password=...), and curl's -u user:password followed by ; & or |.
 QUERY_SECRET = re.compile(
-    r"(?i)[?&](?:(?:[a-z0-9]{1,30}[_.-]){0,4}(?:password|passwd|pwd|passcode)|pass|token|"
+    r"(?i)[?&](?:(?:[a-z0-9]{0,30}[_.-]){0,4}(?:password|passwd|pwd|passcode)|pass|token|"
     r"access_token|refresh_token|id_token|"
     r"api_?key|key|secret|client_secret|auth|session_?id|sid|sig|signature)="
     r"(?P<secret>[^&#\s<>|\"'`()\[\]]+)"
@@ -150,25 +150,29 @@ CURL_USER = re.compile(
 # did some random ones. This takes the value however plain it is: after password, passwd, pwd
 # or passcode (a prefix joined by _ . or -, like DB_PASSWORD, is part of the name), then =, :
 # or :=; or in "my/our/your/the [word] password is ...". Markdown's * _ ~ around the name or
-# "is" are read past. Only the value goes. A name inside a longer word (passwords,
-# password_field, password issue) or in a link's query (QUERY_SECRET's) isn't read.
+# "is" are read past (_Password:_ ..., my password _is_ ...), but not the _ in is_valid.
+# Only the value goes. A name inside a longer word (passwords, password_field, password
+# issue), after a word and _ (the "password" in db_password on its own) or in a link's
+# query (QUERY_SECRET's, ?_password= too) isn't read.
 # A value in quotes goes up to its closing quote, read past \" inside; one without, up to a
 # space or Slack's markup. With nothing after the name on its line, a next line holding one
 # word only is the value (password:\n  hunter2).
 PASSWORD_WORD = r"(?:password|passwd|pwd|passcode)"
 PASSWORD_VALUE = re.compile(
     r"(?i)(?:"
-    r"(?<![A-Za-z0-9?&./_-])(?:[a-z0-9]{1,30}[_.-]){0,4}" + PASSWORD_WORD + r"(?![A-Za-z0-9-])"
-    r"[\"'`*_~]{0,3}[ \t]*(?P<sep>:=|=|:)[*_~]{0,3}"
-    r"|\b(?:my|our|your|the)[ \t]+(?:[\w-]{1,20}[ \t]+)?"
+    r"(?<![A-Za-z0-9?&./-])(?<![A-Za-z0-9?&./-]_)(?:[a-z0-9]{1,30}[_.-]){0,4}"
     + PASSWORD_WORD
-    + r"[*_~]{0,3}[ \t]+is(?![\w-])(?:[ \t]*:)?[*_~]{0,3}"
+    + r"(?![A-Za-z0-9-])[\"'`*_~]{0,3}[ \t]*(?P<sep>:=|=|:)[*_~]{0,3}"
+    r"|(?<![A-Za-z0-9])(?:my|our|your|the)[ \t]+(?:[\w-]{1,20}[ \t]+)?"
+    + PASSWORD_WORD
+    + r"[*_~]{0,3}[ \t]+[*_~]{0,3}is(?![A-Za-z0-9-])(?![*_~]+[A-Za-z0-9])"
+    r"[*_~]{0,3}(?:[ \t]*:)?[*_~]{0,3}"
     r")(?:[ \t]*(?:\"(?P<dq>(?:[^\"\\\n]|\\.)+)\"|'(?P<sq>(?:[^'\\\n]|\\.)+)'"
     r"|`(?P<bq>[^`\n]+)`|(?P<bare>[^\s<>|]+))"
     r"|[ \t]*\r?\n[ \t]*(?P<line>[^\s<>|]+)[ \t]*(?=\r?\n|\Z))"
 )
 # Left off the end of a value without quotes: the end of a sentence or a bracket around it.
-PASSWORD_TRAIL = ".,;:)\"'`"
+PASSWORD_TRAIL = ".,;:)]}\"'`"
 # A value that starts with a placeholder (a person's too: a mention replaced later is still
 # one in the last check), a link or a Markdown link isn't a password, so a scrubbed copy
 # passes: "password: [Person 3] knows it", "password: \"[meeting link] (weekly call)\"". A
@@ -603,10 +607,13 @@ def chosen_passwords(seen: str, low: str) -> list[tuple[int, int]]:
     starts with a placeholder or a link, and a prose word after : or "is"."""
     if "pass" not in low and "pwd" not in low:
         return []
-    found = []
-    for match in PASSWORD_VALUE.finditer(seen):
+    found, at = [], 0
+    # A value that's left alone is read again from its start, so a password inside it
+    # ("[secret] for staging; demo password=owl7") is still found.
+    while match := PASSWORD_VALUE.search(seen, at):
         group = next(g for g in ("dq", "sq", "bq", "bare", "line") if match[g] is not None)
         start, end = match.span(group)
+        at = max(start, match.start() + 1)
         if group in ("bare", "line"):
             while end > start and seen[end - 1] in PASSWORD_TRAIL:
                 end -= 1
@@ -622,6 +629,7 @@ def chosen_passwords(seen: str, low: str) -> list[tuple[int, int]]:
         if plain and value.lower() in PROSE:
             continue
         found.append((start, end))
+        at = match.end()
     return found
 
 
