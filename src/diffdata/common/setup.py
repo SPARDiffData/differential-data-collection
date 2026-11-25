@@ -652,21 +652,22 @@ def key_step(prompter: Prompter, folder: Path) -> None:
             os.chmod(key, 0o600)
 
 
-def install_file(prompter: Prompter, target: Path, data: bytes, label: str) -> None:
+def install_file(prompter: Prompter, target: Path, data: bytes, label: str) -> bool:
     """Put one part of the team file in place, readable only by the producer. A file that's
-    there already is replaced only on a typed yes, and never written through a link."""
+    there already is replaced only on a typed yes, and never written through a link. True if
+    the team file's part is now in place (written, or the same one was there)."""
     if target.is_symlink() or (target.exists() and not target.is_file()):
         prompter.say(f"{target} is a link or a folder, so the {label} wasn't put there.")
-        return
+        return False
     if target.exists():
         if target.read_bytes() == data:
             prompter.say(f"The {label} at {target} is the same as the team file's.")
-            return
+            return True
         if not prompter.yes(
             f"There's a different {label} at {target}. Replace it with the team file's?"
         ):
             prompter.say(f"Kept the {label} that was there.")
-            return
+            return False
         handle, temp_name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.stem}-")
         temp = Path(temp_name)
         try:
@@ -685,7 +686,7 @@ def install_file(prompter: Prompter, target: Path, data: bytes, label: str) -> N
             out = os.open(target, flags, 0o600)
         except FileExistsError:
             prompter.say(f"A {label} appeared at {target} meanwhile. It was kept.")
-            return
+            return False
         try:
             with os.fdopen(out, "wb") as file:
                 file.write(data)
@@ -694,12 +695,25 @@ def install_file(prompter: Prompter, target: Path, data: bytes, label: str) -> N
             raise
         restrict(target)
     prompter.say(f"Saved the {label} at {target}, readable only by you.")
+    return True
 
 
 def install_team_file(prompter: Prompter, folder: Path, team: TeamFile) -> None:
-    install_file(prompter, folder / push.KEY_NAME, team.store_key, "store key")
-    if team.google_client is not None:
-        install_file(prompter, folder / CLIENT_NAME, team.google_client, "Google client file")
+    missing = []
+    if not install_file(prompter, folder / push.KEY_NAME, team.store_key, "store key"):
+        missing.append("store key")
+    if team.google_client is not None and not install_file(
+        prompter, folder / CLIENT_NAME, team.google_client, "Google client file"
+    ):
+        missing.append("Google client file")
+    if missing:
+        # It may be the producer's only copy of the team's key: never offered for deletion
+        # until every part of it is in place.
+        prompter.say(
+            f"Kept the team file at {team.path}, because its {' and '.join(missing)} "
+            f"{'is' if len(missing) == 1 else 'are'} not in place."
+        )
+        return
     if prompter.yes(f"Delete the team file at {team.path}?"):
         team.path.unlink()
         prompter.say("Deleted the team file.")

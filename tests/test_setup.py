@@ -612,9 +612,10 @@ def test_must_refuse_18_a_different_key_is_replaced_only_on_a_typed_yes(home):
     key = write_key(home, data=other)
     before = key.read_bytes()
     answers = fresh_answers()
-    answers[-1:] = ["n", "n"]  # replace the key? no; delete the team file? no
-    run(home, *answers)
+    answers[-1:] = ["n"]  # replace the key? no: so no delete question
+    _, script = run(home, *answers)
     assert key.read_bytes() == before
+    assert "Kept the team file" in script.text
 
     settings(home).unlink()
     answers = fresh_answers()
@@ -642,9 +643,11 @@ def test_must_refuse_18_a_key_place_that_is_a_link_is_never_written_through(home
     folder = home / ".diffdata"
     folder.mkdir()
     (folder / "store-key.json").symlink_to(target)
-    _, script = run(home, *fresh_answers())
+    team = team_file(home)
+    _, script = run(home, *fresh_answers()[:-1], team=team)  # no delete question
     assert target.read_text(encoding="utf-8") == "keep me\n"
     assert "store key wasn't put there" in script.text
+    assert team.exists()
 
 
 def test_must_refuse_18_a_key_write_cut_short_leaves_no_key(home, monkeypatch):
@@ -815,7 +818,7 @@ def test_enter_at_replacing_a_key_asks_again(home):
     key = write_key(home, data=other)
     before = key.read_bytes()
     answers = fresh_answers()
-    answers[-1:] = ["", "n", "n"]  # replace? Enter asks again, then no; delete? no
+    answers[-1:] = ["", "n"]  # replace? Enter asks again, then no (so no delete question)
     _, script = run(home, *answers)
     assert sum(line.startswith("There's a different store key") for line in script.shown) == 2
     assert key.read_bytes() == before
@@ -883,3 +886,55 @@ def test_an_id_typed_by_hand_is_marked_and_lowercase_is_suggested(home):
     assert "GROUP2026 (a channel ID), C00000002 (a channel ID), example-channel" in text
     channels = tomllib.loads(settings(home).read_text())["sources"]["slack_channels"]
     assert channels == ["GROUP2026", "C00000002", "example-channel"]
+
+
+# --- round 6: the team file is kept until every part of it is in place ------------------
+
+
+def test_must_refuse_18_a_kept_different_key_keeps_the_team_file(home):
+    other = {**KEY, "client_email": "other@example-project.iam.gserviceaccount.com"}
+    write_key(home, data=other)
+    team = team_file(home)
+    answers = fresh_answers()
+    answers[-1:] = ["n"]  # replace the key? no
+    _, script = run(home, *answers, team=team)
+    assert team.exists()
+    assert "Kept the team file" in script.text and "store key is not in place" in script.text
+    assert not any(line.startswith("Delete the team file") for line in script.shown)
+
+
+def test_must_refuse_18_a_kept_client_file_keeps_the_team_file(home):
+    folder = home / ".diffdata"
+    folder.mkdir()
+    (folder / "google-client.json").write_text('{"installed": {"client_id": "other"}}\n')
+    team = team_file(home)
+    answers = fresh_answers()
+    answers[-1:] = ["n"]  # replace the client file? no
+    _, script = run(home, *answers, team=team)
+    assert team.exists()
+    assert setup.push.read_key(folder / "store-key.json") == KEY  # the key went in
+    assert "Google client file is not in place" in script.text
+    assert not any(line.startswith("Delete the team file") for line in script.shown)
+
+
+def test_with_every_part_already_the_same_the_delete_is_offered(home):
+    team = team_file(home)
+    run(home, *fresh_answers(), team=team)  # puts both in place; keeps the file
+    settings(home).unlink()
+    answers = fresh_answers()
+    answers[-1] = "y"
+    _, script = run(home, *answers, team=team)
+    assert "is the same as the team file's" in script.text
+    assert not team.exists()
+
+
+def test_a_dm_shaped_capitals_entry_in_config_says_to_retype_in_lowercase(tmp_path):
+    data = (tmp_path / "data").as_posix()
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f'[sources]\nslack_channels = ["DESIGN2024"]\n[local]\ndata_dir = "{data}"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(config_module.ConfigError, match="type it in lowercase") as e:
+        config_module.load_config(path)
+    assert "Entry 1" in str(e.value) and "DESIGN2024" not in str(e.value)

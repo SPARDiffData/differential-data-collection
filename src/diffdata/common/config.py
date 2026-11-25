@@ -250,7 +250,8 @@ def load_config(path: str | Path | None = None) -> Config:
             raise ConfigError(
                 f"Entry {number} in slack_channels in {path} is a direct message or a group DM. "
                 "diffdata never collects those: the other people in them never agreed (CON-5). "
-                "Remove it. Nothing was collected."
+                "Remove it. If it's a channel's name typed in capitals, type it in lowercase. "
+                "Nothing was collected."
             )
         found = channel_id(listed)
         if found is not None:
