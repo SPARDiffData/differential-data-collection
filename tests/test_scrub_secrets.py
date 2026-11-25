@@ -125,6 +125,7 @@ def test_dropping_a_rules_lazy_lead_finds_the_same_secrets():
 WORST = ("a", "A", "0", "-", "=", "/", " ", "\t", "\n", ".", "_", "'", '"', ":", "ey")
 WORST += ("a+", "x+%40", "key=", "curl -H ", "https://a:", "sk-ant-api03-", "-----BEGIN ")
 WORST += ("password=", "db_pwd: ", "my password is ", 'password: "', "a_b-c.", "pwd:\n", '"\\')
+WORST += ("Password is ", "password's ", ". password is ", "\n- wifi pwd is ", "a password is ")
 
 
 def test_no_rule_is_slow_on_long_worst_case_text():
@@ -836,6 +837,21 @@ def test_a_random_run_on_both_sides_of_an_email_or_phone_number_is_checked(text,
             'Password: "[secret] for staging; demo password=[secret]"',
         ),
         ("{{password: abc123}} [pwd: owl7]", "{{password: [secret]}} [pwd: [secret]]"),
+        # #139 item 6: "Password is ..." where a sentence starts, and 's for is.
+        ("Password is hunter2hunter2", "Password is [secret]"),
+        ("wifi password is sunshine99", "wifi password is [secret]"),
+        ("Office wifi password is kite9", "Office wifi password is [secret]"),
+        ("The password's fluffy42", "The password's [secret]"),
+        ("Password\u2019s owl7", "Password\u2019s [secret]"),
+        ("- Password is kite9", "- Password is [secret]"),
+        ("1. Password is kite9", "1. Password is [secret]"),
+        ("Ok. Password is kite9.", "Ok. Password is [secret]."),
+        ("Hi, password is kite9", "Hi, password is [secret]"),
+        ("**Password's** fluffy42", "**Password's** [secret]"),
+        ("Password: simple! (include the !)", "Password: [secret] (include the !)"),
+        ("Password is: abc123", "Password is: [secret]"),
+        ("*Password is* abc123", "*Password is* [secret]"),
+        ("thanks!\nPassword is fluffy42!", "thanks!\nPassword is [secret]"),
     ],
 )
 def test_must_refuse_a_chosen_password_after_its_name_is_replaced(text, scrubbed):
@@ -874,6 +890,15 @@ def test_must_refuse_every_random_16_character_password_is_replaced():
         "See https://example.test/reset-password: done.",
         "Password:\nsee the vault",
         'password: "[meeting link] (weekly call)" and pwd: [Zoom]([meeting link])',
+        # #139 item 6: a sentence about a password, where one starts.
+        "Password is required. Password is wrong. Password is wrong?",
+        "Password is incorrect, password is too short. Password is case-sensitive.",
+        "Which password is better? No password is needed. Each password is hashed.",
+        "A password is required. What password is it?",
+        "if password is None:\n    return password is not None",
+        "The password's length is 12. Your password's strength matters.",
+        "Password is hard to remember, and the password's format is new.",
+        "if (password is expected_password):",
     ],
 )
 def test_a_password_word_in_ordinary_prose_or_before_a_placeholder_is_left_alone(text):
@@ -899,6 +924,59 @@ def test_a_link_after_a_password_name_isnt_taken_as_the_password():
 def test_a_chosen_password_that_looks_random_is_replaced_everywhere_in_the_copy():
     value = rand(14)
     assert scrub(f"pwd: {value}\nlater: {value}") == "pwd: [secret]\nlater: [secret]"
+
+
+@pytest.mark.parametrize(
+    "text, scrubbed",
+    [
+        (
+            "password: hunter2hunter2 then try hunter2hunter2 again",
+            "password: [secret] then try [secret] again",
+        ),
+        ("pwd: hunter2\nlater: hunter2 works", "pwd: [secret]\nlater: [secret] works"),
+        (
+            "my password is fluffy42, and fluffy42 works",
+            "my password is [secret], and [secret] works",
+        ),
+        ("Password is sunshine99. Later: sunshine99", "Password is [secret]. Later: [secret]"),
+        ("hunter2 first, then password=hunter2", "[secret] first, then password=[secret]"),
+        (
+            "Password is **fluffy42**. Try fluffy42 again.",
+            "Password is [secret]. Try [secret] again.",
+        ),
+    ],
+)
+def test_must_refuse_a_plain_chosen_password_is_replaced_where_its_repeated(text, scrubbed):
+    """#139 item 7: a plain password with a letter and a digit, from 6 characters, goes
+    everywhere in the copy, not only where it's named."""
+    assert found(text) == ["a secret"]
+    result = scrub(text)
+    assert result == scrubbed
+    assert found(result) == []
+
+
+def test_a_repeated_password_inside_a_markdown_link_label_still_passes_the_last_check():
+    """The link's label becomes [[secret]], and the link is still read as a link."""
+    text = "Password is [portal1](https://example.test/reset)\npwd: portal1"
+    scrubbed = scrub(text)
+    assert scrubbed == "Password is [[secret]](https://example.test/reset)\npwd: [secret]"
+    assert found(scrubbed) == []
+
+
+@pytest.mark.parametrize(
+    "text, scrubbed",
+    [
+        ("password: sunshine and sunshine today", "password: [secret] and sunshine today"),
+        ("password: abc12 and abc12 later", "password: [secret] and abc12 later"),
+        ("passcode: 482913 and room 482913", "passcode: [secret] and room 482913"),
+        ("Password is required, a required field", "Password is required, a required field"),
+    ],
+)
+def test_a_plain_chosen_password_without_a_letter_and_a_digit_isnt_repeated(text, scrubbed):
+    """A plain word or number, or a value under 6 characters, goes only where it's named,
+    so it isn't wiped all through the copy."""
+    assert scrub(text) == scrubbed
+    assert found(scrubbed) == []
 
 
 # Colab links
