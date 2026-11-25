@@ -32,7 +32,13 @@ def runner(**found):
     return run
 
 
-ALL = {"uv": "uv 0.13.8", "git": "git version 2.54.0", "claude": "2.1.330 (Claude Code)"}
+ALL = {"git": "git version 2.54.0", "claude": "2.1.330 (Claude Code)"}
+
+
+@pytest.fixture(autouse=True)
+def uv_on_path(monkeypatch):
+    """uv is looked for on PATH, never run: found, unless a test says otherwise."""
+    monkeypatch.setattr(check.shutil, "which", lambda tool: f"/made-up/{tool}")
 
 
 def no_app():
@@ -53,12 +59,19 @@ def test_every_tool_found_is_ok():
     assert items["Git"].detail == "git version 2.54.0"
 
 
-@pytest.mark.parametrize(("tool", "name", "fix"), [("git", "Git", GIT_FIX), ("uv", "uv", UV_FIX)])
-def test_a_missing_tool_says_how_to_install_it(tool, name, fix):
-    found = {k: v for k, v in ALL.items() if k != tool}
-    item = by_name(check.tool_items(runner(**found), no_app))[name]
+def test_missing_git_says_how_to_install_it():
+    item = by_name(check.tool_items(runner(claude=ALL["claude"]), no_app))["Git"]
     assert not item.ok
-    assert item.detail == fix
+    assert item.detail == GIT_FIX
+
+
+def test_uv_is_looked_for_never_run(monkeypatch):
+    monkeypatch.setattr(check.shutil, "which", lambda tool: None)
+    run = runner(**ALL)
+    item = by_name(check.tool_items(run, no_app))["uv"]
+    assert not item.ok
+    assert item.detail == UV_FIX
+    assert "uv" not in run.asked
 
 
 def test_no_claude_command_and_no_desktop_app():
@@ -113,7 +126,7 @@ def test_a_claude_version_that_cant_be_read():
 def test_must_refuse_1_only_the_three_version_commands_run(monkeypatch):
     run = runner(**ALL)
     check.tool_items(run, no_app)
-    assert run.asked == ["uv", "git", "claude"]
+    assert run.asked == ["git", "claude"]
 
     calls = []
     monkeypatch.setattr(check.shutil, "which", lambda tool: f"/made-up/{tool}")
@@ -220,7 +233,7 @@ def test_a_probe_that_never_returns_is_left_behind(monkeypatch):
 def make_repo(root: Path) -> Path:
     (root / ".git").mkdir(parents=True)
     (root / ".claude" / "commands").mkdir(parents=True)
-    rules = {"permissions": {"deny": ["mcp__slack__slack_send_message"]}}
+    rules = {"permissions": {"deny": ["mcp__slack__slack_send_message"]}}  # a Slack write tool
     (root / ".claude" / "settings.json").write_text(json.dumps(rules), encoding="utf-8")
     (root / ".claude" / "commands" / "slack-export.md").write_text("x", encoding="utf-8")
     return root
@@ -233,10 +246,30 @@ def test_the_repo_folder_and_a_folder_inside_it_are_ok(tmp_path):
     assert check.repo_item(root / "src").ok
 
 
-@pytest.mark.parametrize("rules", ["{}", '{"permissions": {"deny": []}}', "not json"])
+@pytest.mark.parametrize(
+    "rules",
+    [
+        "{}",
+        '{"permissions": {"deny": []}}',
+        '{"permissions": {"deny": ["mcp__slack__slack_read_channel"]}}',  # no write rule
+        "not json",
+    ],
+)
 def test_a_clone_with_its_rules_emptied_is_not_ok(tmp_path, rules):
     root = make_repo(tmp_path / "clone")
     (root / ".claude" / "settings.json").write_text(rules, encoding="utf-8")
+    assert not check.repo_item(root).ok
+
+
+@POSIX
+def test_rules_that_are_a_link_are_never_read(tmp_path, monkeypatch):
+    root = make_repo(tmp_path / "clone")
+    rules = root / ".claude" / "settings.json"
+    target = tmp_path / "team-a.diffdata-team.json"
+    target.write_text(rules.read_text(encoding="utf-8"), encoding="utf-8")
+    rules.unlink()
+    rules.symlink_to(target)
+    no_opening(monkeypatch, target.name)
     assert not check.repo_item(root).ok
 
 
@@ -357,6 +390,46 @@ def test_a_key_nobody_can_read_says_so(tmp_path):
         assert "can't read" in item.detail
 
 
+def test_a_key_inside_a_repository_is_not_ok(tmp_path):
+    clone = tmp_path / "clone"
+    (clone / ".git").mkdir(parents=True)
+    folder = clone / ".diffdata"
+    folder.mkdir()
+    write_key(folder / "config.toml")
+    item = by_name(check.state_items(folder / "config.toml"))["Store key"]
+    assert not item.ok
+    assert "git repository" in item.detail
+
+
+def test_claude_codes_own_line_is_read_when_a_wrapper_prints_more():
+    output = "Node.js v24.1.0\n2.1.294 (Claude Code)"
+    item = by_name(check.tool_items(runner(**{**ALL, "claude": output}), no_app))["Claude Code"]
+    assert not item.ok
+    assert "2.1.294" in item.detail
+
+
+def test_the_windows_store_apps_local_cache_is_found(tmp_path, monkeypatch):
+    monkeypatch.setattr(check.sys, "platform", "win32")
+    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    package = tmp_path / "Local" / "Packages" / "Claude_made-up"
+    place = package / "LocalCache" / "Roaming" / "Claude" / "claude-code" / "2.1.299"
+    place.mkdir(parents=True)
+    (place / "claude.exe").write_text("x", encoding="utf-8")
+    assert check.desktop_claude_code() == (2, 1, 299)
+
+
+def test_the_gaps_show_when_setup_stops_with_an_os_error(monkeypatch, capsys):
+    setup_cli(monkeypatch, lambda: [Item("Git", False, GIT_FIX)])
+
+    def fails(team_file):
+        raise PermissionError("made-up")
+
+    monkeypatch.setattr(cli.producer_setup, "setup", fails)
+    assert cli.main(["setup"]) == 1
+    assert GIT_FIX in capsys.readouterr().out
+
+
 def test_a_key_with_a_second_hard_link_is_not_ok(tmp_path):
     settings = settings_in(tmp_path)
     key = write_key(settings)
@@ -467,6 +540,27 @@ def test_must_refuse_3_a_check_that_breaks_never_stops_setup(monkeypatch, capsys
     ran = setup_cli(monkeypatch, broken)
     assert cli.main(["setup"]) == 0
     assert ran == [1]
+
+
+def test_the_gaps_show_when_setup_stops_with_an_error(monkeypatch, capsys):
+    setup_cli(monkeypatch, lambda: [Item("Git", False, GIT_FIX)])
+
+    def refuses(team_file):
+        raise cli.producer_setup.SetupError("made-up refusal")
+
+    monkeypatch.setattr(cli.producer_setup, "setup", refuses)
+    assert cli.main(["setup"]) == 1
+    assert GIT_FIX in capsys.readouterr().out
+
+
+def test_a_config_with_a_second_hard_link_isnt_opened(tmp_path, monkeypatch):
+    settings = settings_in(tmp_path)
+    settings.write_text("[sources]\n", encoding="utf-8")
+    os.link(settings, tmp_path / "elsewhere.toml")
+    no_opening(monkeypatch, "config.toml", "elsewhere.toml")
+    item = by_name(check.state_items(settings))["config.toml"]
+    assert not item.ok
+    assert "hard link" in item.detail
 
 
 def test_a_broken_folder_check_keeps_the_tool_gaps(monkeypatch, capsys):

@@ -4,8 +4,8 @@ It prints one line per item: OK, or what's wrong and how to fix it. `diffdata se
 tool and folder checks first, and lists any gap at the end, under "Before you export".
 
 What it refuses (#136, approved on 2026-11-25):
-  1  to change anything: it only reads. It runs `git --version`, `uv --version` and
-     `claude --version`, nothing else, with no network call
+  1  to change anything: it only reads. It runs `git --version` and `claude --version`,
+     nothing else, with no network call (uv is only looked for on PATH, not run)
   2  to read or print the store key's contents, or any team file: it looks at the key's
      place and file mode only
   3  to stop setup for a missing tool setup doesn't need
@@ -28,7 +28,7 @@ from pathlib import Path
 
 from diffdata.common import config as config_module
 from diffdata.common.config import ConfigError, load_config
-from diffdata.common.paths import UnsafeDataDirError, find_git_root
+from diffdata.common.paths import UnsafeDataDirError, find_git_root, synced_by
 
 CLAUDE_MIN = (2, 1, 295)
 CLAUDE_MIN_SHOWN = ".".join(map(str, CLAUDE_MIN))
@@ -111,9 +111,17 @@ def desktop_claude_code() -> tuple[int, int, int] | None:
             places.append(Path(os.environ["APPDATA"]) / "Claude" / "claude-code")
         if os.environ.get("LOCALAPPDATA"):
             # The Microsoft Store (MSIX) install keeps its data in a package folder.
-            store = Path(os.environ["LOCALAPPDATA"]) / "Claude-Data"
+            local = Path(os.environ["LOCALAPPDATA"])
+            store = local / "Claude-Data"
             try:
                 places += [package / "claude-code" for package in store.iterdir()]
+            except OSError:
+                pass
+            try:
+                places += [
+                    package / "LocalCache" / "Roaming" / "Claude" / "claude-code"
+                    for package in (local / "Packages").glob("Claude_*")
+                ]
             except OSError:
                 pass
     found: list[tuple[int, int, int]] = []
@@ -151,8 +159,8 @@ def first_line(text: str) -> str:
 def tool_items(runner: Runner = run_version, desktop: Desktop = desktop_claude_code) -> list[Item]:
     """Python, uv, Git and Claude Code (the `claude` command, or the desktop app's)."""
     items = [Item("Python", True, sys.version.split()[0])]
-    uv = runner("uv")
-    items.append(Item("uv", True, first_line(uv)) if uv else Item("uv", False, UV_FIX))
+    uv = shutil.which("uv")
+    items.append(Item("uv", True, uv) if uv else Item("uv", False, UV_FIX))
     git = runner("git")
     items.append(Item("Git", True, first_line(git)) if git else Item("Git", False, GIT_FIX))
     items.append(claude_item(runner("claude"), desktop))
@@ -161,7 +169,12 @@ def tool_items(runner: Runner = run_version, desktop: Desktop = desktop_claude_c
 
 def claude_item(claude: str | None, desktop: Desktop) -> Item:
     """The `claude` command if it's new enough, else the desktop app's Claude Code."""
-    version = parse_version(claude) if claude else None
+    if claude:
+        # A wrapper may print other versions first (Node's, say): use Claude Code's line.
+        named = [line for line in claude.splitlines() if "claude" in line.lower()]
+        version = parse_version(named[0] if named else claude)
+    else:
+        version = None
     if version is not None and version >= CLAUDE_MIN:
         return Item("Claude Code", True, ".".join(map(str, version)))
     app = desktop()
@@ -197,13 +210,18 @@ def claude_item(claude: str | None, desktop: Desktop) -> Item:
 
 
 def has_rules(settings_json: Path) -> bool:
-    """The repo's .claude/settings.json, with its deny rules: not an empty or edited-away one."""
+    """The repo's .claude/settings.json, with its deny rules on Slack's write tools: not an
+    empty or edited-away one. Read only if it's a small plain file with one link, so a link
+    to a key or team file, or a pipe, is never read."""
     try:
+        info = settings_json.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 1_000_000:
+            return False
         rules = json.loads(settings_json.read_text(encoding="utf-8"))
         deny = rules["permissions"]["deny"]
     except (OSError, ValueError, KeyError, TypeError):
         return False
-    return isinstance(deny, list) and any("slack" in str(rule).lower() for rule in deny)
+    return isinstance(deny, list) and any("slack_send" in str(rule).lower() for rule in deny)
 
 
 def repo_item(folder: Path | None = None) -> Item:
@@ -228,6 +246,15 @@ def state_items(settings: Path | None = None) -> list[Item]:
                 "config.toml",
                 False,
                 f"{settings} is a link: save config.toml there as a plain file. (Not opened.)",
+            )
+        )
+    elif settings.is_file() and settings.stat().st_nlink != 1:
+        items.append(
+            Item(
+                "config.toml",
+                False,
+                f"{settings} has a second hard link: save config.toml there as a plain file. "
+                "(Not opened.)",
             )
         )
     elif not settings.is_file():
@@ -273,6 +300,18 @@ def state_items(settings: Path | None = None) -> list[Item]:
     if not stat.S_ISREG(info.st_mode):
         items.append(
             Item("Store key", False, f"{key} is a link or a folder: save the key as a plain file.")
+        )
+    elif any(
+        find_git_root(place.parent) is not None or synced_by(place) is not None
+        for place in (key.absolute(), key.resolve())
+    ):
+        items.append(
+            Item(
+                "Store key",
+                False,
+                f"{key} is inside a git repository or a synced folder, where it could be shared "
+                "by mistake: move ~/.diffdata/ out of it.",
+            )
         )
     elif info.st_nlink != 1:
         items.append(

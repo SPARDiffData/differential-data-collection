@@ -214,10 +214,14 @@ def run_setup(args: argparse.Namespace) -> int:
         return code
     except (producer_setup.SetupError, ConfigError, UnsafeDataDirError) as e:
         print(f"diffdata setup: {e}", file=sys.stderr)
+        for line in producer_check.before_export(found):
+            print(line)
         return 1
     except OSError as e:
         # setup() says what it wrote; this is the last net, with no traceback.
         print(f"diffdata setup: stopped: {e}", file=sys.stderr)
+        for line in producer_check.before_export(found):
+            print(line)
         return 1
     except (KeyboardInterrupt, EOFError):
         print("\ndiffdata setup: stopped. A config.toml is changed only after your last yes.")
