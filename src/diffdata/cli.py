@@ -1,8 +1,8 @@
 """The `diffdata` command.
 
-`setup` (ENG-1, CON-1, STO-1), `discover slack` (DIS-1), `consent` (CON-1,
-CON-3), `collect google-docs` (COL-4, COL-5), `scrub` (SCR-1, SCR-2) and `push` (STO-1, STO-2,
-STO-3) are built. Any other subcommand
+`setup` (ENG-1, CON-1, STO-1), `admin add-team` (STO-1, for the project team), `discover
+slack` (DIS-1), `consent` (CON-1, CON-3), `collect google-docs` (COL-4, COL-5), `scrub` (SCR-1,
+SCR-2) and `push` (STO-1, STO-2, STO-3) are built. Any other subcommand
 added before it's built is a stub that names the requirement IDs (docs/requirements.md) its
 feature Issue will build.
 """
@@ -19,6 +19,7 @@ from diffdata.common.paths import UnsafeDataDirError
 from diffdata.consent import review
 from diffdata.discover import slack_export, slack_inbox
 from diffdata.scrub import run as scrub_run
+from diffdata.store import admin as store_admin
 from diffdata.store import push as store_push
 from diffdata.store.backend import StoreError
 
@@ -27,6 +28,10 @@ COMMANDS = {
     "setup": (
         "Answer a few questions in your own terminal, and diffdata writes config.toml for you.",
         "ENG-1, CON-1, STO-1",
+    ),
+    "admin": (
+        "For the project team: set up a pilot team's folder, upload key and team file.",
+        "STO-1",
     ),
     "discover": ("Find Slack messages and the sources they reference.", "DIS-1, DIS-2, DIS-3"),
     "consent": (
@@ -79,10 +84,48 @@ def build_parser() -> argparse.ArgumentParser:
                 steps.add_parser(step, help=step_help, description=step_help)
         if name == "collect":
             add_collect_sources(command)
+        if name == "admin":
+            add_admin_steps(command)
         if name == "setup":
             team_help = "The team file the project team sent you (<team>.diffdata-team.json)."
             command.add_argument("team_file", nargs="?", metavar="TEAM_FILE", help=team_help)
     return parser
+
+
+def add_admin_steps(admin: argparse.ArgumentParser) -> None:
+    steps = admin.add_subparsers(dest="step", metavar="<step>", required=True)
+    add_help = (
+        "Make a team's managed folder, its upload account and key, and the producers' read "
+        "access, then write <team>.diffdata-team.json (#132). Run signed in to gcloud as the "
+        "Cloud project's owner."
+    )
+    add = steps.add_parser("add-team", help=add_help, description=add_help)
+    add.add_argument("team", metavar="TEAM", help="The team's folder name: letters, digits, - _.")
+    add.add_argument("--bucket", required=True, help="The pilot's bucket.")
+    add.add_argument("--project", required=True, help="The pilot's short project name.")
+    add.add_argument("--gcp-project", required=True, help="The Google Cloud project ID.")
+    add.add_argument(
+        "--producer",
+        action="append",
+        default=[],
+        metavar="EMAIL",
+        help="A producer's Google account, given read access. Repeat for each producer.",
+    )
+    add.add_argument(
+        "--out",
+        default=store_admin.DEFAULT_OUT,
+        help=f"Where to write the team file (default {store_admin.DEFAULT_OUT}).",
+    )
+    add.add_argument(
+        "--optout-form",
+        metavar="LINK",
+        help="The shared opt-out form's pre-filled link, ending in the team field's '='.",
+    )
+    add.add_argument(
+        "--google-client",
+        metavar="PATH",
+        help="The Desktop app client file, to put in the team file.",
+    )
 
 
 def add_collect_sources(collect: argparse.ArgumentParser) -> None:
@@ -123,6 +166,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "setup":
         return run_setup(args)
+    if args.command == "admin":
+        return run_admin(args)
     if args.command == "discover":
         return run_slack_step(args)
     if args.command == "consent":
@@ -159,6 +204,39 @@ def run_setup(args: argparse.Namespace) -> int:
         return 1
     except (KeyboardInterrupt, EOFError):
         print("\ndiffdata setup: stopped. A config.toml is changed only after your last yes.")
+        return 130
+
+
+def run_admin(args: argparse.Namespace) -> int:
+    # It changes the Cloud project and makes a key, so only a person typing may answer.
+    if not review.in_terminal(sys.stdin, sys.stdout):
+        print(
+            "diffdata admin: run this yourself, in your own terminal. It changes the Cloud "
+            "project, and asks you before it does.",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        client = args.google_client
+        team = store_admin.Team(
+            name=args.team,
+            bucket=args.bucket,
+            project=args.project,
+            gcp_project=args.gcp_project,
+            producers=tuple(args.producer),
+            out=Path(args.out).expanduser(),
+            optout_form=args.optout_form,
+            google_client=store_admin.read_client(Path(client)) if client else None,
+        )
+        return store_admin.add_team(team, ask_yes=producer_setup.Prompter().yes)
+    except store_admin.Cancelled as e:
+        print(f"\ndiffdata admin: {e}", file=sys.stderr)
+        return 130
+    except store_admin.AdminError as e:
+        print(f"diffdata admin: {e}", file=sys.stderr)
+        return 1
+    except (KeyboardInterrupt, EOFError):
+        print("\ndiffdata admin: stopped. The lines above say what was done.")
         return 130
 
 

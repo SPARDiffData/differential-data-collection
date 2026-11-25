@@ -439,3 +439,36 @@ def test_the_team_file_rules_are_anchored_at_the_filesystem_root():
     # No Read or Edit rule for a team file without `//`: it would cover the repo folder only.
     loose = [r for r in rules if "diffdata-team" in r and r.startswith(("Read(", "Edit("))]
     assert all(rule.startswith(("Read(//", "Edit(//")) for rule in loose)
+
+
+# #132: `diffdata admin add-team` changes the Cloud project and makes a team's key, so only the
+# project team runs it, in their own terminal. It refuses outside a terminal, and these rules
+# stop Claude's shell tools running it or importing its code.
+ADMIN_RUNS = [
+    "Bash(uv run diffdata admin add-team team-a --bucket example-bucket)",
+    "Bash(echo y | script -q /dev/null uv run diffdata admin add-team team-a)",
+    "Bash(.venv/bin/diffdata admin add-team team-a)",
+    "Bash(uv run python -m diffdata admin add-team team-a)",
+    'Bash(uv run python -c "from diffdata.store import admin")',
+    'Bash(uv run python -c "import diffdata.store.admin")',
+    "PowerShell(uv run diffdata admin add-team team-a)",
+    "PowerShell(.venv\\Scripts\\diffdata.exe admin add-team team-a)",
+    'PowerShell(uv run python -c "from diffdata.store import admin")',
+    "Read(//Users/example/diffdata-teams/team-a.diffdata-team.json)",
+    "Bash(ls -l ~/diffdata-teams/team-a.diffdata-team.json)",
+]
+ADMIN_DEVELOPMENT_RUNS = [
+    "Bash(uv run pytest tests/test_admin.py)",
+    "Bash(git add src/diffdata/store/admin.py)",
+    "Bash(uv run ruff check src/diffdata/store/admin.py)",
+]
+
+
+@pytest.mark.parametrize("command", ADMIN_RUNS)
+def test_claudes_tools_cant_run_admin_or_read_what_it_writes(command):
+    assert denied(command)
+
+
+@pytest.mark.parametrize("command", ADMIN_DEVELOPMENT_RUNS)
+def test_working_on_the_admin_code_isnt_blocked(command):
+    assert not denied(command)
