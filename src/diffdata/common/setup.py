@@ -733,7 +733,8 @@ def notice_entry(table: dict, entry: str) -> tuple[str, object] | None:
 def notice_time(ts: str) -> str:
     """A notice's time from its link's ts, in this computer's time zone, as Slack shows it."""
     when = datetime.fromtimestamp(int(ts), tz=UTC).astimezone()
-    return when.strftime("%Y-%m-%d %H:%M %Z").strip()
+    # An offset, not %Z: Windows gives long zone names, such as "W. Europe Standard Time".
+    return when.strftime("%Y-%m-%d %H:%M UTC%z")
 
 
 def describe_notice(value: object, space: str = "") -> str:
@@ -757,6 +758,13 @@ def linked_channel(value: object) -> str | None:
     """The channel ID in a notice link, or None for "none" or anything else."""
     link = NOTICE_LINK.fullmatch(value.strip()) if isinstance(value, str) else None
     return link[1] if link else None
+
+
+def same_notice(one: object, other: object) -> bool:
+    """Whether two notice values name the same message, as config.py reads them."""
+    a = NOTICE_LINK.fullmatch(one.strip()) if isinstance(one, str) else None
+    b = NOTICE_LINK.fullmatch(other.strip()) if isinstance(other, str) else None
+    return a is not None and b is not None and a.groups() == b.groups()
 
 
 def check_notice(text: str, entry: str, space: str, others: dict[str, str]) -> str:
@@ -818,10 +826,14 @@ def notices_step(prompter: Prompter, channels: list[str], space: str, table: dic
             continue
         old_link = linked_channel(found[1]) if found else None
         new[found[0] if found else entry] = answer
-        if old_link and not CHANNEL_ID.fullmatch(entry) and new.get(old_link) == found[1]:
-            # The same notice was also keyed by the channel's ID: change it too, or the two
-            # entries would disagree and the build would stop.
-            new[old_link] = answer
+        if old_link and not CHANNEL_ID.fullmatch(entry) and linked_channel(answer) == old_link:
+            # The same notice was also keyed by the channel's ID (or a link to it): change it
+            # too, or the two entries would disagree and the build would stop. Only for a new
+            # link to that same channel: a "none" or another channel's link is never written
+            # under that ID unseen, and the build stops on the mismatch instead.
+            for key, value in list(new.items()):
+                if channel_id(key) == old_link and same_notice(value, found[1]):
+                    new[key] = answer
         linked = linked_channel(answer)
         if linked and not CHANNEL_ID.fullmatch(entry):
             known[entry] = linked
@@ -1011,11 +1023,8 @@ def show_summary(
     table = new["sources"].get(NOTICES_KEY, {})
     for number, entry in enumerate(channels):
         found = notice_entry(table, entry)
-        notice = (
-            describe_notice(found[1], new["sources"]["slack_workspace_url"])
-            if found
-            else (NOT_ADDED)
-        )
+        space = new["sources"]["slack_workspace_url"]
+        notice = describe_notice(found[1], space) if found else NOT_ADDED
         label = "  Notices:         " if number == 0 else "                   "
         prompter.say(f"{label} {shown_channel(entry)}: {notice}")
     prompter.say(f"  Workspace:        {new['sources']['slack_workspace_url']}")

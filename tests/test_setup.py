@@ -1484,6 +1484,55 @@ def test_a_new_link_also_changes_the_same_notice_keyed_by_id(home):
     setup.push.settings(config_module.load_config(settings(home)))
 
 
+def test_a_link_to_another_channel_never_changes_the_id_keyed_entry(home):
+    path = existing(home)
+    text = path.read_text(encoding="utf-8").replace(
+        'slack_notices.old-channel = "none"',
+        f'slack_notices.old-channel = "{KEPT["C00000002"]}"',
+    )
+    path.write_text(text, encoding="utf-8")
+    code, _ = rerun(home, "old-channel", OTHER_CHANNEL)
+    assert code == 0
+    assert notices(home) == {"old-channel": OTHER_CHANNEL, "C00000002": KEPT["C00000002"]}
+
+
+def test_none_never_changes_the_id_keyed_entry(home):
+    path = existing(home)
+    text = path.read_text(encoding="utf-8").replace(
+        'slack_notices.old-channel = "none"',
+        f'slack_notices.old-channel = "{KEPT["C00000002"]}"',
+    )
+    path.write_text(text, encoding="utf-8")
+    code, _ = rerun(home, "old-channel", "none")
+    assert code == 0
+    assert notices(home) == {"old-channel": "none", "C00000002": KEPT["C00000002"]}
+
+
+def test_a_link_keyed_entry_with_the_same_notice_is_changed_too(home):
+    path = existing(home)
+    text = (
+        path.read_text(encoding="utf-8")
+        .replace(
+            'slack_notices.old-channel = "none"',
+            f'slack_notices.old-channel = "{KEPT["C00000002"]}"',
+        )
+        .replace(
+            f'slack_notices.C00000002 = "{KEPT["C00000002"]}"',
+            f'slack_notices."{LINK}" = "{KEPT["C00000002"]}/"',
+        )
+    )
+    path.write_text(text, encoding="utf-8")
+    code, _ = rerun(home, "old-channel", NOTICE)
+    assert code == 0
+    assert notices(home) == {"old-channel": NOTICE, LINK: NOTICE}
+
+
+def test_a_notice_time_has_a_short_offset_not_a_zone_name():
+    assert setup.notice_time("1700000000").rsplit(" ", 1)[1].startswith("UTC+") or (
+        setup.notice_time("1700000000").rsplit(" ", 1)[1].startswith("UTC-")
+    )
+
+
 def test_a_channel_named_like_the_opt_out_list_can_have_a_notice(home):
     code, _ = first(home, "none", channels="opt-out-feedback")
     assert code == 0
