@@ -8,6 +8,7 @@ Names are examples only.
 
 import json
 import os
+import re
 import socket
 import stat
 import tomllib
@@ -1478,9 +1479,11 @@ def test_a_new_link_also_changes_the_same_notice_keyed_by_id(home):
         f'slack_notices.old-channel = "{KEPT["C00000002"]}"',
     )
     path.write_text(text, encoding="utf-8")
-    code, _ = rerun(home, "old-channel", NOTICE)
+    code, script = rerun(home, "old-channel", NOTICE)
     assert code == 0
     assert notices(home) == {"old-channel": NOTICE, "C00000002": NOTICE}
+    assert "old-channel: the notice posted" in script.text
+    assert ", also under its channel ID" in script.text
     setup.push.settings(config_module.load_config(settings(home)))
 
 
@@ -1528,9 +1531,7 @@ def test_a_link_keyed_entry_with_the_same_notice_is_changed_too(home):
 
 
 def test_a_notice_time_has_a_short_offset_not_a_zone_name():
-    assert setup.notice_time("1700000000").rsplit(" ", 1)[1].startswith("UTC+") or (
-        setup.notice_time("1700000000").rsplit(" ", 1)[1].startswith("UTC-")
-    )
+    assert re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d UTC[+-]\d{4}", setup.notice_time("1700000000"))
 
 
 def test_a_channel_named_like_the_opt_out_list_can_have_a_notice(home):

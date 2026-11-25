@@ -65,7 +65,7 @@ reworded for the team file, and 16 as Lachlan changed it, approved on 2026-11-25
       folder, workspace, team values, handle) is on the summary screen before the yes, with
       the pseudonym line (revision 5, approved on 2026-11-25)
 
-Each channel's notice link (revision 6), after the channels question:
+Each channel's notice link (revision 6, approved on 2026-11-25), after the channels question:
   20  to write "none" by itself: Enter leaves the entry out; only a typed none writes it
   21  a link that isn't a Slack message link, or is for another channel or workspace: it's
       asked again, and the link isn't printed
@@ -1025,6 +1025,13 @@ def show_summary(
         found = notice_entry(table, entry)
         space = new["sources"]["slack_workspace_url"]
         notice = describe_notice(found[1], space) if found else NOT_ADDED
+        linked = linked_channel(found[1]) if found and not CHANNEL_ID.fullmatch(entry) else None
+        if linked and any(
+            key != found[0] and channel_id(key) == linked and same_notice(value, found[1])
+            for key, value in table.items()
+        ):
+            # Written under the channel's ID too (notices_step): on the screen as well (24).
+            notice += ", also under its channel ID"
         label = "  Notices:         " if number == 0 else "                   "
         prompter.say(f"{label} {shown_channel(entry)}: {notice}")
     prompter.say(f"  Workspace:        {new['sources']['slack_workspace_url']}")
