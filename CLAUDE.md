@@ -29,7 +29,7 @@ If a change would break one of these, or you aren't sure, stop and ask the user.
 - Write PR descriptions a non-coder can follow, using the PR template.
 - Don't change `docs/requirements.md` unless the Issue asks. Requirement IDs never change once used.
 - Several sessions can work at once, each in its own folder (a git worktree) on its own branch. Only one session pushes to a branch. Only one `/slack-export` runs at a time, because every session on the machine shares the data folder.
-- Never run `diffdata consent review` or `withdraw`, or `diffdata setup`: a person types those in their own terminal. Never change `approvals.jsonl` or `config.toml` in `~/.diffdata/` either, by any route: what they hold is the user's opt-in. `.claude/settings.json` refuses Claude's file tools on those two files, and any shell command whose text names the consent commands or imports `consent.review` or `consent.approvals`, so pass a commit message, PR text or comment that mentions them from a file (`git commit -F`, `gh pr comment --body-file`).
+- Never run `diffdata consent review` or `withdraw`, or `diffdata setup`, or `diffdata admin`: a person types those in their own terminal. Never change `approvals.jsonl` or `config.toml` in `~/.diffdata/` either, by any route: what they hold is the user's opt-in. `.claude/settings.json` refuses Claude's file tools on those two files, and any shell command whose text names the consent commands or imports `consent.review` or `consent.approvals`, so pass a commit message, PR text or comment that mentions them from a file (`git commit -F`, `gh pr comment --body-file`).
 
 ## Real data in a session
 
@@ -72,6 +72,7 @@ src/diffdata/
   collect/google_doc.py, gdocs_changelog.py   the reader: what any fetch saved, in the shared format, with the changelog replayed
   scrub/            `diffdata scrub` (SCR-1, SCR-2): scrubbed copies in <data>/scrubbed/, built all or nothing (run.py), with the people list in <data>/private/ (people.py), the replacements and last check in text.py, and secrets, meeting links and phone numbers found by secrets.py from gitleaks' pinned rules in scrub/rules/
   store/            `diffdata push` (STO-1 to STO-3, STO-9, STO-11): sends the passed scrubbed copies, create-only, through one `Store` interface (backend.py); the Google Cloud Storage version is gcs.py
+  store/admin.py    `diffdata admin add-team`, for the project team (#132): a team's managed folder, upload account and key, and its team file, through `gcloud`
   common/           shared pieces; paths.py holds the data folder guards, config.py reads config.toml
   common/documents.py   the shared document format (ORG-2): raw, versions, event log, clean copies
   common/setup.py   `diffdata setup` (#130): reads the team file, asks for the channels, shows every value on one screen before writing config.toml, and puts the store key in place; it refuses to run anywhere but a terminal a person types in

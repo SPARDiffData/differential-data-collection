@@ -1,0 +1,565 @@
+"""`diffdata admin add-team` (STO-1). Plan: Issue #132, decisions 1, 2, 3 and 5, PR 2.
+
+The project team runs it once per pilot team, in their own terminal, signed in to `gcloud`
+as the Cloud project's owner. It does what was done by hand for the first test folder:
+
+  1. makes a service account for the team (its upload account), with no project role;
+  2. makes the team's managed folder in the bucket, and three folders inside it:
+     approved/ and not-approved/ (where `diffdata push` writes) and _config/ (where
+     `diffdata admin optouts` will write the opted-out list, #132 PR 3);
+  3. grants the upload account Storage Object Creator on approved/ and not-approved/, and
+     Storage Object Viewer on _config/; and grants each producer's Google account Storage
+     Object Viewer on the team's folder;
+  4. makes the account's key, and writes one team file, <team>.diffdata-team.json, that
+     `diffdata setup` reads (#131).
+
+Then it prints the team's pre-filled opt-out link and the channel notice (decision 5).
+
+Why Creator on approved/ and not-approved/, not on the whole folder: a grant on a managed
+folder also covers every folder inside it. Creator on the whole folder would let the team's
+key add _config/opted-out.json before the project team does, and so choose the opt-out list.
+Push writes only under those two folders (store/push.py, Settings.prefix).
+
+All changes go through the `gcloud` command, so there's no new dependency. Nothing changes
+before the project team has seen the plan and typed y.
+
+What it refuses (#132's must-refuse list for add-team, approved 2026-11-25):
+  1  to grant the upload account anything but Object Creator on its own folder (here, its
+     approved/ and not-approved/ parts) and Object Viewer on <folder>/_config/. It never
+     changes the project's or the bucket's policy, and grants producers Object Viewer only
+  2  to touch another team's folder: if the team's folder, or one of its four folders,
+     already has a member this run wouldn't add, or the team's folder holds any other managed
+     folder (it would get the new grants by inheritance), it stops before changing anything.
+     It looks again after the yes. An upload account of that name made for another team or
+     bucket, or one that already has a key, stops it too
+  3  to print the key: the run reports counts and the team file's path only. gcloud runs with
+     its logs off, and its messages from the key step aren't shown
+  4  to write the team file inside a git repository or a synced folder, or readable by anyone
+     but this user; it never replaces a team file that's there. It runs on macOS and Linux
+     only, where a file mode keeps the file private. If the team file can't be written, it
+     deletes the key it just made
+  5  a folder (the team name), project or bucket that `push` would refuse
+"""
+
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import tempfile
+import time
+import urllib.parse
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from diffdata.common import setup as producer_setup
+from diffdata.common.paths import find_git_root, synced_by
+from diffdata.store import push
+
+CREATOR = "roles/storage.objectCreator"
+VIEWER = "roles/storage.objectViewer"
+PARTS = (push.APPROVED, push.NOT_APPROVED)
+CONFIG = "_config"
+DEFAULT_OUT = "~/diffdata-teams"
+TEAM_SUFFIX = ".diffdata-team.json"
+# A service account ID: 6 to 30 lowercase letters, digits and -, starting with a letter.
+ACCOUNT_ID = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]")
+GCP_PROJECT = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]")
+EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+NOT_FOUND = re.compile(r"\b404\b|not[ _]?found|does not exist", re.IGNORECASE)
+NOTHING_CHANGED = "Nothing was changed."
+WINDOWS = os.name == "nt"
+# gcloud's own logs could hold the key-making answer, which holds the key: keep them off.
+QUIET_GCLOUD = {
+    "CLOUDSDK_CORE_LOG_HTTP": "false",
+    "CLOUDSDK_CORE_DISABLE_FILE_LOGGING": "true",
+    "CLOUDSDK_CORE_VERBOSITY": "error",
+}
+NOTICE = """\
+Placeholder wording, until the notice text is agreed:
+
+  Hi all. I've signed this channel up for the Differential Data research project (SPAR).
+  The project collects the working messages behind research. My copies are scrubbed of
+  names, secrets and links before they leave my computer.
+  If you don't want your messages included, fill in this form within 7 days of this post:
+  {link}
+  Messages from people who opt out are left out of everything the project keeps."""
+
+
+class AdminError(Exception):
+    """add-team can't go on. The message says what was done so far, and quotes no key."""
+
+
+Runner = Callable[[list[str]], subprocess.CompletedProcess]
+
+
+def run_gcloud(args: list[str]) -> subprocess.CompletedProcess:
+    """Run one gcloud command, its output captured, never shown as is."""
+    found = shutil.which("gcloud")
+    if found is None:
+        raise AdminError(f"gcloud isn't installed, or isn't on PATH. {NOTHING_CHANGED}")
+    return subprocess.run(
+        [found, *args],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        env={**os.environ, **QUIET_GCLOUD},
+    )
+
+
+@dataclass(frozen=True)
+class Team:
+    """What add-team was asked to set up, checked."""
+
+    name: str
+    bucket: str
+    project: str
+    gcp_project: str
+    producers: tuple[str, ...]
+    out: Path
+    optout_form: str | None = None
+    google_client: dict | None = None
+
+    @property
+    def account(self) -> str:
+        return f"dd-{self.name.lower().replace('_', '-')}"
+
+    @property
+    def account_email(self) -> str:
+        return f"{self.account}@{self.gcp_project}.iam.gserviceaccount.com"
+
+    @property
+    def display_name(self) -> str:
+        # Holds the bucket too, so a second run for another bucket can't reuse the account.
+        return f"diffdata upload: {self.bucket}/{self.name}"
+
+    @property
+    def team_file(self) -> Path:
+        return self.out / f"{self.name}{TEAM_SUFFIX}"
+
+    def folder(self, part: str = "") -> str:
+        return f"gs://{self.bucket}/{self.name}/" + (f"{part}/" if part else "")
+
+    def grants(self) -> dict[str, set[tuple[str, str]]]:
+        """Every grant this run makes: folder -> {(role, member)}. Nothing else is granted."""
+        upload = f"serviceAccount:{self.account_email}"
+        found = {self.folder(): {(VIEWER, f"user:{p}") for p in self.producers}}
+        for part in PARTS:
+            found[self.folder(part)] = {(CREATOR, upload)}
+        found[self.folder(CONFIG)] = {(VIEWER, upload)}
+        return found
+
+
+def check_team(team: Team) -> Team:
+    """Item 5, and the rest of what add-team needs, checked before anything is asked."""
+    if WINDOWS:
+        # A file mode doesn't keep a team file private on Windows (item 4).
+        raise AdminError(f"Run add-team on macOS or Linux. {NOTHING_CHANGED}")
+    try:
+        producer_setup.check_team(
+            {"bucket": team.bucket, "folder": team.name, "project": team.project}
+        )
+    except producer_setup.SetupError as e:
+        raise AdminError(
+            f"{str(e).replace('folder ', 'The team name ', 1)} {NOTHING_CHANGED}"
+        ) from None
+    if not ACCOUNT_ID.fullmatch(team.account):
+        raise AdminError(
+            f"The team name makes the upload account name {team.account}, which Google refuses: "
+            f"use 3 to 27 letters, digits, - and _, ending in a letter or digit. {NOTHING_CHANGED}"
+        )
+    if len(team.display_name) > 100:
+        raise AdminError(f"The bucket and team names are too long together. {NOTHING_CHANGED}")
+    if not GCP_PROJECT.fullmatch(team.gcp_project):
+        raise AdminError(f"--gcp-project isn't a Google Cloud project ID. {NOTHING_CHANGED}")
+    if not team.producers:
+        raise AdminError(f"Give each producer's Google account with --producer. {NOTHING_CHANGED}")
+    for producer in team.producers:
+        if not EMAIL.fullmatch(producer):
+            raise AdminError(f"--producer {producer!r} isn't one email address. {NOTHING_CHANGED}")
+    if team.optout_form is not None and not (
+        team.optout_form.startswith("https://") and team.optout_form.endswith("=")
+    ):
+        raise AdminError(
+            "--optout-form must be the form's pre-filled link, up to and including the team "
+            f"field's '=' (https://…&entry.123=). {NOTHING_CHANGED}"
+        )
+    if team.google_client is not None:
+        installed = team.google_client.get("installed")
+        if not isinstance(installed, dict) or not isinstance(installed.get("client_id"), str):
+            raise AdminError(f"--google-client isn't a Desktop app client file. {NOTHING_CHANGED}")
+    check_out(team)
+    return team
+
+
+def check_out(team: Team) -> None:
+    """Item 4: the team file's folder is outside any repository or synced folder, and there's
+    no team file there already."""
+    out = team.out
+    for candidate in (out.absolute(), out.resolve()):
+        if find_git_root(candidate) is not None or synced_by(candidate) is not None:
+            raise AdminError(
+                f"{out} is inside a git repository or a synced folder, where the team file "
+                f"could be shared by mistake. Choose another --out. {NOTHING_CHANGED}"
+            )
+    if out.exists() and not out.is_dir():
+        raise AdminError(f"{out} isn't a folder. {NOTHING_CHANGED}")
+    if os.path.lexists(team.team_file):
+        raise AdminError(
+            f"There's a team file at {team.team_file} already. Move it away first: add-team "
+            f"never replaces one. {NOTHING_CHANGED}"
+        )
+
+
+def read_client(path: Path) -> dict:
+    """The Google client file the producer's sign-in uses. Never shown."""
+    raw = push.read_plain(path.expanduser().parent, path.name)
+    try:
+        data = json.loads(raw.decode("utf-8")) if raw and len(raw) < 64_000 else None
+    except (UnicodeDecodeError, ValueError):
+        data = None
+    if not isinstance(data, dict):
+        raise AdminError(f"--google-client isn't a plain JSON file. {NOTHING_CHANGED}")
+    return data
+
+
+@dataclass
+class AddTeam:
+    """One run. `gcloud` and `sleep` are replaced in tests; `done` lists what changed, so a
+    run that stops partway says what to undo."""
+
+    team: Team
+    gcloud: Runner = run_gcloud
+    sleep: Callable[[float], None] = time.sleep
+    done: list[str] = field(default_factory=list)
+
+    def call(self, *args: str, what: str) -> subprocess.CompletedProcess:
+        result = self.gcloud([*args, "--quiet"])
+        if result.returncode != 0:
+            raise AdminError(self.stopped(f"{what} failed: {last_line(result.stderr)}"))
+        return result
+
+    def stopped(self, why: str) -> str:
+        if not self.done:
+            return f"{why}. {NOTHING_CHANGED}"
+        return f"{why}. Changed so far, to undo by hand if you won't run again: " + "; ".join(
+            self.done
+        )
+
+    def exists(self, *args: str, what: str) -> dict | None:
+        """A describe or get command's JSON, or None if the thing isn't there."""
+        result = self.gcloud([*args, "--format=json", "--quiet"])
+        if result.returncode != 0:
+            if NOT_FOUND.search(result.stderr or ""):
+                return None
+            raise AdminError(self.stopped(f"Couldn't check {what}: {last_line(result.stderr)}"))
+        try:
+            return json.loads(result.stdout or "{}")
+        except ValueError:
+            raise AdminError(self.stopped(f"gcloud's answer about {what} isn't JSON")) from None
+
+    def listing(self, *args: str, what: str) -> list:
+        """A list command's JSON. "Not found" is an empty list; any other failure stops."""
+        found = self.exists(*args, what=what)
+        if found is None:
+            return []
+        if not isinstance(found, list):
+            raise AdminError(self.stopped(f"gcloud's answer about {what} isn't a list"))
+        return found
+
+    # --- looking first: nothing below changes anything ---------------------------------------
+
+    def look(self) -> tuple[bool, list[str]]:
+        """Whether the account is there already, and which folders are. Stops on anything
+        this run didn't make (item 2)."""
+        team = self.team
+        # Not `describe`: for an account that isn't there, Google can answer "permission denied".
+        accounts = self.listing(
+            "iam", "service-accounts", "list", f"--project={team.gcp_project}",
+            f"--filter=email={team.account_email}", what="the upload account",
+        )  # fmt: skip
+        email = team.account_email
+        matching = [a for a in accounts if isinstance(a, dict) and a.get("email") == email]
+        account = matching[0] if matching else None
+        if account is not None:
+            if account.get("displayName") != team.display_name:
+                raise AdminError(
+                    f"There's an account named {team.account} already, not made by add-team "
+                    f"for this team. Choose another team name. {NOTHING_CHANGED}"
+                )
+            keys = self.exists(
+                "iam", "service-accounts", "keys", "list", f"--iam-account={team.account_email}",
+                f"--project={team.gcp_project}", "--managed-by=user", what="the account's keys",
+            )  # fmt: skip
+            if keys:
+                raise AdminError(
+                    f"The upload account {team.account} has a key already, so a team file for it "
+                    "was made before. Delete that key in the Cloud console first, then run "
+                    f"again. {NOTHING_CHANGED}"
+                )
+        # Any managed folder under the team's folder that this run doesn't make would get the
+        # new grants by inheritance, so one there already stops the run.
+        expected = set(team.grants())
+        root = team.folder()
+        inside = self.listing(
+            "storage", "managed-folders", "list", root, what=f"the folders in {root}"
+        )  # fmt: skip
+        for entry in inside:
+            url = folder_url(entry)
+            if url is None or (url.startswith(team.folder()) and url not in expected):
+                raise AdminError(
+                    f"{team.folder()} already holds a folder this run wouldn't make "
+                    f"({url or 'one gcloud did not name'}). It may be another team's folder: "
+                    f"stopping. {NOTHING_CHANGED}"
+                )
+        present = []
+        for folder, grants in team.grants().items():
+            if self.exists("storage", "managed-folders", "describe", folder, what=folder) is None:
+                continue
+            present.append(folder)
+            policy = self.exists(
+                "storage", "managed-folders", "get-iam-policy", folder, what=f"{folder}'s access"
+            )
+            for binding in (policy or {}).get("bindings", []):
+                for member in binding.get("members", []):
+                    if (binding.get("role"), member) not in grants:
+                        raise AdminError(
+                            f"{folder} exists already, and someone this run wouldn't add has "
+                            f"access to it. It may be another team's folder: stopping. "
+                            f"{NOTHING_CHANGED}"
+                        )
+        return account is not None, present
+
+    def plan(self, account_there: bool, present: list[str]) -> list[str]:
+        team = self.team
+        lines = [f"Team {team.name}, bucket {team.bucket}, Cloud project {team.gcp_project}:"]
+        if not account_there:
+            lines.append(f"  make the upload account {team.account_email}, with no project role")
+        for folder in team.grants():
+            if folder not in present:
+                lines.append(f"  make the managed folder {folder}")
+        for folder, grants in team.grants().items():
+            for role, member in sorted(grants):
+                lines.append(f"  grant {role} on {folder} to {member}")
+        lines.append("  make the account's key, and put it only in the team file")
+        lines.append(f"  write {team.team_file}, readable only by you")
+        return lines
+
+    # --- changing ---------------------------------------------------------------------------
+
+    def prepare_out(self) -> None:
+        """The team file's folder, made before any cloud change, so a local failure costs
+        nothing in the cloud."""
+        try:
+            self.team.out.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as e:
+            raise AdminError(
+                f"Couldn't make {self.team.out} ({type(e).__name__}). {NOTHING_CHANGED}"
+            ) from None
+
+    def make(self, account_there: bool, present: list[str]) -> bytes:
+        """Make the account, the folders and the grants, then the key. Returns the key."""
+        team = self.team
+        if not account_there:
+            self.call(
+                "iam", "service-accounts", "create", team.account,
+                f"--project={team.gcp_project}", f"--display-name={team.display_name}",
+                what="Making the upload account",
+            )  # fmt: skip
+            self.done.append(f"made the account {team.account_email}")
+        for folder in team.grants():  # the team's folder first, then the ones inside it
+            if folder not in present:
+                self.call("storage", "managed-folders", "create", folder, what=f"Making {folder}")
+                self.done.append(f"made {folder}")
+        for folder, grants in team.grants().items():
+            for role, member in sorted(grants):
+                self.grant(folder, role, member)
+        return self.make_key()
+
+    def grant(self, folder: str, role: str, member: str) -> None:
+        args = [
+            "storage", "managed-folders", "add-iam-policy-binding", folder,
+            f"--member={member}", f"--role={role}",
+        ]  # fmt: skip
+        # A new account can take a few seconds to be known to Cloud Storage.
+        for wait in (2, 4, 8, 16, None):
+            result = self.gcloud([*args, "--quiet"])
+            if result.returncode == 0:
+                self.done.append(f"granted {role} on {folder} to {member}")
+                return
+            if wait is None or not NOT_FOUND.search(result.stderr or ""):
+                raise AdminError(
+                    self.stopped(f"Granting access on {folder} failed: {last_line(result.stderr)}")
+                )
+            self.sleep(wait)
+
+    def make_key(self) -> bytes:
+        """The account's new key. gcloud writes it to a file in a private temporary folder
+        inside the checked --out folder, deleted straight after it's read. Never shown, and
+        gcloud's own messages from this step aren't shown either."""
+        team = self.team
+        with tempfile.TemporaryDirectory(prefix=".diffdata-key-", dir=team.out) as temp:
+            os.chmod(temp, 0o700)
+            path = Path(temp) / "key.json"
+            result = self.gcloud(
+                [
+                    "iam", "service-accounts", "keys", "create", str(path),
+                    f"--iam-account={team.account_email}", f"--project={team.gcp_project}",
+                    "--quiet",
+                ]
+            )  # fmt: skip
+            if result.returncode != 0:
+                path.unlink(missing_ok=True)
+                raise AdminError(
+                    self.stopped(
+                        "Making the account's key failed (gcloud's message isn't shown, as it "
+                        "could hold the key). An organisation policy may block keys: stop and "
+                        "tell the team"
+                    )
+                )
+            self.done.append(
+                f"made a key for {team.account_email} (delete it in the Cloud console if no "
+                "team file was written)"
+            )
+            try:
+                raw = path.read_bytes()
+            finally:
+                path.unlink(missing_ok=True)
+        try:
+            push.check_key_info(json.loads(raw.decode("utf-8")))
+        except (UnicodeDecodeError, ValueError, push.PushError):
+            raise AdminError(
+                self.stopped("The key gcloud made isn't a service account key")
+            ) from None
+        return raw
+
+    def delete_key(self, key: bytes) -> bool:
+        """Delete the key this run made, when no team file holds it. True if it's gone."""
+        try:
+            key_id = json.loads(key.decode("utf-8")).get("private_key_id")
+        except (UnicodeDecodeError, ValueError, AttributeError):
+            key_id = None
+        if not isinstance(key_id, str) or not key_id:
+            return False
+        result = self.gcloud(
+            [
+                "iam", "service-accounts", "keys", "delete", key_id,
+                f"--iam-account={self.team.account_email}", f"--project={self.team.gcp_project}",
+                "--quiet",
+            ]
+        )  # fmt: skip
+        if result.returncode != 0:
+            return False
+        self.done = [d for d in self.done if not d.startswith("made a key")]
+        self.done.append("deleted the new key again, as no team file holds it")
+        return True
+
+    def write_team_file(self, key: bytes) -> Path:
+        """Item 4: written as a new file only this user can read, then read back with setup's
+        own reader. Never replaces a file."""
+        team = self.team
+        data = {
+            "format": producer_setup.TEAM_FORMAT,
+            "version": producer_setup.TEAM_VERSION,
+            "bucket": team.bucket,
+            "folder": team.name,
+            "project": team.project,
+            "store_key": json.loads(key.decode("utf-8")),
+        }
+        if team.google_client is not None:
+            data["google_client"] = team.google_client
+        try:
+            check_out(team)  # again: something may have appeared while gcloud ran
+        except AdminError as e:
+            raise AdminError(
+                self.stopped(str(e).removesuffix(f" {NOTHING_CHANGED}").rstrip("."))
+            ) from None
+        temp = team.out / f".{team.name}.{secrets.token_hex(4)}.tmp"
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+                f.write("\n")
+            producer_setup.read_team_file(temp)
+            os.link(temp, team.team_file)  # fails if a file appeared there: nothing replaced
+        except (OSError, producer_setup.SetupError) as e:
+            raise AdminError(
+                self.stopped(f"Couldn't write the team file ({type(e).__name__})")
+            ) from None
+        finally:
+            temp.unlink(missing_ok=True)
+        return team.team_file
+
+
+def folder_url(entry) -> str | None:
+    """A managed folder's gs:// address, from one entry of `managed-folders list`."""
+    if not isinstance(entry, dict):
+        return None
+    if isinstance(entry.get("url"), str):
+        return entry["url"]
+    bucket, name = entry.get("bucket"), entry.get("name")
+    if isinstance(bucket, str) and isinstance(name, str):
+        return f"gs://{bucket}/{name.rstrip('/')}/"
+    return None
+
+
+def last_line(text: str | None) -> str:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    return lines[-1] if lines else "no message"
+
+
+def optout_link(team: Team) -> str | None:
+    if team.optout_form is None:
+        return None
+    return team.optout_form + urllib.parse.quote(team.name, safe="")
+
+
+def add_team(
+    team: Team,
+    ask_yes: Callable[[str], bool],
+    say: Callable[[str], None] = print,
+    gcloud: Runner = run_gcloud,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    """Look, show the plan, ask, then make it all and write the team file."""
+    run = AddTeam(check_team(team), gcloud=gcloud, sleep=sleep)
+    account_there, present = run.look()
+    for line in run.plan(account_there, present):
+        say(line)
+    if not ask_yes("Make these changes?"):
+        say(NOTHING_CHANGED)
+        return 1
+    # Look again: someone may have changed the folders while the plan was on screen.
+    if run.look() != (account_there, present):
+        raise AdminError(
+            f"The folders or the account changed while you read the plan. {NOTHING_CHANGED}"
+        )
+    run.prepare_out()
+    key = run.make(account_there, present)
+    try:
+        path = run.write_team_file(key)
+    except AdminError as e:
+        if not run.delete_key(key):
+            raise
+        raise AdminError(run.stopped(str(e).split(". Changed so far")[0])) from None
+    grants = sum(len(g) for g in team.grants().values())
+    say(
+        f"Done: {0 if account_there else 1} account made, "
+        f"{len(team.grants()) - len(present)} folders made, {grants} grants, 1 key."
+    )
+    say(f"Team file: {path}")
+    say("Send it to the team's producer privately (never in a repo, Issue, PR or channel).")
+    link = optout_link(team)
+    if link is None:
+        say(
+            "No --optout-form given: the team's link is the form's pre-filled link followed by "
+            f"{urllib.parse.quote(team.name, safe='')}. Put it in the notice by hand."
+        )
+    else:
+        say(f"Opt-out link for {team.name}: {link}")
+    say("Channel notice, for the producer to post and pin in each channel:")
+    say(NOTICE.format(link=link or "<the team's opt-out link>"))
+    return 0

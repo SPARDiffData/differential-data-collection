@@ -125,6 +125,23 @@ The PR says it got this review by ticking the template's box for it. The daily u
 
 **How we got here.** From 2026-10-09 to 2026-10-16, Paul worked solo, and the AI review plus his own read counted as the human review. Until 2026-10-23, Paul read every changed line himself. His hands-on runs caught more than those reads did: on #59, a real export run found a bug that every AI review had missed. Until 2026-11-23, Paul reviewed every teammate's PR, and ran Codex for the team. From 2026-11-23, authors review and merge their own PRs, Paul gets a daily update, and Codex is recommended for anyone who has it.
 
+## For the project team
+
+**Setting up a pilot team** (#132). Run this yourself, in your own terminal on macOS or Linux, signed in to `gcloud` as the Cloud project's owner account (`gcloud auth login`). Claude's tools may not run it.
+
+```bash
+uv run diffdata admin add-team team-a --bucket example-bucket --project example-project --gcp-project example-gcp-project --producer producer@example.com --google-client ~/Downloads/client.json --optout-form "https://…/viewform?usp=pp_url&entry.123="
+```
+
+- `team-a` is the team's folder name: letters, digits, `-` and `_`. Repeat `--producer` for each producer's Google account.
+- It looks first and changes nothing until you type y. It shows what it will make: an upload account for the team, the managed folder `team-a/` with `approved/`, `not-approved/` and `_config/` inside it, and these grants only:
+  - the upload account: *Storage Object Creator* on `approved/` and `not-approved/`, and *Storage Object Viewer* on `_config/`;
+  - each producer: *Storage Object Viewer* on `team-a/`.
+- It never changes the project's or the bucket's own access. It stops if the folder, or a folder inside it, already has someone it wouldn't add, if the team's folder holds any other managed folder, or if the upload account already has a key. It looks again after your y.
+- It writes `~/diffdata-teams/team-a.diffdata-team.json` (choose another place with `--out`, outside any repository or synced folder), readable only by you, and never replaces one. It never prints the key. Send the file to the producer privately: never in the repo, an Issue, a PR or a channel. Delete your copy once they've run `diffdata setup`.
+- `--optout-form` is the shared opt-out form's pre-filled link, cut just after the team field's `=`. It prints the team's own link, and the channel notice with the link in it, for the producer to post. The notice wording is a placeholder until it's agreed.
+- If it stops partway, it lists what it changed. Run it again with the same values to finish: it skips what's there. If the team file can't be written, it deletes the key it just made, so a second run can finish.
+
 ## Getting help
 
 - Stuck with Git or Claude: First try asking your current Claude session.  If that doesn't work, start a new Claude session, explain you're learning, and need help.  If that still doesn't resolve ask in the team Slack channel, or ask Paul. A tip: When Paul ran his first Claude Code work, he kept 2 sessions going at once.  The actual code development, and another acting as a trusted mentor that could answer questions and give advice.
