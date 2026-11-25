@@ -92,6 +92,10 @@ class AdminError(Exception):
     """add-team can't go on. The message says what was done so far, and quotes no key."""
 
 
+class Cancelled(AdminError):
+    """Stopped by Ctrl-C while making changes. The message says what was done so far."""
+
+
 Runner = Callable[[list[str]], subprocess.CompletedProcess]
 
 
@@ -235,6 +239,9 @@ class AddTeam:
     gcloud: Runner = run_gcloud
     sleep: Callable[[float], None] = time.sleep
     done: list[str] = field(default_factory=list)
+    key: bytes | None = None  # the key this run made, once read
+    key_asked: bool = False  # gcloud was asked for a key, so one may exist
+    published: bool = False  # the team file holding the key is in place
 
     def call(self, *args: str, what: str) -> subprocess.CompletedProcess:
         result = self.gcloud([*args, "--quiet"])
@@ -325,7 +332,8 @@ class AddTeam:
             )
             for binding in (policy or {}).get("bindings", []):
                 for member in binding.get("members", []):
-                    if (binding.get("role"), member) not in grants:
+                    # A grant with a condition isn't one this run makes, even for our member.
+                    if "condition" in binding or (binding.get("role"), member) not in grants:
                         raise AdminError(
                             f"{folder} exists already, and someone this run wouldn't add has "
                             f"access to it. It may be another team's folder: stopping. "
@@ -404,6 +412,7 @@ class AddTeam:
         with tempfile.TemporaryDirectory(prefix=".diffdata-key-", dir=team.out) as temp:
             os.chmod(temp, 0o700)
             path = Path(temp) / "key.json"
+            self.key_asked = True
             result = self.gcloud(
                 [
                     "iam", "service-accounts", "keys", "create", str(path),
@@ -425,7 +434,7 @@ class AddTeam:
                 "team file was written)"
             )
             try:
-                raw = path.read_bytes()
+                raw = self.key = path.read_bytes()
             finally:
                 path.unlink(missing_ok=True)
         try:
@@ -478,13 +487,14 @@ class AddTeam:
                 self.stopped(str(e).removesuffix(f" {NOTHING_CHANGED}").rstrip("."))
             ) from None
         temp = team.out / f".{team.name}.{secrets.token_hex(4)}.tmp"
-        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
+            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
                 f.write("\n")
             producer_setup.read_team_file(temp)
             os.link(temp, team.team_file)  # fails if a file appeared there: nothing replaced
+            self.published = True
         except (OSError, producer_setup.SetupError) as e:
             raise AdminError(
                 self.stopped(f"Couldn't write the team file ({type(e).__name__})")
@@ -538,13 +548,23 @@ def add_team(
             f"The folders or the account changed while you read the plan. {NOTHING_CHANGED}"
         )
     run.prepare_out()
-    key = run.make(account_there, present)
     try:
-        path = run.write_team_file(key)
+        path = run.write_team_file(run.make(account_there, present))
     except AdminError as e:
-        if not run.delete_key(key):
+        # Take back a key no team file holds, so a rerun can finish.
+        if run.key is None or run.published or not run.delete_key(run.key):
             raise
         raise AdminError(run.stopped(str(e).split(". Changed so far")[0])) from None
+    except KeyboardInterrupt:
+        why = "Stopped by Ctrl-C"
+        # The team file wasn't there before (check_out), so one there now may hold the key.
+        if run.published or os.path.lexists(run.team.team_file):
+            why += f" after the team file was written, at {run.team.team_file}"
+        elif run.key is not None:
+            run.delete_key(run.key)
+        elif run.key_asked:
+            why += " while gcloud made the key: check the account's keys in the Cloud console"
+        raise Cancelled(run.stopped(why)) from None
     grants = sum(len(g) for g in team.grants().values())
     say(
         f"Done: {0 if account_there else 1} account made, "

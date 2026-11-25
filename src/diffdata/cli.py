@@ -229,11 +229,14 @@ def run_admin(args: argparse.Namespace) -> int:
             google_client=store_admin.read_client(Path(client)) if client else None,
         )
         return store_admin.add_team(team, ask_yes=producer_setup.Prompter().yes)
+    except store_admin.Cancelled as e:
+        print(f"\ndiffdata admin: {e}", file=sys.stderr)
+        return 130
     except store_admin.AdminError as e:
         print(f"diffdata admin: {e}", file=sys.stderr)
         return 1
     except (KeyboardInterrupt, EOFError):
-        print("\ndiffdata admin: stopped. Run it again to see what's there and finish.")
+        print("\ndiffdata admin: stopped. The lines above say what was done.")
         return 130
 
 

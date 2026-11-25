@@ -133,6 +133,12 @@ class FakeGcloud:
         return [c for c in self.calls if not ({"describe", "list", "get-iam-policy"} & set(c))]
 
 
+@pytest.fixture(autouse=True)
+def not_windows(monkeypatch):
+    """add-team refuses on Windows. Its other checks are tested there too, as if on macOS."""
+    monkeypatch.setattr(admin, "WINDOWS", False)
+
+
 @pytest.fixture
 def out(tmp_path):
     """A plain folder for team files, outside any repository (tmp_path isn't in one)."""
@@ -443,6 +449,7 @@ def test_must_refuse_4_not_inside_a_synced_folder(tmp_path, synced):
     assert fake.calls == []
 
 
+@POSIX
 def test_must_refuse_4_not_through_a_link_into_a_repository(tmp_path):
     repo = tmp_path / "some-repo"
     (repo / ".git").mkdir(parents=True)
@@ -624,3 +631,110 @@ def test_must_refuse_4_add_team_refuses_on_windows(out, monkeypatch):
     with pytest.raises(AdminError, match="macOS or Linux"):
         run(team(out), fake=fake)
     assert fake.calls == []
+
+
+# --- review 1 -----------------------------------------------------------------------------
+
+
+def test_must_refuse_2_a_conditional_grant_stops(out):
+    fake = FakeGcloud()
+    fake.folders[ROOT] = [
+        {
+            "role": VIEWER,
+            "members": ["user:producer-one@example.com"],
+            "condition": {"title": "made up", "expression": "true"},
+        }
+    ]
+    with pytest.raises(AdminError, match="another team's folder"):
+        run(team(out), fake=fake)
+    assert fake.changes() == []
+
+
+def test_ctrl_c_after_the_key_deletes_it_and_lists_the_changes(out, monkeypatch):
+    def stop(self, key):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(admin.AddTeam, "write_team_file", stop)
+    fake = FakeGcloud()
+    with pytest.raises(AdminError) as stopped:
+        run(team(out), fake=fake)
+    text = str(stopped.value)
+    assert text.startswith("Stopped by Ctrl-C")
+    assert f"made {ROOT}_config/" in text and "deleted the new key again" in text
+    assert fake.keys[EMAIL] == 0 and MARKER not in text
+
+
+def test_ctrl_c_before_any_change_says_nothing_changed(out, monkeypatch):
+    def stop(self, account_there, present):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(admin.AddTeam, "make", stop)
+    with pytest.raises(AdminError, match="Nothing was changed"):
+        run(team(out))
+
+
+# --- Codex review 2 -----------------------------------------------------------------------
+
+
+def test_a_staging_file_that_cant_be_made_deletes_the_new_key(out, monkeypatch):
+    real_open = os.open
+
+    def refuse(path, *args, **kwargs):
+        if str(path).endswith(".tmp"):
+            raise PermissionError("made up")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(admin.os, "open", refuse)
+    fake = FakeGcloud()
+    with pytest.raises(AdminError, match="deleted the new key again") as stopped:
+        run(team(out), fake=fake)
+    assert fake.keys[EMAIL] == 0 and MARKER not in str(stopped.value)
+
+
+def test_ctrl_c_after_the_team_file_is_written_keeps_its_key(out, monkeypatch):
+    real_link = os.link
+
+    def link_then_stop(src, dst):
+        real_link(src, dst)
+        if str(dst).endswith(".diffdata-team.json"):
+            raise KeyboardInterrupt  # before the run notes that the file is in place
+
+    monkeypatch.setattr(admin.os, "link", link_then_stop)
+    fake = FakeGcloud()
+    with pytest.raises(admin.Cancelled, match="after the team file was written"):
+        run(team(out), fake=fake)
+    assert fake.keys[EMAIL] == 1
+    assert [p.name for p in out.iterdir()] == ["team-a.diffdata-team.json"]
+
+
+def test_ctrl_c_while_gcloud_makes_the_key_says_to_check(out):
+    fake = FakeGcloud()
+    real = fake.accounts_command
+
+    def stop(words, flags):
+        if words[:2] == ["keys", "create"]:
+            real(words, flags)
+            raise KeyboardInterrupt
+        return real(words, flags)
+
+    fake.accounts_command = stop
+    with pytest.raises(admin.Cancelled, match="check the account's keys") as stopped:
+        run(team(out), fake=fake)
+    assert MARKER not in str(stopped.value)
+    assert not any(p.name.startswith(".diffdata-key-") for p in out.iterdir())
+
+
+def test_the_command_returns_130_on_ctrl_c(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(cli.review, "in_terminal", lambda *streams: True)
+
+    def cancelled(team, ask_yes):
+        raise admin.Cancelled("Stopped by Ctrl-C. Nothing was changed.")
+
+    monkeypatch.setattr(admin, "add_team", cancelled)
+    code = cli.main(
+        ["admin", "add-team", "team-a", "--bucket", "example-bucket", "--project",
+         "example-project", "--gcp-project", GCP, "--producer", "producer-one@example.com",
+         "--out", str(tmp_path / "teams")]
+    )  # fmt: skip
+    assert code == 130
+    assert "Stopped by Ctrl-C" in capsys.readouterr().err
