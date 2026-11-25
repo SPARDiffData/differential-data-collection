@@ -60,7 +60,7 @@ These rules keep real data out of the repo and out of other companies' AI tools.
 
 ```
 src/diffdata/
-  cli.py            the `diffdata` command; `setup`, `discover slack`, `consent`, `collect google-docs`, `scrub` and `push` are built
+  cli.py            the `diffdata` command; `setup`, `check`, `admin add-team`, `discover slack`, `consent`, `collect google-docs`, `scrub` and `push` are built
   consent/ discover/ collect/ organize/ scrub/ store/    one package per stage
   consent/approvals.py   the approvals file next to config.toml (CON-1, CON-3): approved, skipped or withdrawn, per canvas or Google file; it only grows
   consent/review.py   `diffdata consent review` and `withdraw`: a person approves new items from the reference log, typed in a terminal; they refuse to run anywhere else, as in Claude's tools
@@ -75,6 +75,7 @@ src/diffdata/
   store/admin.py    `diffdata admin add-team`, for the project team (#132): a team's managed folder, upload account and key, and its team file, through `gcloud`
   common/           shared pieces; paths.py holds the data folder guards, config.py reads config.toml
   common/documents.py   the shared document format (ORG-2): raw, versions, event log, clean copies
+  common/check.py   `diffdata check` (#136): Git, uv, Claude Code (the command or the desktop app's), the repo folder, config.toml and the store key's place and mode; it only reads, and setup lists its gaps at the end
   common/setup.py   `diffdata setup` (#130): reads the team file, asks for the channels, shows every value on one screen before writing config.toml, and puts the store key in place; it refuses to run anywhere but a terminal a person types in
 tests/              pytest; fixtures/ holds synthetic data only
 docs/requirements.md

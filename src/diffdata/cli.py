@@ -1,10 +1,10 @@
 """The `diffdata` command.
 
-`setup` (ENG-1, CON-1, STO-1), `admin add-team` (STO-1, for the project team), `discover
-slack` (DIS-1), `consent` (CON-1, CON-3), `collect google-docs` (COL-4, COL-5), `scrub` (SCR-1,
-SCR-2) and `push` (STO-1, STO-2, STO-3) are built. Any other subcommand
-added before it's built is a stub that names the requirement IDs (docs/requirements.md) its
-feature Issue will build.
+`setup` (ENG-1, CON-1, STO-1), `check` (ENG-1), `admin add-team` (STO-1, for the project
+team), `discover slack` (DIS-1), `consent` (CON-1, CON-3), `collect google-docs` (COL-4,
+COL-5), `scrub` (SCR-1, SCR-2) and `push` (STO-1, STO-2, STO-3) are built. Any other
+subcommand added before it's built is a stub that names the requirement IDs
+(docs/requirements.md) its feature Issue will build.
 """
 
 import argparse
@@ -13,6 +13,7 @@ from pathlib import Path
 
 from diffdata import __version__
 from diffdata.collect import google_fetch, google_signin
+from diffdata.common import check as producer_check
 from diffdata.common import setup as producer_setup
 from diffdata.common.config import ConfigError, load_config
 from diffdata.common.paths import UnsafeDataDirError
@@ -28,6 +29,10 @@ COMMANDS = {
     "setup": (
         "Answer a few questions in your own terminal, and diffdata writes config.toml for you.",
         "ENG-1, CON-1, STO-1",
+    ),
+    "check": (
+        "Check what you need is installed, and that setup is done. Changes nothing.",
+        "ENG-1",
     ),
     "admin": (
         "For the project team: set up a pilot team's folder, upload key and team file.",
@@ -166,6 +171,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "setup":
         return run_setup(args)
+    if args.command == "check":
+        return producer_check.check()
     if args.command == "admin":
         return run_admin(args)
     if args.command == "discover":
@@ -192,9 +199,19 @@ def run_setup(args: argparse.Namespace) -> int:
     if not review.in_terminal(sys.stdin, sys.stdout):
         print(f"diffdata: {producer_setup.NOT_A_TERMINAL}", file=sys.stderr)
         return 1
+    # Checked first, shown at the end; a gap never stops setup (#136, must-refuse 3).
+    found: list[producer_check.Item] = []
+    for part in (producer_check.tool_items, lambda: [producer_check.repo_item()]):
+        try:
+            found += part()
+        except Exception:
+            pass
     try:
         team = Path(args.team_file) if args.team_file else None
-        return producer_setup.setup(team_file=team)
+        code = producer_setup.setup(team_file=team)
+        for line in producer_check.before_export(found):
+            print(line)
+        return code
     except (producer_setup.SetupError, ConfigError, UnsafeDataDirError) as e:
         print(f"diffdata setup: {e}", file=sys.stderr)
         return 1
