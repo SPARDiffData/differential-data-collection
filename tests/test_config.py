@@ -429,3 +429,23 @@ def test_the_same_channel_id_twice_is_refused(tmp_path):
     )
     with pytest.raises(ConfigError, match="Entries 1 and 3"):
         load_config(path)
+
+
+# CON-5, must-refuse 17 on #130: a DM or a group DM is never listed.
+@pytest.mark.parametrize(
+    "listed",
+    [
+        '["D00000001"]',
+        '["https://example.slack.com/archives/D00000001"]',
+        '["mpdm-alex--sam--kim-1"]',
+        '["#MPDM-alex--sam-1"]',
+    ],
+)
+def test_a_dm_or_group_dm_in_slack_channels_is_refused(tmp_path, listed):
+    data = (tmp_path / "data").as_posix()
+    path = write_config(
+        tmp_path, f'[sources]\nslack_channels = {listed}\n[local]\ndata_dir = "{data}"\n'
+    )
+    with pytest.raises(ConfigError, match="CON-5") as e:
+        load_config(path)
+    assert "D00000001" not in str(e.value) and "alex" not in str(e.value)

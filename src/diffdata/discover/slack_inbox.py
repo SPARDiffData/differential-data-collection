@@ -53,7 +53,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from diffdata.collect import slack_canvas
-from diffdata.common.config import CHANNEL_ID, Config, ConfigError, channel_name, load_config
+from diffdata.common.config import (
+    CHANNEL_ID,
+    Config,
+    ConfigError,
+    channel_name,
+    is_group_dm_name,
+    load_config,
+)
 from diffdata.common.paths import UnsafeDataDirError
 from diffdata.consent import approvals
 from diffdata.discover import slack_state
@@ -370,6 +377,10 @@ def begin(config: Config, pairs: list[str], now: datetime | None = None, full: b
         if not sep:  # a bare ID
             name, channel_id = "", name
         name, channel_id = channel_name(name), channel_id.strip()
+        if name and is_group_dm_name(name):
+            raise SlackExportError(
+                "A channel given to begin is a group DM. diffdata never collects those (CON-5)."
+            )
         if (sep and not name) or not CHANNEL_ID.fullmatch(channel_id):
             raise SlackExportError(
                 "A channel given to begin isn't name=ID or a bare ID, with an ID starting "
@@ -646,6 +657,13 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
                 f"This channel read doesn't show the channel opted in as "
                 f"{shown_channel(run, channel_id)} in config.toml, so it wasn't saved (CON-1). "
                 "Stop the export."
+            )
+        if is_group_dm_name(header["name"]):
+            # A group DM listed by ID gets past begin, so its first read is the check (CON-5).
+            return fail(
+                "This read is of a group DM. diffdata never collects those: the other people in "
+                "it never agreed (CON-5). It wasn't saved. Stop the export, and remove it from "
+                "slack_channels in config.toml."
             )
         if not expected:
             # Listed by ID: the read's ID matched, so its name is the channel's name. The run

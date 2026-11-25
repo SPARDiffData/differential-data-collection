@@ -387,7 +387,7 @@ def test_review_pr_never_offers_a_verdict_that_waits_for_paul():
 # stop Claude's shell tools running it or importing its code.
 SETUP_RUNS = [
     "Bash(uv run diffdata setup)",
-    "Bash(uv run diffdata setup --team bucket=example-bucket,folder=team-a,project=example)",
+    "Bash(uv run diffdata setup ~/Downloads/team-a.diffdata-team.json)",
     "Bash(echo y | script -q /dev/null uv run diffdata setup)",
     "Bash(.venv/bin/diffdata setup)",
     "Bash(uv run python -m diffdata setup)",
@@ -400,7 +400,6 @@ SETUP_RUNS = [
 SETUP_DEVELOPMENT_RUNS = [
     "Bash(uv run pytest tests/test_setup.py)",
     "Bash(git add src/diffdata/common/setup.py)",
-    "Bash(uv run diffdata team-command --bucket example-bucket --folder team-a --project x)",
 ]
 
 
@@ -412,3 +411,17 @@ def test_claudes_shell_tools_cant_run_setup(command):
 @pytest.mark.parametrize("command", SETUP_DEVELOPMENT_RUNS)
 def test_working_on_the_setup_code_isnt_blocked(command):
     assert not denied(command)
+
+
+# #132: a team file holds the team's store key, so no AI tool reads, writes or names one.
+TEAM_FILE_USES = [
+    "Read(~/Downloads/team-a.diffdata-team.json)",
+    "Edit(/tmp/team-a.diffdata-team.json)",
+    "Bash(cat ~/Downloads/team-a.diffdata-team.json)",
+    "PowerShell(Get-Content team-a.diffdata-team.json)",
+]
+
+
+@pytest.mark.parametrize("use", TEAM_FILE_USES)
+def test_claudes_tools_cant_read_write_or_name_a_team_file(use):
+    assert denied(use)

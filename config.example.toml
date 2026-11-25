@@ -35,8 +35,9 @@ data_dir = "~/diffdata-data"
 # STO-1: the pilot store is a Google Cloud Storage bucket (decision D3 in the Second
 # Half Plan). `uv run diffdata push` sends your scrubbed copies there, and refuses to run
 # until every setting below is filled in. The project team gives your team this whole block
-# except producer, and a key file: save it as store-key.json next to this file. It can only
-# add files to your team's folder. Never share it or open it in an AI tool.
+# except producer, and a key, all in one team file: `uv run diffdata setup <team file>` puts
+# the key next to this file as store-key.json. It can only add files to your team's
+# folder. Never share it or open it in an AI tool.
 backend = "gcs"
 bucket = ""    # the bucket's name, from the project team
 folder = ""    # your team's folder in the bucket, from the project team

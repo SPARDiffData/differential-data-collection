@@ -1,15 +1,33 @@
-"""`diffdata setup` and `diffdata team-command` (ENG-1, CON-1, STO-1). Plan: Issue #130.
+"""`diffdata setup` (ENG-1, CON-1, STO-1). Plans: Issue #130, and the team file from #132.
 
 Setup asks the producer three questions in their own terminal (the channels, the workspace
 address and their handle), and writes ~/.diffdata/config.toml for them. It takes the team
-values (bucket, folder, project) from `--team`, which the project team's `team-command`
-prints, makes the data folder, and puts the store key in place. So nobody edits TOML by hand.
+values (bucket, folder, project), the store key and the Google client file from the team
+file the project team sends, makes the data folder, and puts the key and the client file in
+place. So nobody edits TOML by hand, or saves a key by hand.
+
+The team file is JSON, written by the project team (later by `diffdata admin add-team`):
+
+  {
+    "format": "diffdata-team",
+    "version": 1,
+    "bucket": "example-bucket",
+    "folder": "team-a",
+    "project": "example-project",
+    "store_key": { ...the team's service account key, as Google gives it... },
+    "google_client": { "installed": { "client_id": "...", ... } }
+  }
+
+google_client may be left out. Any other key is refused. It holds the team's key, so it's sent
+privately, never through the repo, an Issue or a PR, and it's named <team>.diffdata-team.json,
+which Claude's tools may not read (.claude/settings.json).
 
 The producer handle is a pseudonym: it labels the producer's copies in the shared bucket,
 in place of their name. Setup makes one up from the project name and 4 random characters. It
 never reads the computer's user name, the Slack name or the Git name for it.
 
-What setup refuses (the plan's must-refuse list, approved on #130):
+What setup refuses (the plan's must-refuse list on #130; 15 to 18 as reworded for the team
+file, waiting for approval there):
   1   to run unless its input and output are a terminal a person types in
   2   to overwrite a config without a typed yes; it keeps the old one as config.toml.bak, and
       replaces an old .bak only on a second yes
@@ -23,15 +41,19 @@ What setup refuses (the plan's must-refuse list, approved on #130):
   8   a bucket, folder, project or handle that `push` would refuse, with messages that name the
       setting, not the value
   9   to print anything from store-key.json
-  10  to change the key file's mode without a yes, or ever change, move or delete it
+  10  to change the key file's mode without a typed yes
   11  to delete or move a config
   12  to send anything anywhere: it makes no network call
   13  to take the handle from the computer or from Slack
   14  to change a saved handle by itself
-  15  to take team values from anywhere but --team or the producer's paste. The one other
-      source is the config.toml setup wrote before: the values the producer pasted or
-      accepted then. They're shown and need a yes, like any others (16)
-  16  to use team values without showing them first and getting a yes
+  15  to take team values from anywhere but the team file the producer gives, or the
+      config.toml setup wrote before (the values the producer accepted then)
+  16  to use team values without showing them first and getting a typed yes
+  17  a direct message or a group DM as a channel (CON-5); the save hook also refuses a read
+      of a group DM (discover/slack_inbox.py)
+  18  to print anything from the store key or the Google client file in a team file, to put
+      them anywhere but ~/.diffdata/, readable only by the producer, to replace one that's
+      there without a typed yes, or to delete the team file without a typed yes
 """
 
 import json
@@ -55,6 +77,7 @@ from diffdata.common.config import (
     ConfigError,
     channel_id,
     channel_name,
+    is_direct_message,
     link_workspace,
     load_config,
 )
@@ -75,8 +98,11 @@ NOT_A_TERMINAL = (
 )
 NOTHING_WRITTEN = "Nothing was written."
 NEXT_STEP = "Next: open Claude Code in the repo folder and run /slack-export."
-# Big enough for any service account key; anything bigger isn't one.
-KEY_LIMIT = 64_000
+TEAM_FORMAT = "diffdata-team"
+TEAM_VERSION = 1
+TEAM_FILE_KEYS = {"format", "version", *TEAM_KEYS, "store_key", "google_client"}
+TEAM_FILE_LIMIT = 256_000
+CLIENT_NAME = "google-client.json"
 BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
 
 
@@ -124,50 +150,71 @@ def check_team(values: dict[str, str]) -> dict[str, str]:
     return values
 
 
-def parse_team(text: str) -> dict[str, str]:
-    """bucket, folder and project from `bucket=…,folder=…,project=…`, or from the whole
-    command the team sent, which holds it after --team."""
-    words = text.split()
-    for i, word in enumerate(words):
-        if word == "--team" and i + 1 < len(words):
-            text = " ".join(words[i + 1 :])
-            break
-        if word.startswith("--team="):
-            text = " ".join([word.removeprefix("--team="), *words[i + 1 :]])
-            break
-    values: dict[str, str] = {}
-    for part in re.split(r"[,\s]+", text.strip().strip("\"'")):
-        if not part:
-            continue
-        key, sep, value = part.partition("=")
-        key = key.strip().lower()
-        if not sep or key not in TEAM_KEYS:
-            raise SetupError(
-                "The team values must be bucket=…,folder=…,project=…, as the project team sent "
-                "them. Ask them to send the setup command again."
-            )
-        if key in values:
-            raise SetupError(f"{key} is given twice in the team values.")
-        values[key] = value.strip()
-    missing = [key for key in TEAM_KEYS if not values.get(key)]
+@dataclass(frozen=True)
+class TeamFile:
+    """A team file, checked. The key and the client file are kept as the bytes to write."""
+
+    path: Path
+    values: dict[str, str]
+    store_key: bytes
+    google_client: bytes | None
+
+
+def read_team_file(path: Path) -> TeamFile:
+    """Read and check a team file. Messages name what's wrong, never a value, key or secret."""
+    path = path.expanduser()
+    raw = push.read_plain(path.parent, path.name) if path.name else None
+    if raw is None or len(raw) > TEAM_FILE_LIMIT:
+        raise SetupError(
+            "That isn't a team file: give the path of the plain file the project team sent, "
+            "not a folder or a link."
+        )
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        data = None
+    version = data.get("version") if isinstance(data, dict) else None
+    if (
+        not isinstance(data, dict)
+        or data.get("format") != TEAM_FORMAT
+        or isinstance(version, bool)
+        or version != TEAM_VERSION
+    ):
+        raise SetupError(
+            f"That isn't a diffdata team file (format {TEAM_FORMAT}, version {TEAM_VERSION}). "
+            "Ask the project team to send it again."
+        )
+    unknown = sorted(set(data) - TEAM_FILE_KEYS)
+    if unknown:
+        shown = ", ".join(config_module.shown_key(k, TEAM_FILE_KEYS) for k in unknown)
+        raise SetupError(f"The team file has a setting setup doesn't know: {shown}.")
+    missing = [k for k in (*TEAM_KEYS, "store_key") if k not in data]
     if missing:
-        raise SetupError(f"The team values have no {', '.join(missing)}.")
-    return check_team(values)
-
-
-def team_command(bucket: str, folder: str, project: str) -> str:
-    """The command the project team sends a team's producers. Saves nothing, sends nothing."""
-    values = check_team(
-        {"bucket": bucket.strip(), "folder": folder.strip(), "project": project.strip()}
-    )
-    team = ",".join(f"{key}={values[key]}" for key in TEAM_KEYS)
-    return "\n".join(
-        [
-            "Send this command to the team's producers, in a DM or the team's private channel.",
-            "Never post it in the repo, an Issue or a PR.",
-            "",
-            f"uv run diffdata setup --team {team}",
-        ]
+        raise SetupError(f"The team file has no {', '.join(missing)}.")
+    if not all(isinstance(data[k], str) for k in TEAM_KEYS):
+        raise SetupError("bucket, folder and project in the team file must be text.")
+    values = check_team({k: data[k].strip() for k in TEAM_KEYS})
+    try:
+        push.check_key_info(data["store_key"])
+    except push.PushError:
+        raise SetupError(
+            "The store key in the team file isn't a Google service account key that signs in "
+            "only with Google. Ask the project team for a new team file."
+        ) from None
+    client = data.get("google_client")
+    if client is not None:
+        installed = client.get("installed") if isinstance(client, dict) else None
+        if not isinstance(installed, dict) or not isinstance(installed.get("client_id"), str):
+            raise SetupError(
+                "The Google client file in the team file isn't a Desktop app client. Ask the "
+                "project team for a new team file."
+            )
+    as_bytes = lambda part: (json.dumps(part, indent=2) + "\n").encode("utf-8")  # noqa: E731
+    return TeamFile(
+        path=path,
+        values=values,
+        store_key=as_bytes(data["store_key"]),
+        google_client=None if client is None else as_bytes(client),
     )
 
 
@@ -180,6 +227,11 @@ def parse_channels(text: str) -> tuple[list[str], str | None]:
     entries: list[str] = []
     workspaces: set[str] = set()
     for number, part in enumerate((p for p in re.split(r"[,\s]+", text) if p), start=1):
+        if is_direct_message(part):
+            raise SetupError(
+                f"Channel {number} is a direct message or a group DM. diffdata never collects "
+                "those: the other people in them never agreed (CON-5). List channels only."
+            )
         found = channel_id(part)
         if found is not None:
             workspace = link_workspace(part)
@@ -414,28 +466,46 @@ def ask_until(prompter: Prompter, question: str, parse: Callable[[str], object])
             prompter.say(str(e))
 
 
-def team_step(prompter: Prompter, team: str | None, store: dict) -> dict[str, str]:
-    if team is not None:
-        values = parse_team(team)
-    else:
+def ask_team_file(prompter: Prompter, picker: Callable[[str], Path | None]) -> TeamFile:
+    prompter.say("Give the team file the project team sent you (it ends in .diffdata-team.json).")
+    while True:
+        answer = prompter.ask("Team file's path, or C to choose it: ").strip()
+        chosen = picker("file") if answer.lower() == "c" else (Path(answer) if answer else None)
+        if chosen is None:
+            continue
+        try:
+            return read_team_file(chosen)
+        except SetupError as e:
+            prompter.say(str(e))
+
+
+def team_step(
+    prompter: Prompter,
+    team: TeamFile | None,
+    store: dict,
+    picker: Callable[[str], Path | None],
+) -> tuple[dict[str, str], TeamFile | None]:
+    """The team values, and the team file they came from (None for the old config.toml)."""
+    values: dict[str, str] | None = None
+    if team is None:
         try:
             values = check_team({key: str(store[key]) for key in TEAM_KEYS})
         except (KeyError, SetupError):
-            values = None
+            team = ask_team_file(prompter, picker)
     while True:
-        if values is None:
-            prompter.say(
-                "Paste the setup command the project team sent you (or just its "
-                "bucket=…,folder=…,project=… part)."
-            )
-            values = ask_until(prompter, "Team values: ", parse_team)
+        if team is not None:
+            values = team.values
+            parts = "a store key" + (" and a Google client file" if team.google_client else "")
+            prompter.say(f"The team file {team.path} holds {parts}, and these team values:")
+        else:
+            prompter.say("Your config.toml has these team values:")
+        assert values is not None
         prompter.say(
-            f"Team values: bucket {values['bucket']}, folder {values['folder']}, "
-            f"project {values['project']}."
+            f"  bucket {values['bucket']}, folder {values['folder']}, project {values['project']}"
         )
-        if prompter.yes("Use these?", default=True):
-            return values
-        values = None
+        if prompter.yes("Use these?", default=False):
+            return values, team
+        team = ask_team_file(prompter, picker)
 
 
 def folder_step(prompter: Prompter, picker: Callable[[str], Path | None], current: str) -> str:
@@ -469,17 +539,18 @@ def folder_step(prompter: Prompter, picker: Callable[[str], Path | None], curren
 
 def config_step(
     prompter: Prompter,
-    team: str | None,
+    team: TeamFile | None,
     raw: dict,
     picker: Callable[[str], Path | None],
     choose: Callable[[str], str],
-) -> dict:
-    """Ask, and return the new settings: `raw` with only setup's keys changed."""
+) -> tuple[dict, TeamFile | None]:
+    """Ask, and return the new settings (`raw` with only setup's keys changed) and the team
+    file used, if any."""
     sources = raw.get("sources", {}) if isinstance(raw.get("sources"), dict) else {}
     local = raw.get("local", {}) if isinstance(raw.get("local"), dict) else {}
     store = raw.get("store", {}) if isinstance(raw.get("store"), dict) else {}
 
-    values = team_step(prompter, team, store)
+    values, team = team_step(prompter, team, store, picker)
     folder = folder_step(prompter, picker, str(local.get("data_dir") or DEFAULT_DATA_DIR))
 
     old_channels = sources.get("slack_channels")
@@ -492,7 +563,11 @@ def config_step(
     def channels_or_keep(text: str):
         return parse_channels(text if text.strip() or not keep else keep)
 
-    question = f"Channels [Enter keeps: {keep}]: " if keep else "Channels: "
+    question = (
+        f"Channels [Enter keeps: {keep}; what you type replaces this list]: "
+        if keep
+        else "Channels: "
+    )
     channels, link_space = ask_until(prompter, question, channels_or_keep)
 
     old_space = sources.get("slack_workspace_url")
@@ -533,36 +608,18 @@ def config_step(
     new_store.update(values)
     new_store["producer"] = handle
     new_store.setdefault("send_not_approved", "no")
-    return new
+    return new, team
 
 
-def key_step(prompter: Prompter, folder: Path, picker: Callable[[str], Path | None]) -> None:
-    """Check the store key, or put the downloaded one in place. Nothing from it is shown."""
+def key_step(prompter: Prompter, folder: Path) -> None:
+    """Check the store key that's in place. Nothing from it is shown."""
     key = folder / push.KEY_NAME
     if not key.exists() and not key.is_symlink():
         prompter.say(
-            f"There's no store key at {key} yet. The project team sends it to you as a file. "
-            "`diffdata push` won't run until it's there."
+            f"There's no store key at {key} yet. It comes in the team file: run "
+            "`uv run diffdata setup <team file>`. `diffdata push` won't run until it's there."
         )
-        while True:
-            answer = prompter.ask(
-                "Type the key file's path, C to choose it, or press Enter to do this later: "
-            ).strip()
-            if not answer:
-                prompter.say("Run diffdata setup again when you have the key.")
-                return
-            source = picker("file") if answer.lower() == "c" else Path(answer).expanduser()
-            if source is None:
-                continue
-            try:
-                import_key(source, key)
-            except SetupError as e:
-                prompter.say(str(e))
-                continue
-            prompter.say(f"Store key saved at {key}, readable only by you.")
-            if prompter.yes(f"Delete the downloaded copy at {source}?", default=False):
-                source.unlink()
-            return
+        return
     try:
         push.read_key(key)
     except push.PushError as e:
@@ -583,41 +640,58 @@ def key_step(prompter: Prompter, folder: Path, picker: Callable[[str], Path | No
             os.chmod(key, 0o600)
 
 
-def import_key(source: Path, key: Path) -> None:
-    """Copy a downloaded key into place, checked by the push's own key check first."""
-    raw = push.read_plain(source.parent, source.name) if source.name else None
-    if raw is None or len(raw) >= KEY_LIMIT:
-        raise SetupError(
-            "That isn't a key file: give the path of the plain .json file the team sent, not a "
-            "folder or a link."
-        )
-    handle, temp_name = tempfile.mkstemp(dir=key.parent, prefix=".store-key-", suffix=".json")
-    temp = Path(temp_name)
-    try:
-        with os.fdopen(handle, "wb") as file:
-            file.write(raw)
-        restrict(temp)
+def install_file(prompter: Prompter, target: Path, data: bytes, label: str) -> None:
+    """Put one part of the team file in place, readable only by the producer. A file that's
+    there already is replaced only on a typed yes, and never written through a link."""
+    if target.is_symlink() or (target.exists() and not target.is_file()):
+        prompter.say(f"{target} is a link or a folder, so the {label} wasn't put there.")
+        return
+    if target.exists():
+        if target.read_bytes() == data:
+            prompter.say(f"The {label} at {target} is the same as the team file's.")
+            return
+        if not prompter.yes(
+            f"There's a different {label} at {target}. Replace it with the team file's?",
+            default=False,
+        ):
+            prompter.say(f"Kept the {label} that was there.")
+            return
+        handle, temp_name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.stem}-")
+        temp = Path(temp_name)
         try:
-            push.read_key(temp)
-        except push.PushError as e:
-            raise SetupError(str(e).replace(temp.name, push.KEY_NAME)) from None
-        # Made only if it isn't there, so a key saved meanwhile by another window is never
-        # written over. One plain file, which push accepts; a write cut short removes it.
+            with os.fdopen(handle, "wb") as file:
+                file.write(data)
+            restrict(temp)
+            os.replace(temp, target)
+        finally:
+            temp.unlink(missing_ok=True)
+    else:
+        # Made only if it isn't there, so one saved meanwhile is never written over. One
+        # plain file, which push accepts; a write cut short removes it.
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
         try:
-            out = os.open(key, flags, 0o600)
+            out = os.open(target, flags, 0o600)
         except FileExistsError:
-            raise SetupError(f"A store key appeared at {key} meanwhile. It was kept.") from None
+            prompter.say(f"A {label} appeared at {target} meanwhile. It was kept.")
+            return
         try:
             with os.fdopen(out, "wb") as file:
-                file.write(raw)
+                file.write(data)
         except BaseException:
-            key.unlink(missing_ok=True)
+            target.unlink(missing_ok=True)
             raise
-        restrict(key)
-    finally:
-        temp.unlink(missing_ok=True)
+        restrict(target)
+    prompter.say(f"Saved the {label} at {target}, readable only by you.")
+
+
+def install_team_file(prompter: Prompter, folder: Path, team: TeamFile) -> None:
+    install_file(prompter, folder / push.KEY_NAME, team.store_key, "store key")
+    if team.google_client is not None:
+        install_file(prompter, folder / CLIENT_NAME, team.google_client, "Google client file")
+    if prompter.yes(f"Delete the team file at {team.path}?", default=False):
+        team.path.unlink()
+        prompter.say("Deleted the team file.")
 
 
 def check_existing(prompter: Prompter, settings: Path) -> None:
@@ -630,7 +704,7 @@ def check_existing(prompter: Prompter, settings: Path) -> None:
 
 
 def setup(
-    team: str | None = None,
+    team_file: Path | None = None,
     prompter: Prompter | None = None,
     picker: Callable[[str], Path | None] = system_picker,
     choose: Callable[[str], str] = secrets.choice,
@@ -653,15 +727,18 @@ def setup(
                 f"{folder} is inside a git repository or a synced folder, where config.toml "
                 f"and the store key could be shared by mistake. {NOTHING_WRITTEN}"
             )
+    team = read_team_file(team_file) if team_file is not None else None
     raw: dict = {}
     if settings.exists():
         raw = read_raw(settings)
         prompter.say(f"You have a config.toml already, at {settings}.")
         if not prompter.yes("Change it?", default=False):
+            if team is not None:
+                prompter.say("So the team file wasn't used.")
             check_existing(prompter, settings)
-            key_step(prompter, folder, picker)
+            key_step(prompter, folder)
             return 0
-    new = config_step(prompter, team, raw, picker, choose)
+    new, team = config_step(prompter, team, raw, picker, choose)
 
     store = new["store"]
     prompter.say("")
@@ -677,12 +754,22 @@ def setup(
     if not prompter.yes(f"Write this to {settings}?", default=False):
         prompter.say(NOTHING_WRITTEN)
         return 0
-    if not write_config(settings, new, prompter):
-        return 1
-    data = data_dir(new["local"]["data_dir"])
-    data.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        if not write_config(settings, new, prompter):
+            return 1
+    except OSError as e:
+        raise SetupError(f"Couldn't write {settings}: {e}. {NOTHING_WRITTEN}") from None
     prompter.say(f"Wrote {settings}.")
-    key_step(prompter, folder, picker)
+    try:
+        data = data_dir(new["local"]["data_dir"])
+        data.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if team is not None:
+            install_team_file(prompter, folder, team)
+        key_step(prompter, folder)
+    except OSError as e:
+        raise SetupError(
+            f"{settings} was written, but then something failed: {e}. Run setup again to finish."
+        ) from None
     prompter.say("")
     prompter.say(f"Settings:     {folder}")
     prompter.say(f"Data folder:  {data}")

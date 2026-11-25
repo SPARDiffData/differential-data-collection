@@ -25,6 +25,12 @@ CHANNEL_ID = re.compile(r"[CG][A-Z0-9]{6,}")
 CHANNEL_LINK = re.compile(
     r"https://([a-z0-9-]+)\.slack\.com/archives/([CG][A-Z0-9]{6,})(?:/p\d+)?/?(?:\?.*)?"
 )
+# CON-5: a direct message ("D..." ID or link) or a group DM (Slack names it "mpdm-...") is never
+# collected: the other people in it never agreed. Listing one is refused, and the save hook
+# refuses a read of a channel whose name says it's a group DM.
+DM_ID = re.compile(r"D[A-Z0-9]{6,}")
+DM_LINK = re.compile(r"https://[a-z0-9-]+\.slack\.com/archives/D[A-Z0-9]{6,}(?:/p\d+)?/?(?:\?.*)?")
+GROUP_DM_PREFIX = "mpdm-"
 # What setup takes as a channel name: no spaces, dots, slashes or other marks a pasted
 # sentence or link has. load_config() doesn't check it yet, so no existing config breaks.
 CHANNEL_NAME = re.compile(r"[^\s./#,:;<>@'\"]{1,80}")
@@ -148,6 +154,18 @@ def channel_id(value: str) -> str | None:
     return link[2] if link else None
 
 
+def is_group_dm_name(name: str) -> bool:
+    """Whether a channel name is Slack's name for a group DM."""
+    return channel_name(name).startswith(GROUP_DM_PREFIX)
+
+
+def is_direct_message(value: str) -> bool:
+    """Whether a slack_channels entry is a DM or a group DM: a D... ID, a link to one, or an
+    mpdm-... name (CON-5)."""
+    value = value.strip()
+    return bool(DM_ID.fullmatch(value) or DM_LINK.fullmatch(value)) or is_group_dm_name(value)
+
+
 def link_workspace(value: str) -> str | None:
     """The workspace address in a channel link, like https://example.slack.com."""
     link = CHANNEL_LINK.fullmatch(value.strip())
@@ -224,6 +242,12 @@ def load_config(path: str | Path | None = None) -> Config:
     channel_ids: dict[str, int] = {}  # ID to its entry number
     listed_channels: list[str] = []
     for number, listed in enumerate(channels, start=1):
+        if is_direct_message(listed):
+            raise ConfigError(
+                f"Entry {number} in slack_channels in {path} is a direct message or a group DM. "
+                "diffdata never collects those: the other people in them never agreed (CON-5). "
+                "Remove it. Nothing was collected."
+            )
         found = channel_id(listed)
         if found is not None:
             if found in channel_ids:

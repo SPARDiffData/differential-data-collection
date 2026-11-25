@@ -1,6 +1,6 @@
 """The `diffdata` command.
 
-`setup` and `team-command` (ENG-1, CON-1, STO-1), `discover slack` (DIS-1), `consent` (CON-1,
+`setup` (ENG-1, CON-1, STO-1), `discover slack` (DIS-1), `consent` (CON-1,
 CON-3), `collect google-docs` (COL-4, COL-5), `scrub` (SCR-1, SCR-2) and `push` (STO-1, STO-2,
 STO-3) are built. Any other subcommand
 added before it's built is a stub that names the requirement IDs (docs/requirements.md) its
@@ -9,6 +9,7 @@ feature Issue will build.
 
 import argparse
 import sys
+from pathlib import Path
 
 from diffdata import __version__
 from diffdata.collect import google_fetch, google_signin
@@ -26,10 +27,6 @@ COMMANDS = {
     "setup": (
         "Answer a few questions in your own terminal, and diffdata writes config.toml for you.",
         "ENG-1, CON-1, STO-1",
-    ),
-    "team-command": (
-        "For the project team: print the setup command to send a team's producers.",
-        "STO-1",
     ),
     "discover": ("Find Slack messages and the sources they reference.", "DIS-1, DIS-2, DIS-3"),
     "consent": (
@@ -83,11 +80,8 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "collect":
             add_collect_sources(command)
         if name == "setup":
-            team_help = "The team values, as the project team's command gives them."
-            command.add_argument("--team", metavar="bucket=…,folder=…,project=…", help=team_help)
-        if name == "team-command":
-            for value in producer_setup.TEAM_KEYS:
-                command.add_argument(f"--{value}", required=True)
+            team_help = "The team file the project team sent you (<team>.diffdata-team.json)."
+            command.add_argument("team_file", nargs="?", metavar="TEAM_FILE", help=team_help)
     return parser
 
 
@@ -129,8 +123,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "setup":
         return run_setup(args)
-    if args.command == "team-command":
-        return run_team_command(args)
     if args.command == "discover":
         return run_slack_step(args)
     if args.command == "consent":
@@ -156,22 +148,18 @@ def run_setup(args: argparse.Namespace) -> int:
         print(f"diffdata: {producer_setup.NOT_A_TERMINAL}", file=sys.stderr)
         return 1
     try:
-        return producer_setup.setup(team=args.team)
+        team = Path(args.team_file) if args.team_file else None
+        return producer_setup.setup(team_file=team)
     except (producer_setup.SetupError, ConfigError, UnsafeDataDirError) as e:
         print(f"diffdata setup: {e}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        # setup() says what it wrote; this is the last net, with no traceback.
+        print(f"diffdata setup: stopped: {e}", file=sys.stderr)
         return 1
     except (KeyboardInterrupt, EOFError):
         print("\ndiffdata setup: stopped. A config.toml is changed only after your last yes.")
         return 130
-
-
-def run_team_command(args: argparse.Namespace) -> int:
-    try:
-        print(producer_setup.team_command(args.bucket, args.folder, args.project))
-    except producer_setup.SetupError as e:
-        print(f"diffdata team-command: {e}", file=sys.stderr)
-        return 1
-    return 0
 
 
 def run_consent_step(args: argparse.Namespace) -> int:

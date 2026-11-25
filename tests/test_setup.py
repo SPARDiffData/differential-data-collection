@@ -1,8 +1,9 @@
-"""`diffdata setup` and `diffdata team-command` (#130). One test or more per must-refuse item.
+"""`diffdata setup` (#130, team file from #132). One test or more per must-refuse item.
 
 Every test runs in a fake home: HOME and USERPROFILE point at a temporary folder, and
-config.toml's place is inside it. No test reads the real ~/.diffdata/. The key file is made
-up, with a marker that must never show in what setup prints. Names are examples only.
+config.toml's place is inside it. No test reads the real ~/.diffdata/. The team file, its key
+and its client file are made up, with a marker that must never show in what setup prints.
+Names are examples only.
 """
 
 import json
@@ -19,7 +20,6 @@ from diffdata.common import config as config_module
 from diffdata.common import setup
 from diffdata.common.setup import PSEUDONYM, Prompter, SetupError
 
-TEAM = "bucket=example-bucket,folder=team-a,project=example-project"
 LINK = "https://example.slack.com/archives/C00000002"
 MARKER = "MADE-UP-KEY-MARKER"
 KEY = {
@@ -28,6 +28,8 @@ KEY = {
     "client_email": f"{MARKER.lower()}@example-project.iam.gserviceaccount.com",
     "project_id": MARKER.lower(),
 }
+CLIENT = {"installed": {"client_id": f"{MARKER}.apps.example", "client_secret": MARKER}}
+VALUES = {"bucket": "example-bucket", "folder": "team-a", "project": "example-project"}
 POSIX = pytest.mark.skipif(os.name == "nt", reason="file modes are for macOS and Linux")
 
 
@@ -67,6 +69,19 @@ def home(tmp_path, monkeypatch):
     return fake
 
 
+def team_file(home: Path, name="team-a", client=True, **changes) -> Path:
+    """A made-up team file in the fake Downloads folder."""
+    data = {"format": "diffdata-team", "version": 1, **VALUES, "store_key": KEY}
+    if client:
+        data["google_client"] = CLIENT
+    data.update(changes)
+    data = {k: v for k, v in data.items() if v is not None}
+    path = home / "Downloads" / f"{name}.diffdata-team.json"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
 def settings(home: Path) -> Path:
     return home / ".diffdata" / "config.toml"
 
@@ -80,14 +95,16 @@ def fixed(char="k"):
 
 
 def fresh_answers(channels: str = f"example-channel, {LINK}") -> list[str]:
-    """Answers for a first setup with --team: use the team values, the default data folder,
-    the channels, the workspace, the made-up handle, write, key later."""
-    return ["", "", channels, "example.slack.com", "", "y", ""]
+    """Answers for a first setup with a team file: use the team values, the default data
+    folder, the channels, the workspace, the made-up handle, write, keep the team file."""
+    return ["y", "", channels, "example.slack.com", "", "y", ""]
 
 
-def run(home, *answers, team=TEAM, picker=no_picker, choose=None) -> tuple[int, Script]:
+def run(home, *answers, team="default", picker=no_picker, choose=None) -> tuple[int, Script]:
+    if team == "default":
+        team = team_file(home)
     script = Script(*answers)
-    code = setup.setup(team=team, prompter=script, picker=picker, choose=choose or fixed())
+    code = setup.setup(team_file=team, prompter=script, picker=picker, choose=choose or fixed())
     return code, script
 
 
@@ -97,6 +114,10 @@ def write_key(home: Path, mode: int = 0o600, data: dict | None = None) -> Path:
     key.write_text(json.dumps(data or KEY), encoding="utf-8")
     os.chmod(key, mode)
     return key
+
+
+def no_marker(text: str) -> bool:
+    return MARKER not in text and MARKER.lower() not in text
 
 
 EXISTING = """\
@@ -122,6 +143,10 @@ project = "example-project"
 send_not_approved = "yes"
 """
 
+# A re-run with no team file: change it; use the old team values; keep the data folder; new
+# channels; keep the workspace and the handle; write.
+CHANGE = ["y", "y", "", "new-channel", "", "", "y"]
+
 
 def existing(home: Path) -> Path:
     path = settings(home)
@@ -142,14 +167,14 @@ def test_a_first_setup_writes_a_config_that_push_takes(home):
     assert raw["local"]["data_dir"] == "~/diffdata-data"
     assert raw["store"] == {
         "backend": "gcs",
-        "bucket": "example-bucket",
-        "folder": "team-a",
-        "project": "example-project",
+        **VALUES,
         "producer": "example-project-kkkk",
         "send_not_approved": "no",
     }
     config = config_module.load_config(settings(home))
     assert config.slack_channel_ids == ("C00000002",)
+    assert setup.push.read_key(home / ".diffdata" / "store-key.json") == KEY
+    assert json.loads((home / ".diffdata" / "google-client.json").read_text()) == CLIENT
     assert (home / "diffdata-data").is_dir()
     assert "/slack-export" in script.text
 
@@ -157,8 +182,10 @@ def test_a_first_setup_writes_a_config_that_push_takes(home):
 @POSIX
 def test_the_settings_folder_config_and_data_folder_are_private(home):
     run(home, *fresh_answers())
-    assert stat.S_IMODE(settings(home).stat().st_mode) == 0o600
-    assert stat.S_IMODE(settings(home).parent.stat().st_mode) == 0o700
+    folder = settings(home).parent
+    for name in ("config.toml", "store-key.json", "google-client.json"):
+        assert stat.S_IMODE((folder / name).stat().st_mode) == 0o600
+    assert stat.S_IMODE(folder.stat().st_mode) == 0o700
     assert stat.S_IMODE((home / "diffdata-data").stat().st_mode) == 0o700
 
 
@@ -175,21 +202,36 @@ def test_a_no_at_the_last_question_writes_nothing(home):
     answers[5] = ""  # Write this? [y/N]
     code, script = run(home, *answers[:6])
     assert code == 0
-    assert not settings(home).exists()
+    assert not settings(home).parent.exists()
     assert not (home / "diffdata-data").exists()
     assert setup.NOTHING_WRITTEN in script.text
+
+
+def test_a_team_file_with_no_google_client_still_works(home):
+    code, _ = run(home, *fresh_answers(), team=team_file(home, client=False))
+    assert code == 0
+    assert (home / ".diffdata" / "store-key.json").exists()
+    assert not (home / ".diffdata" / "google-client.json").exists()
+
+
+def test_with_no_team_file_and_no_config_setup_asks_for_one(home):
+    path = team_file(home)
+    code, script = run(home, "", str(path), *fresh_answers(), team=None)
+    assert code == 0
+    assert "Give the team file" in script.text
+    assert sum(line.startswith("Team file's path") for line in script.shown) == 2
 
 
 # --- must refuse 1: only a person at a terminal ------------------------------------------
 
 
 def test_must_refuse_1_setup_wont_run_outside_a_terminal(home, capsys):
-    assert cli.main(["setup", "--team", TEAM]) == 1
+    assert cli.main(["setup", str(team_file(home))]) == 1
     assert "only runs in a terminal" in capsys.readouterr().err
     assert not settings(home).parent.exists()
 
 
-def test_must_refuse_1_the_check_comes_before_anything_else(home, monkeypatch, capsys):
+def test_must_refuse_1_the_check_comes_before_anything_else(home, monkeypatch):
     called = []
     monkeypatch.setattr(setup, "setup", lambda **kw: called.append(kw) or 0)
     assert cli.main(["setup"]) == 1
@@ -202,20 +244,28 @@ def test_must_refuse_1_the_check_comes_before_anything_else(home, monkeypatch, c
 def test_must_refuse_2_an_existing_config_is_kept_without_a_yes(home):
     path = existing(home)
     before = path.read_bytes()
-    code, script = run(home, "", "")  # Change it? [y/N]; key: later
+    code, script = run(home, "", team=None)  # Change it? [y/N]
     assert code == 0
     assert path.read_bytes() == before
     assert not (path.parent / setup.BACKUP_NAME).exists()
     assert "passes diffdata's checks" in script.text
 
 
+def test_must_refuse_2_a_team_file_isnt_used_without_changing_the_config(home):
+    path = existing(home)
+    before = path.read_bytes()
+    code, script = run(home, "")
+    assert code == 0
+    assert path.read_bytes() == before
+    assert "team file wasn't used" in script.text
+    assert not (home / ".diffdata" / "store-key.json").exists()
+
+
 def test_must_refuse_2_and_3_a_change_keeps_a_backup_and_every_other_setting(home):
     path = existing(home)
     before = path.read_bytes()
     old = tomllib.loads(before.decode("utf-8"))
-    # Change: yes; team values from the old config: use; data folder: keep; channels: new;
-    # workspace: keep; handle: keep; write: yes; key: later.
-    code, _ = run(home, "y", "", "", "new-channel", "", "", "y", "", team=None)
+    code, _ = run(home, *CHANGE, team=None)
     assert code == 0
     assert (path.parent / setup.BACKUP_NAME).read_bytes() == before
     new = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -224,20 +274,65 @@ def test_must_refuse_2_and_3_a_change_keeps_a_backup_and_every_other_setting(hom
     assert new == old  # slack_opted_out, canvases, docs, refresh days, send_not_approved
 
 
+def test_a_rerun_says_typed_channels_replace_the_list(home):
+    existing(home)
+    _, script = run(home, *CHANGE, team=None)
+    assert "what you type replaces this list" in script.text
+
+
 def test_must_refuse_2_an_old_backup_is_replaced_only_on_a_second_yes(home):
     path = existing(home)
     backup = path.parent / setup.BACKUP_NAME
     backup.write_text("older backup\n", encoding="utf-8")
     before = path.read_bytes()
-    code, script = run(home, "y", "", "", "new-channel", "", "", "y", "", team=None)
+    code, script = run(home, *CHANGE, "", team=None)
     assert code == 1
     assert path.read_bytes() == before
     assert backup.read_text(encoding="utf-8") == "older backup\n"
     assert setup.NOTHING_WRITTEN in script.text
 
-    code, _ = run(home, "y", "", "", "new-channel", "", "", "y", "y", "", team=None)
+    code, _ = run(home, *CHANGE, "y", team=None)
     assert code == 0
     assert backup.read_bytes() == before
+
+
+@POSIX
+def test_the_backup_is_private_and_replaces_the_old_one_in_one_step(home):
+    path = existing(home)
+    backup = path.parent / setup.BACKUP_NAME
+    backup.write_text("older backup\n", encoding="utf-8")
+    os.chmod(backup, 0o644)
+    before = path.read_bytes()
+    run(home, *CHANGE, "y", team=None)
+    assert backup.read_bytes() == before
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+    assert not list(path.parent.glob(".config-bak-*"))
+
+
+@POSIX
+def test_a_backup_that_is_a_link_is_refused_and_its_target_kept(home):
+    path = existing(home)
+    target = home / "precious.txt"
+    target.write_text("keep me\n", encoding="utf-8")
+    (path.parent / setup.BACKUP_NAME).symlink_to(target)
+    before = path.read_bytes()
+    with pytest.raises(SetupError, match="is a link or a folder"):
+        run(home, *CHANGE, team=None)
+    assert target.read_text(encoding="utf-8") == "keep me\n"
+    assert path.read_bytes() == before
+
+
+@POSIX
+def test_a_config_that_is_a_link_is_never_written_through(home):
+    real = home / "elsewhere.toml"
+    real.write_text(EXISTING.format(data=(home / "old-data").as_posix()), encoding="utf-8")
+    settings(home).parent.mkdir(parents=True)
+    settings(home).symlink_to(real)
+    before = real.read_bytes()
+    with pytest.raises(SetupError, match="is a link"):
+        run(home, *CHANGE, team=None)
+    assert real.read_bytes() == before
+    assert settings(home).is_symlink()
 
 
 def test_must_refuse_3_a_config_that_cant_be_read_is_never_replaced(home):
@@ -254,7 +349,7 @@ def test_must_refuse_3_a_setting_setup_cant_write_again_stops_it(home):
     path.write_text(path.read_text(encoding="utf-8") + "[extra]\nwhen = 1979-05-27\n")
     before = path.read_bytes()
     with pytest.raises(SetupError, match="can't keep when under"):
-        run(home, "y", "", "", "new-channel", "", "", "y", team=None)
+        run(home, *CHANGE, team=None)
     assert path.read_bytes() == before
 
 
@@ -276,7 +371,7 @@ def test_must_refuse_4_a_config_the_tool_would_refuse_is_never_written(home):
     path.write_text(path.read_text(encoding="utf-8").replace("folders = []", "slack_optout = []"))
     before = path.read_bytes()
     with pytest.raises(SetupError, match="don't pass diffdata's checks"):
-        run(home, "y", "", "", "new-channel", "", "", "y", team=None)
+        run(home, *CHANGE, team=None)
     assert path.read_bytes() == before
     assert sorted(p.name for p in path.parent.iterdir()) == ["config.toml", "config.toml.bak"]
 
@@ -290,12 +385,23 @@ def test_must_refuse_5_ctrl_c_while_writing_leaves_the_old_file(home, monkeypatc
 
     monkeypatch.setattr(setup.os, "replace", interrupted)
     with pytest.raises(KeyboardInterrupt):
-        run(home, "y", "", "", "new-channel", "", "", "y", team=None)
+        run(home, *CHANGE, team=None)
     assert path.read_bytes() == before
     assert not list(path.parent.glob(".config-*"))
 
 
-# --- must refuse 6: only channels the person typed or pasted -----------------------------
+def test_an_os_error_after_the_write_says_the_config_was_written(home, monkeypatch):
+    def cant_make(*args, **kwargs):
+        raise PermissionError("made-up refusal")
+
+    answers = fresh_answers()
+    monkeypatch.setattr(setup, "install_team_file", cant_make)
+    with pytest.raises(SetupError, match="was written, but then something failed"):
+        run(home, *answers[:6])
+    assert settings(home).exists()
+
+
+# --- must refuse 6 and 17: only channels, typed or pasted --------------------------------
 
 
 @pytest.mark.parametrize(
@@ -319,7 +425,27 @@ def test_must_refuse_6_a_channel_answer_that_isnt_channels_is_asked_again(home, 
     assert sum(line.startswith("Channels") for line in script.shown) == 2
 
 
-def test_must_refuse_6_no_channel_comes_from_the_team_values(home):
+@pytest.mark.parametrize(
+    "dm",
+    [
+        "D00000001",  # a DM's ID
+        "https://example.slack.com/archives/D00000001",
+        "https://example.slack.com/archives/D00000001/p1700000000000100",
+        "mpdm-alex--sam--kim-1",  # Slack's name for a group DM
+        "#MPDM-alex--sam-1",
+    ],
+)
+def test_must_refuse_17_a_dm_or_group_dm_is_never_listed(home, dm):
+    answers = fresh_answers()
+    answers[2:3] = [dm, "example-channel"]
+    code, script = run(home, *answers)
+    assert code == 0
+    assert "direct message or a group DM" in script.text and "CON-5" in script.text
+    channels = tomllib.loads(settings(home).read_text())["sources"]["slack_channels"]
+    assert channels == ["example-channel"]
+
+
+def test_must_refuse_6_no_channel_comes_from_the_team_file(home):
     code, _ = run(home, *fresh_answers("example-channel"))
     assert code == 0
     channels = tomllib.loads(settings(home).read_text())["sources"]["slack_channels"]
@@ -361,6 +487,7 @@ def test_must_refuse_7_a_chosen_folder_in_a_repo_or_synced_folder_is_refused(hom
 
 
 def test_must_refuse_7_a_refused_default_goes_straight_to_choosing(home, monkeypatch):
+    path = team_file(home)
     synced = home / "OneDrive"
     synced.mkdir()
     for name in ("HOME", "USERPROFILE"):
@@ -368,210 +495,10 @@ def test_must_refuse_7_a_refused_default_goes_straight_to_choosing(home, monkeyp
     typed = home / "typed-data"
     answers = fresh_answers()
     answers[1:2] = [str(typed), ""]  # no picker: typed path; then use it
-    code, script = run(home, *answers)
+    code, script = run(home, *answers, team=path)
     assert code == 0
     assert "OneDrive" in script.text
     assert typed.is_dir()
-
-
-# --- must refuse 8: values push would refuse ---------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("team", "named"),
-    [
-        ("bucket=Bad_Bucket,folder=team-a,project=example-project", "bucket"),
-        ("bucket=example-bucket,folder=team/a,project=example-project", "folder"),
-        ("bucket=example-bucket,folder=team-a", "project"),
-        ("bucket=example-bucket,folder=team-a,project=p,extra=x", "bucket=…"),
-        ("bucket=example-bucket,bucket=b2,folder=team-a,project=p", "twice"),
-    ],
-)
-def test_must_refuse_8_bad_team_values_are_refused_naming_the_key_only(home, team, named):
-    with pytest.raises(SetupError, match=named) as e:
-        run(home, team=team)
-    for value in ("Bad_Bucket", "team/a", "b2"):
-        assert value not in str(e.value)
-    assert not settings(home).exists()
-
-
-def test_must_refuse_8_a_bad_handle_is_asked_again(home):
-    answers = fresh_answers()
-    answers[4:5] = ["my name", "a/b", "team-a-1"]
-    code, _ = run(home, *answers)
-    assert code == 0
-    assert tomllib.loads(settings(home).read_text())["store"]["producer"] == "team-a-1"
-
-
-# --- must refuse 9 and 10: the store key -------------------------------------------------
-
-
-@POSIX
-def test_must_refuse_9_and_10_a_key_is_checked_and_never_shown(home):
-    key = write_key(home, mode=0o644)
-    before = key.read_bytes()
-    answers = fresh_answers()
-    answers[-1] = "n"  # chmod 600? no
-    code, script = run(home, *answers)
-    assert code == 0
-    assert "Store key found." in script.text
-    assert MARKER not in script.text and MARKER.lower() not in script.text
-    assert stat.S_IMODE(key.stat().st_mode) == 0o644
-    assert key.read_bytes() == before
-
-
-@POSIX
-def test_must_refuse_10_the_key_mode_changes_only_on_a_yes(home):
-    key = write_key(home, mode=0o644)
-    answers = fresh_answers()
-    answers[-1] = "y"
-    run(home, *answers)
-    assert stat.S_IMODE(key.stat().st_mode) == 0o600
-
-
-def test_must_refuse_9_a_file_that_isnt_a_key_says_so_without_quoting_it(home):
-    write_key(home, data={"type": "authorized_user", "refresh_token": MARKER})
-    _, script = run(home, *fresh_answers()[:-1])
-    assert "isn't a Google service account key" in script.text
-    assert MARKER not in script.text
-
-
-@POSIX
-def test_setup_puts_a_downloaded_key_in_place(home):
-    download = home / "Downloads" / "example-project-1234.json"
-    download.parent.mkdir()
-    download.write_text(json.dumps(KEY), encoding="utf-8")
-    answers = fresh_answers()
-    answers[-1:] = [str(download), "y"]  # the key's path; delete the download: yes
-    code, script = run(home, *answers)
-    assert code == 0
-    key = home / ".diffdata" / "store-key.json"
-    assert json.loads(key.read_text(encoding="utf-8")) == KEY
-    assert stat.S_IMODE(key.stat().st_mode) == 0o600
-    assert not download.exists()
-    assert MARKER not in script.text and MARKER.lower() not in script.text
-
-
-def test_a_downloaded_file_that_isnt_a_key_is_refused_and_kept(home):
-    download = home / "not-a-key.json"
-    download.write_text(json.dumps({"type": "authorized_user", "x": MARKER}), encoding="utf-8")
-    answers = fresh_answers()
-    answers[-1:] = [str(download), ""]  # a wrong file, then "later"
-    _, script = run(home, *answers)
-    assert not (home / ".diffdata" / "store-key.json").exists()
-    assert download.exists()
-    assert MARKER not in script.text
-    assert not list((home / ".diffdata").glob(".store-key-*"))
-
-
-def test_a_downloaded_key_is_kept_without_a_yes(home):
-    download = home / "key.json"
-    download.write_text(json.dumps(KEY), encoding="utf-8")
-    answers = fresh_answers()
-    answers[-1:] = [str(download), ""]
-    run(home, *answers)
-    assert download.exists()
-
-
-# --- must refuse 11 and 12: no config moved, nothing sent --------------------------------
-
-
-def test_must_refuse_11_a_second_config_here_stops_setup_and_stays(home):
-    here = Path.cwd() / "config.toml"
-    here.write_text("# a config in the current folder\n", encoding="utf-8")
-    with pytest.raises(SetupError, match="Move that file away or delete it yourself"):
-        run(home)
-    assert here.read_text(encoding="utf-8") == "# a config in the current folder\n"
-    assert not settings(home).exists()
-
-
-def test_must_refuse_12_setup_makes_no_network_call(home, monkeypatch):
-    def no_network(*args, **kwargs):
-        raise AssertionError("setup opened a network connection")
-
-    monkeypatch.setattr(socket, "socket", no_network)
-    monkeypatch.setattr(socket, "create_connection", no_network)
-    write_key(home)
-    code, _ = run(home, *fresh_answers()[:-1])
-    assert code == 0
-
-
-# --- must refuse 13 and 14: the handle ---------------------------------------------------
-
-
-def test_must_refuse_13_the_default_handle_is_made_up(home):
-    run(home, *fresh_answers(), choose=setup.secrets.choice)
-    handle = tomllib.loads(settings(home).read_text())["store"]["producer"]
-    assert handle.startswith("example-project-") and len(handle) == len("example-project-") + 4
-    assert "fakeperson" not in handle
-
-
-def test_must_refuse_13_a_long_project_name_still_gives_a_handle_push_takes():
-    handle = setup.new_handle("p" * 64, fixed())
-    assert setup.push.SEGMENT.fullmatch(handle)
-
-
-def test_must_refuse_14_a_saved_handle_stays_the_default(home):
-    existing(home)
-    run(home, "y", "", "", "new-channel", "", "", "y", "", team=None)
-    assert tomllib.loads(settings(home).read_text())["store"]["producer"] == "saved-handle-1"
-
-
-# --- must refuse 15 and 16: the team values ----------------------------------------------
-
-
-def test_must_refuse_15_a_team_file_lying_around_is_never_read(home):
-    for folder in (Path.cwd(), home / "Downloads", home / ".diffdata"):
-        folder.mkdir(exist_ok=True)
-        (folder / "diffdata-team.txt").write_text(
-            "bucket=found-bucket,folder=found,project=found", encoding="utf-8"
-        )
-    answers = ["paste: " + TEAM, *fresh_answers()]
-    answers[0] = TEAM  # the paste
-    code, script = run(home, *answers, team=None)
-    assert code == 0
-    assert "found" not in settings(home).read_text(encoding="utf-8")
-    assert "Paste the setup command" in script.text
-
-
-def test_must_refuse_15_the_whole_pasted_command_works(home):
-    answers = [f"uv run diffdata setup --team {TEAM}", *fresh_answers()]
-    code, _ = run(home, *answers, team=None)
-    assert code == 0
-    assert tomllib.loads(settings(home).read_text())["store"]["bucket"] == "example-bucket"
-
-
-def test_must_refuse_16_team_values_are_shown_and_need_a_yes(home):
-    other = "bucket=other-bucket,folder=team-b,project=example-project"
-    answers = ["n", other, *fresh_answers()]
-    code, script = run(home, *answers)
-    assert code == 0
-    assert "bucket example-bucket, folder team-a" in script.text
-    assert tomllib.loads(settings(home).read_text())["store"]["bucket"] == "other-bucket"
-
-
-# --- team-command ------------------------------------------------------------------------
-
-
-def test_team_command_prints_the_setup_command(capsys):
-    args = ["--bucket", "example-bucket", "--folder", "team-a", "--project", "example-project"]
-    assert cli.main(["team-command", *args]) == 0
-    out = capsys.readouterr().out
-    assert f"uv run diffdata setup --team {TEAM}" in out
-    assert setup.parse_team(out.splitlines()[-1]) == {
-        "bucket": "example-bucket",
-        "folder": "team-a",
-        "project": "example-project",
-    }
-
-
-def test_team_command_refuses_a_value_push_would_refuse(capsys, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    args = ["--bucket", "Bad_Bucket", "--folder", "team-a", "--project", "example-project"]
-    assert cli.main(["team-command", *args]) == 1
-    err = capsys.readouterr().err
-    assert "bucket" in err and "Bad_Bucket" not in err
-    assert list(tmp_path.iterdir()) == []
 
 
 def test_a_typed_relative_data_folder_is_saved_as_an_absolute_path(home):
@@ -581,59 +508,6 @@ def test_a_typed_relative_data_folder_is_saved_as_an_absolute_path(home):
     assert code == 0
     saved = tomllib.loads(settings(home).read_text())["local"]["data_dir"]
     assert saved == str((Path.cwd().parent / "relative-data").resolve())
-    assert Path(saved).is_absolute()
-
-
-# --- fixes after Codex's first review --------------------------------------------------
-
-
-@POSIX
-def test_a_backup_that_is_a_link_is_refused_and_its_target_kept(home):
-    path = existing(home)
-    target = home / "precious.txt"
-    target.write_text("keep me\n", encoding="utf-8")
-    (path.parent / setup.BACKUP_NAME).symlink_to(target)
-    before = path.read_bytes()
-    with pytest.raises(SetupError, match="is a link or a folder"):
-        run(home, "y", "", "", "new-channel", "", "", "y", team=None)
-    assert target.read_text(encoding="utf-8") == "keep me\n"
-    assert path.read_bytes() == before
-
-
-def test_a_settings_folder_in_a_synced_folder_is_refused_before_anything(home, monkeypatch):
-    synced = home / "Dropbox" / ".diffdata" / "config.toml"
-    monkeypatch.setattr(config_module, "user_config_file", lambda: synced)
-    with pytest.raises(SetupError, match="synced folder"):
-        run(home)
-    assert not (home / "Dropbox").exists()
-
-
-def test_a_key_saved_meanwhile_is_never_written_over(home, monkeypatch):
-    download = home / "key.json"
-    download.write_text(json.dumps(KEY), encoding="utf-8")
-    key = home / ".diffdata" / "store-key.json"
-    real_read_key = setup.push.read_key
-
-    def read_key_then_another_window_saves_one(path):
-        found = real_read_key(path)
-        if path != key:
-            key.write_text("saved by another window\n", encoding="utf-8")
-        return found
-
-    monkeypatch.setattr(setup.push, "read_key", read_key_then_another_window_saves_one)
-    answers = fresh_answers()
-    answers[-1:] = [str(download), ""]  # the download; then "later"
-    _, script = run(home, *answers)
-    assert key.read_text(encoding="utf-8") == "saved by another window\n"
-    assert "appeared" in script.text
-    assert not list(key.parent.glob(".store-key-*"))
-
-
-@POSIX
-def test_must_refuse_10_enter_at_the_chmod_question_changes_nothing(home):
-    key = write_key(home, mode=0o644)
-    run(home, *fresh_answers())  # the last answer, for the chmod question, is Enter
-    assert stat.S_IMODE(key.stat().st_mode) == 0o644
 
 
 def test_a_data_folder_that_is_a_file_is_asked_again(home):
@@ -647,36 +521,130 @@ def test_a_data_folder_that_is_a_file_is_asked_again(home):
     assert tomllib.loads(settings(home).read_text())["local"]["data_dir"] == str(home / "good")
 
 
-@POSIX
-def test_a_config_that_is_a_link_is_never_written_through(home):
-    real = home / "elsewhere.toml"
-    real.write_text(EXISTING.format(data=(home / "old-data").as_posix()), encoding="utf-8")
-    settings(home).parent.mkdir(parents=True)
-    settings(home).symlink_to(real)
-    before = real.read_bytes()
-    with pytest.raises(SetupError, match="is a link"):
-        run(home, "y", "", "", "new-channel", "", "", "y", team=None)
-    assert real.read_bytes() == before
-    assert settings(home).is_symlink()
-    assert not (settings(home).parent / setup.BACKUP_NAME).exists()
+def test_a_settings_folder_in_a_synced_folder_is_refused_before_anything(home, monkeypatch):
+    path = team_file(home)
+    synced = home / "Dropbox" / ".diffdata" / "config.toml"
+    monkeypatch.setattr(config_module, "user_config_file", lambda: synced)
+    with pytest.raises(SetupError, match="synced folder"):
+        run(home, team=path)
+    assert not (home / "Dropbox").exists()
+
+
+# --- must refuse 8: values push would refuse, and a team file that isn't one -------------
+
+
+@pytest.mark.parametrize(
+    ("changes", "named"),
+    [
+        ({"bucket": "Bad_Bucket"}, "bucket"),
+        ({"folder": "team/a"}, "folder"),
+        ({"project": None}, "no project"),
+        ({"store_key": None}, "no store_key"),
+        ({"extra": "x"}, "doesn't know"),
+        ({"version": 2}, "version 1"),
+        ({"version": True}, "version 1"),
+        ({"format": "something-else"}, "isn't a diffdata team file"),
+        ({"bucket": 3}, "must be text"),
+        ({"store_key": {"type": "authorized_user", "refresh_token": MARKER}}, "store key"),
+        ({"store_key": {**KEY, "token_uri": "https://example.com/token"}}, "store key"),
+        ({"google_client": {"web": {"client_id": MARKER}}}, "Desktop app client"),
+    ],
+)
+def test_must_refuse_8_a_bad_team_file_is_refused_without_quoting_it(home, changes, named):
+    with pytest.raises(SetupError, match=named) as e:
+        run(home, team=team_file(home, **changes))
+    for value in ("Bad_Bucket", "team/a", "something-else"):
+        assert value not in str(e.value)
+    assert no_marker(str(e.value))
+    assert not settings(home).parent.exists()
+
+
+@pytest.mark.parametrize("content", ["not json", "[1, 2]", "x" * 300_000])
+def test_must_refuse_8_a_file_that_isnt_json_or_is_too_big_is_refused(home, content):
+    path = home / "Downloads" / "odd.diffdata-team.json"
+    path.parent.mkdir()
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(SetupError, match="team file"):
+        run(home, team=path)
 
 
 @POSIX
-def test_the_backup_is_private_and_replaces_the_old_one_in_one_step(home):
-    path = existing(home)
-    backup = path.parent / setup.BACKUP_NAME
-    backup.write_text("older backup\n", encoding="utf-8")
-    os.chmod(backup, 0o644)
-    before = path.read_bytes()
-    run(home, "y", "", "", "new-channel", "", "", "y", "y", "", team=None)
-    assert backup.read_bytes() == before
-    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
-    assert not list(path.parent.glob(".config-bak-*"))
+def test_must_refuse_8_a_team_file_that_is_a_link_is_refused(home):
+    real = team_file(home)
+    link = home / "link.diffdata-team.json"
+    link.symlink_to(real)
+    with pytest.raises(SetupError, match="not a folder or a link"):
+        run(home, team=link)
 
 
-def test_a_key_write_cut_short_leaves_no_key(home, monkeypatch):
-    download = home / "key.json"
-    download.write_text(json.dumps(KEY), encoding="utf-8")
+def test_must_refuse_8_a_bad_handle_is_asked_again(home):
+    answers = fresh_answers()
+    answers[4:5] = ["my name", "a/b", "team-a-1"]
+    code, _ = run(home, *answers)
+    assert code == 0
+    assert tomllib.loads(settings(home).read_text())["store"]["producer"] == "team-a-1"
+
+
+# --- must refuse 9, 10 and 18: the key and the client file -------------------------------
+
+
+def test_must_refuse_9_and_18_nothing_from_the_key_or_client_file_is_shown(home, capsys):
+    _, script = run(home, *fresh_answers())
+    assert no_marker(script.text)
+    assert no_marker(capsys.readouterr().out)
+
+
+@POSIX
+def test_must_refuse_10_a_key_others_can_read_changes_only_on_a_typed_yes(home):
+    existing(home)
+    key = write_key(home, mode=0o644)
+    run(home, "", "", team=None)  # Change it? no; chmod? Enter
+    assert stat.S_IMODE(key.stat().st_mode) == 0o644
+    run(home, "", "y", team=None)
+    assert stat.S_IMODE(key.stat().st_mode) == 0o600
+
+
+def test_must_refuse_18_a_different_key_is_replaced_only_on_a_typed_yes(home):
+    other = {**KEY, "client_email": "other@example-project.iam.gserviceaccount.com"}
+    key = write_key(home, data=other)
+    before = key.read_bytes()
+    answers = fresh_answers()
+    answers[-1:] = ["", ""]  # replace the key? Enter; delete the team file? Enter
+    run(home, *answers)
+    assert key.read_bytes() == before
+
+    settings(home).unlink()
+    answers = fresh_answers()
+    answers[-1:] = ["y", ""]
+    run(home, *answers)
+    assert setup.push.read_key(key) == KEY
+
+
+def test_must_refuse_18_the_team_file_is_deleted_only_on_a_typed_yes(home):
+    path = team_file(home)
+    run(home, *fresh_answers(), team=path)
+    assert path.exists()
+
+    settings(home).unlink()
+    answers = fresh_answers()
+    answers[-1] = "y"
+    run(home, *answers, team=path)
+    assert not path.exists()
+
+
+@POSIX
+def test_must_refuse_18_a_key_place_that_is_a_link_is_never_written_through(home):
+    target = home / "precious.txt"
+    target.write_text("keep me\n", encoding="utf-8")
+    folder = home / ".diffdata"
+    folder.mkdir()
+    (folder / "store-key.json").symlink_to(target)
+    _, script = run(home, *fresh_answers())
+    assert target.read_text(encoding="utf-8") == "keep me\n"
+    assert "store key wasn't put there" in script.text
+
+
+def test_must_refuse_18_a_key_write_cut_short_leaves_no_key(home, monkeypatch):
     key = home / ".diffdata" / "store-key.json"
     real_open, real_fdopen = setup.os.open, setup.os.fdopen
     key_fds = []
@@ -705,9 +673,95 @@ def test_a_key_write_cut_short_leaves_no_key(home, monkeypatch):
 
     monkeypatch.setattr(setup.os, "open", open_and_note)
     monkeypatch.setattr(setup.os, "fdopen", fdopen)
-    answers = fresh_answers()
-    answers[-1:] = [str(download)]
     with pytest.raises(KeyboardInterrupt):
-        run(home, *answers)
+        run(home, *fresh_answers()[:6])
     assert key_fds and not key.exists()
-    assert not list(key.parent.glob(".store-key-*"))
+
+
+def test_with_no_key_a_rerun_says_it_comes_in_the_team_file(home):
+    existing(home)
+    _, script = run(home, "", team=None)
+    assert "It comes in the team file" in script.text
+
+
+# --- must refuse 11 and 12: no config moved, nothing sent --------------------------------
+
+
+def test_must_refuse_11_a_second_config_here_stops_setup_and_stays(home):
+    path = team_file(home)
+    here = Path.cwd() / "config.toml"
+    here.write_text("# a config in the current folder\n", encoding="utf-8")
+    with pytest.raises(SetupError, match="Move that file away or delete it yourself"):
+        run(home, team=path)
+    assert here.read_text(encoding="utf-8") == "# a config in the current folder\n"
+    assert not settings(home).exists()
+
+
+def test_must_refuse_12_setup_makes_no_network_call(home, monkeypatch):
+    def no_network(*args, **kwargs):
+        raise AssertionError("setup opened a network connection")
+
+    monkeypatch.setattr(socket, "socket", no_network)
+    monkeypatch.setattr(socket, "create_connection", no_network)
+    code, _ = run(home, *fresh_answers())
+    assert code == 0
+
+
+# --- must refuse 13 and 14: the handle ---------------------------------------------------
+
+
+def test_must_refuse_13_the_default_handle_is_made_up(home):
+    run(home, *fresh_answers(), choose=setup.secrets.choice)
+    handle = tomllib.loads(settings(home).read_text())["store"]["producer"]
+    assert handle.startswith("example-project-") and len(handle) == len("example-project-") + 4
+    assert "fakeperson" not in handle
+
+
+def test_must_refuse_13_a_long_project_name_still_gives_a_handle_push_takes():
+    handle = setup.new_handle("p" * 64, fixed())
+    assert setup.push.SEGMENT.fullmatch(handle)
+
+
+def test_must_refuse_14_a_saved_handle_stays_the_default(home):
+    existing(home)
+    run(home, *CHANGE, team=None)
+    assert tomllib.loads(settings(home).read_text())["store"]["producer"] == "saved-handle-1"
+
+
+# --- must refuse 15 and 16: the team values ----------------------------------------------
+
+
+def test_must_refuse_15_a_team_file_lying_around_is_never_read(home):
+    for folder in (Path.cwd(), home / "Downloads", home / ".diffdata"):
+        folder.mkdir(exist_ok=True)
+        (folder / "found.diffdata-team.json").write_text(
+            json.dumps({"format": "diffdata-team", "version": 1, "bucket": "found-bucket"}),
+            encoding="utf-8",
+        )
+    path = team_file(home)
+    code, script = run(home, str(path), *fresh_answers(), team=None)
+    assert code == 0
+    assert "found" not in settings(home).read_text(encoding="utf-8")
+    assert "Give the team file" in script.text
+
+
+def test_must_refuse_15_a_rerun_offers_the_values_setup_wrote_before(home):
+    existing(home)
+    _, script = run(home, *CHANGE, team=None)
+    assert "Your config.toml has these team values:" in script.text
+
+
+def test_must_refuse_16_team_values_need_a_typed_yes(home):
+    other = team_file(home, name="team-b", folder="team-b")
+    answers = ["", str(other), "y", *fresh_answers()[1:]]  # Enter is a no: give another file
+    code, script = run(home, *answers)
+    assert code == 0
+    assert "bucket example-bucket, folder team-a" in script.text
+    assert tomllib.loads(settings(home).read_text())["store"]["folder"] == "team-b"
+
+
+def test_team_command_and_the_team_flag_are_gone(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["team-command", "--bucket", "x", "--folder", "y", "--project", "z"])
+    with pytest.raises(SystemExit):
+        cli.main(["setup", "--team", "bucket=x,folder=y,project=z"])

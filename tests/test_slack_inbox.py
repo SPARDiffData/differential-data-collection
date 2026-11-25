@@ -1354,3 +1354,26 @@ def test_the_channels_step_keeps_config_order(tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert cli.main(["discover", "slack", "channels"]) == 0
     assert capsys.readouterr().out.splitlines()[1:] == ["C00000002", "example-channel"]
+
+
+# CON-5, must-refuse 17 on #130: a group DM is never saved, whether listed by ID or name.
+def group_dm_read(channel=CHANNEL):
+    header = f"Channel: #mpdm-alex--sam--kim-1 ({channel})\n"
+    return [{"type": "text", "text": json.dumps({"messages": header})}]
+
+
+def test_a_group_dm_listed_by_id_is_refused_at_its_first_read(by_id, capsys):
+    begin(by_id, [CHANNEL], now=T0)
+    assert save(by_id, payload(response=group_dm_read()), now=T0) == 2
+    err = capsys.readouterr().err
+    assert "group DM" in err and "CON-5" in err and "alex" not in err
+    assert inbox_files(by_id) == []
+    assert open_run(by_id.data_dir).channels == {CHANNEL: ""}
+    # Its threads can't be saved either: the channel never passed its check.
+    assert save(by_id, payload(tool="slack_read_thread", call="toolu_0002"), now=T0) == 2
+
+
+def test_begin_refuses_a_group_dm_name(config):
+    group = replace(config, slack_channels=("mpdm-alex--sam-1",))
+    with pytest.raises(SlackExportError, match="CON-5"):
+        begin(group, [f"mpdm-alex--sam-1={CHANNEL}"], now=T0)

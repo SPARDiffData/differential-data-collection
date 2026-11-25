@@ -18,17 +18,17 @@ uv run diffdata --help
 uv run pytest
 ```
 
-To configure it, run the setup command the project team sent you, in your own Terminal or PowerShell, in the repo folder. It looks like this:
+To configure it, the project team sends you a **team file** (`<team>.diffdata-team.json`). Run setup with it, in your own Terminal or PowerShell, in the repo folder:
 
 ```
-uv run diffdata setup --team bucket=example-bucket,folder=team-a,project=example-project
+uv run diffdata setup ~/Downloads/team-a.diffdata-team.json
 ```
 
-Setup asks three questions: the Slack channels to collect (type a name, or paste the channel's link), your workspace's address, and your producer handle. It makes your data folder, writes `config.toml` in a `.diffdata` folder in your home folder (`C:\Users\<you>\.diffdata\` on Windows, `~/.diffdata/` on a Mac), and puts the team's store key there if you give it the file. Run it again to change your answers: it asks before it changes anything, keeps every other setting, and keeps the old file as `config.toml.bak`. Setup only runs in a terminal you type in, and this repo's settings stop Claude from running it, because the channel list is your opt-in.
+Setup shows the team values in the file (bucket, folder, project) and asks before using them. Then it asks three questions: the Slack channels to collect (type a name, or paste the channel's link), your workspace's address, and your producer handle. It makes your data folder, and writes `config.toml` in a `.diffdata` folder in your home folder (`C:\Users\<you>\.diffdata\` on Windows, `~/.diffdata/` on a Mac). It puts the team's store key and Google client file there too, readable only by you, and never shows them. It deletes the team file only if you say yes. Direct messages and group DMs can't be listed: the other people in them never agreed. Run it again to change your answers: it asks before it changes anything, keeps every other setting, and keeps the old file as `config.toml.bak`. Setup only runs in a terminal you type in, and this repo's settings stop Claude from running it, because the channel list is your opt-in.
 
 **Your producer handle is a pseudonym.** It labels your copies in the shared store instead of your name, so it's never your real name. Setup offers a made-up one, such as `example-project-k4r7`; press Enter to take it.
 
-**For the project team:** `uv run diffdata team-command --bucket … --folder … --project …` checks the team values and prints the setup command to send each team's producers. Send it in a DM or the team's private channel, never in the repo, an Issue or a PR.
+**For the project team:** the team file is JSON: `{"format": "diffdata-team", "version": 1, "bucket": "…", "folder": "…", "project": "…", "store_key": {…the team's service account key…}, "google_client": {…the Desktop app client…}}`. `google_client` may be left out; any other key is refused. `diffdata admin add-team` will write it (#132). It holds the team's key, so send it privately, never in the repo, an Issue, a PR or a shared channel. Claude's tools may not read files named `*.diffdata-team.json`.
 
 You can still copy `config.example.toml` to `~/.diffdata/config.toml` and fill it in by hand. Also copy `.env.example` to `.env` there. Both stay on your computer. Keeping them outside the repo means tools working in the repo, such as Codex, can't read them.
 
@@ -129,8 +129,8 @@ A last check reads each copy again. A copy with anything left is held back: no f
 `uv run diffdata push` sends the copies the last scrub passed to your team's folder in the pilot bucket on Google Cloud Storage. Run it after `uv run diffdata scrub`.
 
 **One-time setup.**
-1. **Save the team's key.** The project team sends your team a key file. `uv run diffdata setup` puts it in place for you, or save it yourself as `store-key.json` in `~/.diffdata/`, next to `config.toml`. It can only add files to your team's folder: it can't read, change or delete anything there. Never share it, commit it, or open it in an AI tool. The push refuses a key inside a git repository or a synced folder. There's no Google Cloud CLI to install.
-2. **Fill in `[store]` in `config.toml`.** `uv run diffdata setup` does this from the command the project team sends. By hand: the team gives your team `bucket`, `folder` and `project`. Only `producer` is yours to choose: a pseudonym that labels your copies in the shared store instead of your name, never your real name. The push refuses to run while any of them is empty.
+1. **Save the team's key.** It comes in the team file, and `uv run diffdata setup` puts it in place for you as `store-key.json` in `~/.diffdata/`, next to `config.toml`. It can only add files to your team's folder: it can't read, change or delete anything there. Never share it, commit it, or open it in an AI tool. The push refuses a key inside a git repository or a synced folder. There's no Google Cloud CLI to install.
+2. **Fill in `[store]` in `config.toml`.** `uv run diffdata setup` does this from the team file. By hand: the team gives your team `bucket`, `folder` and `project`. Only `producer` is yours to choose: a pseudonym that labels your copies in the shared store instead of your name, never your real name. The push refuses to run while any of them is empty.
 3. **Decide about copies not approved for release.** Every copy is marked not approved for now: names of people who aren't in the people list aren't checked yet. The push refuses them. To send them anyway, set `send_not_approved = "yes"` under `[store]`. They then go to a part of your team's folder that consumers are never given.
 
 **Before you push, read your copies.** They're plain text files in `scrubbed/` in your data folder. Look for anything that shouldn't leave your team: a name the scrub missed, a phone number, a password or key, a private meeting link. The scrub replaces phone numbers, keys and meeting links, but no check catches everything, and names of people who aren't in the people list aren't checked yet. You can use an AI tool to help, but it sends what it reads to the company that runs it, so pick one you'd trust with this text. If something is wrong, don't push; tell the project team. Pushing is your OK to store these copies, and you can't remove them from the bucket yourself.
