@@ -8,7 +8,18 @@
 
 ## Quick start
 
-You need [Git](https://git-scm.com/downloads) and [uv](https://docs.astral.sh/uv/getting-started/installation/). uv installs Python 3.12 for you.
+### Before you start
+
+| You need | Why | How to check |
+|---|---|---|
+| [Git](https://git-scm.com/downloads) | to get the tool | `git --version` |
+| [uv](https://docs.astral.sh/uv/getting-started/installation/) | runs the tool, and installs Python 3.12 for it | `uv --version` |
+| [Claude Code](https://claude.com/claude-code) 2.1.295 or later: the `claude` command, or the Claude desktop app | runs `/slack-export` with this repo's safety rules | `claude --version`, or the app's About screen |
+| The Slack connector in Claude, signed in to your workspace | reads your channels, as you | in Claude: `/mcp` |
+| A Google account | only if you collect Google Docs | |
+| The team file | your team's settings and upload key | from the project team |
+
+Once the tool is installed (below), `uv run diffdata check` checks the first three, that you're in the repo folder, and that setup is done. It changes nothing. Setup runs the same checks first, and lists anything missing at the end. A terminal can't see Claude's connectors, so the Slack connector and the Google account aren't checked.
 
 ```
 git clone https://github.com/SPARDiffData/differential-data-collection
