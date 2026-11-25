@@ -137,6 +137,10 @@ OURS_SPREAD_ENTROPY = 3.0
 # A password PASSWORD_VALUE finds is replaced everywhere from this length if it holds a letter
 # and a digit, whatever its entropy (repeats()).
 CHOSEN_SPREAD_MIN = 6
+# Left off a chosen password's edges before it's repeated: Markdown, quotes, brackets, and
+# the end of a sentence.
+REPEAT_LEAD = "*_~\"'`([{"
+REPEAT_TRAIL = "*_~\"'`)]}!.,?;:"
 # Two small rules of our own, on top of gitleaks', for credentials it lets through when a
 # shell or a link carries on right after them: a credential-named value in a link's query
 # (?password=...&next=..., ?db_password=...), and curl's -u user:password followed by ; & or |.
@@ -612,21 +616,27 @@ def secrets(text: str) -> list[tuple[int, int, str]]:
                 values.add(match["secret"])
     # A chosen password with a letter and a digit is replaced everywhere from 6 characters,
     # however plain it is: "pwd: hunter2 ... try hunter2 again". The letter and the digit
-    # keep a plain word or number from being wiped all through the copy.
+    # keep a plain word or number from being wiped all through the copy. One that looks
+    # random is also replaced inside longer text, as other rules' values are.
     chosen = set()
     for start, end in chosen_passwords(seen, low):
         spans.append((start, end, True))
         value = seen[start:end]
-        # Without Markdown's * _ ~ at its edges: "Password is **fluffy42**" is repeated as
-        # fluffy42.
-        core = value.strip("*_~")
+        # Without Markdown or punctuation at its edges: "Password is **fluffy42**!" is
+        # repeated as fluffy42.
+        core = value.lstrip(REPEAT_LEAD).rstrip(REPEAT_TRAIL)
         if repeats(core):
-            chosen.add(core)
-        elif entropy(value) > OURS_SPREAD_ENTROPY:
+            chosen.add(core.lower())
+        if entropy(value) > OURS_SPREAD_ENTROPY:
             values.add(value)
+    # A chosen password is repeated in any case (Fluffy42 too), but only as a whole token,
+    # so it isn't cut out of a longer word or a Google doc's ID.
+    for value in chosen:
+        for match in re.finditer(r"(?<![\w-])" + re.escape(value) + r"(?![\w-])", seen, re.I):
+            spans.append((*match.span(), True))
     # A secret found once is replaced everywhere it appears in the copy.
-    for value in values | chosen:
-        if len(value) < 8 and value not in chosen:
+    for value in values:
+        if len(value) < 8:
             continue
         at = seen.find(value)
         while at != -1:

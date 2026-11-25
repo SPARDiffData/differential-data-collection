@@ -947,6 +947,9 @@ def test_a_chosen_password_that_looks_random_is_replaced_everywhere_in_the_copy(
             "Password is **fluffy42**. Try fluffy42 again.",
             "Password is [secret]. Try [secret] again.",
         ),
+        ("Password is fluffy42! Try fluffy42 again.", "Password is [secret] Try [secret] again."),
+        ("pwd: fluffy42, then Fluffy42 and FLUFFY42", "pwd: [secret], then [secret] and [secret]"),
+        ('password: "kite99." and later (kite99)', 'password: "[secret]" and later ([secret])'),
         (
             "db_password: base64\nType base64 to log in.",
             "db_password: [secret]\nType [secret] to log in.",
@@ -960,6 +963,19 @@ def test_must_refuse_a_plain_chosen_password_is_replaced_where_its_repeated(text
     result = scrub(text)
     assert result == scrubbed
     assert found(result) == []
+
+
+def test_a_plain_repeated_password_isnt_cut_out_of_a_longer_word_or_a_google_id():
+    doc = "https://docs.google.com/document/d/1" + rand(20, URLSAFE) + "test12" + rand(10, URLSAFE)
+    text = f"Password is test12. See test123, atest12 and {doc}/edit, then test12."
+    scrubbed = scrub(text)
+    assert scrubbed == f"Password is [secret]. See test123, atest12 and {doc}/edit, then [secret]."
+    assert found(scrubbed) == []
+
+
+def test_a_random_chosen_password_is_still_replaced_inside_longer_text():
+    value = rand(14)
+    assert scrub(f"pwd: {value}\nlater: x{value}y") == "pwd: [secret]\nlater: x[secret]y"
 
 
 def test_a_repeated_password_inside_a_markdown_link_label_still_passes_the_last_check():
