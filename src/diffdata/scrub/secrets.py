@@ -152,15 +152,17 @@ CURL_USER = re.compile(
 # or :=; or in "my/our/your/the [word] password is ...". Markdown's * _ ~ around the name or
 # "is" are read past (_Password:_ ..., my password _is_ ...), but not the _ in is_valid.
 # Only the value goes. A name inside a longer word (passwords, password_field, password
-# issue), after a word and _ (the "password" in db_password on its own) or in a link's
-# query (QUERY_SECRET's, ?_password= too) isn't read.
+# issue), after a word and _ or - (the "password" in db_password on its own) or in a
+# link's query (QUERY_SECRET's, ?_password= too) isn't read. A command-line flag is:
+# --password=..., -pwd ..., --db-password=...
 # A value in quotes goes up to its closing quote, read past \" inside; one without, up to a
 # space or Slack's markup. With nothing after the name on its line, a next line holding one
 # word only is the value (password:\n  hunter2).
 PASSWORD_WORD = r"(?:password|passwd|pwd|passcode)"
 PASSWORD_VALUE = re.compile(
     r"(?i)(?:"
-    r"(?<![A-Za-z0-9?&./-])(?<![A-Za-z0-9?&./-]_)(?:[a-z0-9]{1,30}[_.-]){0,4}"
+    r"(?:(?<![A-Za-z0-9?&./_-])|(?<![A-Za-z0-9?&./-]_)(?<=_)|(?<![^\s-]-)(?<=-))"
+    r"(?:[a-z0-9]{1,30}[_.-]){0,4}"
     + PASSWORD_WORD
     + r"(?![A-Za-z0-9-])[\"'`*_~]{0,3}[ \t]*(?P<sep>:=|=|:)[*_~]{0,3}"
     r"|(?<![A-Za-z0-9])(?:my|our|your|the)[ \t]+(?:[\w-]{1,20}[ \t]+)?"
