@@ -944,6 +944,11 @@ def test_a_bad_link_workspace_after_c_asks_for_the_channels_again(home):
     assert "Give the channels again." in script.text
 
 
+def test_printable_replaces_control_characters():
+    assert setup.printable(Path("team\x1b[2Ja\x07.json")) == "team?[2Ja?.json"
+
+
+@POSIX  # Windows refuses control characters in file names
 def test_a_team_file_path_with_control_characters_is_shown_safely(home):
     path = team_file(home, name="team\x1b[2Ja")
     _, script = run(home, *quick_answers(), team=path, steps=False)
