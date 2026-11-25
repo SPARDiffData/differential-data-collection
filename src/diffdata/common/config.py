@@ -7,6 +7,7 @@ or a synced folder is refused.
 """
 
 import difflib
+import json
 import re
 import tomllib
 from dataclasses import dataclass
@@ -50,6 +51,10 @@ DOC_LINK = re.compile(
 # least one a digit. The same shape the scrub's people list takes (scrub/people.py).
 USER_ID = re.compile(r"[UW](?=[A-Z]*[0-9])[A-Z0-9]{8,}")
 OPT_OUT_KEY = "slack_opted_out"
+# The team's opt-out list as last fetched from the store (discover/team_optouts.py), kept in
+# the data folder. It only grows, and load_config() adds it to slack_opted_out (#132).
+TEAM_OPT_OUT_NAME = "team_opted_out.json"
+TEAM_OPT_OUT_FORMAT = "diffdata-team-opted-out"
 NOTICES_KEY = "slack_notices"
 # A notice is named by its message link, from Slack's "Copy link":
 # https://<workspace>.slack.com/archives/<channel ID>/p<16 digits>. Only the post itself, not a
@@ -223,6 +228,37 @@ def doc_id(value: str) -> str | None:
     return (link[1] or link[2]) if link else None
 
 
+def team_opted_out_path(data: Path) -> Path:
+    return data / "slack" / TEAM_OPT_OUT_NAME
+
+
+def read_team_opted_out(data: Path) -> list[str]:
+    """The IDs in the team's fetched opt-out list, or [] if none was fetched yet. A file that's
+    there but damaged stops the run: reading it as empty would let opted-out people back in."""
+    path = team_opted_out_path(data)
+    if not path.exists():
+        return []
+    damaged = ConfigError(
+        f"{TEAM_OPT_OUT_NAME} in the slack folder of your data folder is damaged, so who opted "
+        "out can't be known. Delete it, then start an export to fetch the team's list again. "
+        "Nothing was collected."
+    )
+    try:
+        found = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        raise damaged from None
+    if not isinstance(found, dict):
+        raise damaged
+    ids = found.get("slack_opted_out")
+    if (
+        found.get("format") != TEAM_OPT_OUT_FORMAT
+        or not isinstance(ids, list)
+        or not all(isinstance(i, str) and USER_ID.fullmatch(i) for i in ids)
+    ):
+        raise damaged
+    return list(dict.fromkeys(ids))
+
+
 def user_config_file() -> Path:
     """config.toml's place outside any repo: ~/.diffdata/config.toml."""
     return Path.home() / ".diffdata" / CONFIG_NAME
@@ -383,6 +419,9 @@ def load_config(path: str | Path | None = None) -> Config:
             )
         user_ids.append(found)
     notices = read_notices(sources.get(NOTICES_KEY, {}), path)
+    data = data_dir(configured)
+    # The team's list adds to slack_opted_out, never replaces it (#132, item 12).
+    user_ids += [i for i in read_team_opted_out(data) if i not in user_ids]
     refresh_days = sources.get("canvas_refresh_days", CANVAS_REFRESH_DAYS)
     # bool is a kind of int in Python, so true would otherwise pass as 1.
     if isinstance(refresh_days, bool) or not isinstance(refresh_days, int) or refresh_days < 1:
@@ -399,7 +438,7 @@ def load_config(path: str | Path | None = None) -> Config:
             raise ConfigError(f"{key} under [store] in {path} must be text, in quotes.")
 
     return Config(
-        data_dir=data_dir(configured),
+        data_dir=data,
         slack_channels=tuple(channel_names),
         slack_channel_ids=tuple(channel_ids),
         listed_channels=tuple(listed_channels),

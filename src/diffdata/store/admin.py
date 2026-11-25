@@ -1,4 +1,5 @@
-"""`diffdata admin add-team` (STO-1). Plan: Issue #132, decisions 1, 2, 3 and 5, PR 2.
+"""`diffdata admin add-team` and `optouts` (STO-1, CON-4). Plan: Issue #132, decisions 1, 2, 3,
+5 and 6, PRs 2 and 3.
 
 The project team runs it once per pilot team, in their own terminal, signed in to `gcloud`
 as the Cloud project's owner. It does what was done by hand for the first test folder:
@@ -39,6 +40,14 @@ What it refuses (#132's must-refuse list for add-team, approved 2026-11-25):
      only, where a file mode keeps the file private. If the team file can't be written, it
      deletes the key it just made
   5  a folder (the team name), project or bucket that `push` would refuse
+
+`diffdata admin optouts <team> --bucket <bucket>` runs on day 7, after the project team has
+looked at the form's answers and found each person's Slack user ID. It writes the team's
+opted-out list to <team>/_config/opted-out.json, which the producer's export fetches
+(discover/team_optouts.py). The IDs are pasted at a prompt, never given on the command line.
+  9  it never writes a list that hasn't been looked at: it shows the team, the count and the
+     IDs to add, and asks for a yes. A list already there is only added to, never shortened,
+     and the write is refused if the list changed after it was read
 """
 
 import json
@@ -55,7 +64,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from diffdata.common import setup as producer_setup
+from diffdata.common.config import USER_ID
 from diffdata.common.paths import find_git_root, synced_by
+from diffdata.discover import team_optouts
 from diffdata.store import push
 
 CREATOR = "roles/storage.objectCreator"
@@ -582,4 +593,118 @@ def add_team(
         say(f"Opt-out link for {team.name}: {link}")
     say("Channel notice, for the producer to post and pin in each channel:")
     say(NOTICE.format(link=link or "<the team's opt-out link>"))
+    return 0
+
+
+# --- diffdata admin optouts (#132, decision 6, PR 3) -----------------------------------------
+
+
+def list_url(bucket: str, team: str) -> str:
+    return f"gs://{bucket}/{team}/{team_optouts.LIST_NAME}"
+
+
+def read_ids(ask: Callable[[str], str], say: Callable[[str], None], known: list[str]) -> list[str]:
+    """The IDs the project team found in the form's answers, typed or pasted one per line.
+    "none" on the first line means nobody new; an empty line ends the list. Never from a
+    file or the command line, so they don't stay in the shell's history."""
+    say(
+        "Paste the Slack user IDs of the people who opted out, one per line, then an empty "
+        "line. Type none if nobody new opted out."
+    )
+    found: list[str] = []
+    while True:
+        line = ask("> ").strip()
+        if not found and line.lower() == "none":
+            return []
+        if not line:
+            if found:
+                return found
+            say("Type the IDs, or none.")
+            continue
+        if not USER_ID.fullmatch(line):
+            say("That isn't a Slack user ID (U or W, then 8 or more capitals and digits). Again:")
+        elif line in found or line in known:
+            say("That one is in the list already.")
+        else:
+            found.append(line)
+
+
+def optouts(
+    team: str,
+    bucket: str,
+    ask: Callable[[str], str],
+    ask_yes: Callable[[str], bool],
+    say: Callable[[str], None] = print,
+    gcloud: Runner = run_gcloud,
+) -> int:
+    """Write the team's opted-out list to <team>/_config/opted-out.json, after showing the
+    team and the count and getting a yes (item 9). An existing list is only added to, and the
+    write is refused if the list changed meanwhile."""
+    if WINDOWS:
+        raise AdminError(f"Run admin on macOS or Linux. {NOTHING_CHANGED}")
+    if not push.bucket_name(bucket):
+        raise AdminError(f"--bucket isn't a Google Cloud Storage bucket name. {NOTHING_CHANGED}")
+    if not push.SEGMENT.fullmatch(team):
+        raise AdminError(f"The team name must be letters, digits, - and _. {NOTHING_CHANGED}")
+    run = AddTeam(Team(team, bucket, "", "", (), Path()), gcloud=gcloud)
+    config_folder = f"gs://{bucket}/{team}/{CONFIG}/"
+    if (
+        run.exists("storage", "managed-folders", "describe", config_folder, what=config_folder)
+        is None
+    ):
+        raise AdminError(
+            f"{config_folder} isn't there. Run add-team for this team first. {NOTHING_CHANGED}"
+        )
+    url = list_url(bucket, team)
+    described = run.exists("storage", "objects", "describe", url, what="the team's list")
+    known: list[str] = []
+    generation = "0"  # 0: write only if there's no list yet
+    if described is not None:
+        generation = str(described.get("generation", ""))
+        if not generation.isdigit():
+            raise AdminError(f"gcloud didn't give the list's version. {NOTHING_CHANGED}")
+        raw = run.call("storage", "cat", f"{url}#{generation}", what="Reading the list").stdout
+        try:
+            known = team_optouts.parse_list((raw or "").encode("utf-8"), team)
+        except team_optouts.ListError:
+            raise AdminError(
+                f"The list at {url} isn't one admin wrote for {team}. Look at it in the console. "
+                f"{NOTHING_CHANGED}"
+            ) from None
+    say(f"Team {team}: {len(known)} person(s) on its opt-out list now.")
+    new = read_ids(ask, say, known)
+    say(f"Team {team}, {url}:")
+    say(f"  {len(known)} already on the list, {len(new)} to add, {len(known) + len(new)} in all:")
+    for user_id in new:
+        say(f"  add {user_id}")
+    if not ask_yes("Have you looked at the form's answers, and is this list right?"):
+        say(NOTHING_CHANGED)
+        return 1
+    body = {
+        "format": team_optouts.LIST_FORMAT,
+        "version": team_optouts.LIST_VERSION,
+        "team": team,
+        "slack_opted_out": known + new,
+    }
+    with tempfile.TemporaryDirectory(prefix=".diffdata-optouts-") as temp:
+        os.chmod(temp, 0o700)
+        path = Path(temp) / "opted-out.json"
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(body, f, indent=2)
+            f.write("\n")
+        result = gcloud(
+            [
+                "storage", "cp", str(path), url, f"--if-generation-match={generation}",
+                "--content-type=application/json", "--quiet",
+            ]
+        )  # fmt: skip
+    if result.returncode != 0:
+        if re.search(r"\b412\b|precondition", result.stderr or "", re.IGNORECASE):
+            raise AdminError(
+                f"The list changed while you typed. Run again to see it. {NOTHING_CHANGED}"
+            )
+        raise AdminError(f"Writing the list failed: {last_line(result.stderr)}. {NOTHING_CHANGED}")
+    say(f"Done: {len(known) + len(new)} person(s) on {team}'s opt-out list, {len(new)} added.")
+    say("The producer's next export fetches it.")
     return 0

@@ -11,6 +11,8 @@ Push imports this module only when a real push runs. Its own tests use a stand-i
 Google's client and sign-in, with no bucket, key or network.
 """
 
+from datetime import datetime
+
 from google.api_core import exceptions as api
 from google.auth import exceptions as auth
 from google.auth.transport.requests import Request
@@ -42,29 +44,36 @@ NO_PROJECT = "<none>"
 # deleting: what stops those is the folder's "Storage Object Creator" role, plus the
 # create-only condition on every upload.
 SCOPES = ["https://www.googleapis.com/auth/devstorage.read_write"]
+# Reading the team's opt-out list needs only this. The key can read <folder>/_config/ only.
+READ_SCOPES = ["https://www.googleapis.com/auth/devstorage.read_only"]
+
+
+def signed_in(key: dict, scopes: list[str], nothing: str) -> storage.Client:
+    """A client signed in with the team's key, fully, before any request. `nothing` ends the
+    message for a network failure ("Nothing was sent.")."""
+    try:
+        credentials = service_account.Credentials.from_service_account_info(key, scopes=scopes)
+    except (ValueError, KeyError, TypeError):
+        # Its message could quote part of the key, so it's never shown.
+        raise SignInError(NOT_A_KEY) from None
+    try:
+        credentials.refresh(Request())
+    except auth.RefreshError:
+        raise SignInError(TURNED_DOWN) from None
+    except auth.TransportError:
+        raise StoreError(f"{UNREACHABLE} {nothing}".rstrip()) from None
+    project = key.get("project_id")
+    return storage.Client(
+        project=project if isinstance(project, str) and project else NO_PROJECT,
+        credentials=credentials,
+        client_options={"api_endpoint": ENDPOINT},
+    )
 
 
 class GCSStore:
     def __init__(self, bucket: str, key: dict):
-        try:
-            credentials = service_account.Credentials.from_service_account_info(key, scopes=SCOPES)
-        except (ValueError, KeyError, TypeError):
-            # Its message could quote part of the key, so it's never shown.
-            raise SignInError(NOT_A_KEY) from None
         # Sign in fully before any upload, so no copy is sent with a key that then fails.
-        try:
-            credentials.refresh(Request())
-        except auth.RefreshError:
-            raise SignInError(TURNED_DOWN) from None
-        except auth.TransportError:
-            raise StoreError(f"{UNREACHABLE} Nothing was sent.") from None
-        project = key.get("project_id")
-        client = storage.Client(
-            project=project if isinstance(project, str) and project else NO_PROJECT,
-            credentials=credentials,
-            client_options={"api_endpoint": ENDPOINT},
-        )
-        self.bucket = client.bucket(bucket)
+        self.bucket = signed_in(key, SCOPES, "Nothing was sent.").bucket(bucket)
 
     def add(self, name: str, data: bytes, content_type: str) -> Added:
         blob = self.bucket.blob(name)
@@ -94,3 +103,35 @@ class GCSStore:
                 "a few minutes and run again."
             ) from None
         return "added"
+
+
+def fetch(bucket: str, key: dict, name: str) -> tuple[bytes, datetime] | None:
+    """One file the team's key may read, and when the bucket says it was written; None if
+    there's no such file. Used for the team's opt-out list (discover/team_optouts.py)."""
+    client = signed_in(key, READ_SCOPES, "")
+    try:
+        blob = client.bucket(bucket).get_blob(name)
+        if blob is None:
+            return None
+        # That same version, even if the list is written again meanwhile.
+        data = blob.download_as_bytes(if_generation_match=blob.generation)
+    except api.NotFound:
+        return None
+    except (auth.RefreshError, api.Unauthorized):
+        raise SignInError(TURNED_DOWN) from None
+    except api.Forbidden:
+        raise StoreError(
+            "Google Cloud Storage refused the read: this team's key can't read its _config "
+            "folder. Ask the project team."
+        ) from None
+    except (api.RetryError, auth.TransportError):
+        raise StoreError(UNREACHABLE) from None
+    except api.GoogleAPICallError as e:
+        code = f" (code {e.code})" if isinstance(e.code, int) else ""
+        raise StoreError(
+            f"Google Cloud Storage stopped the read with an error on its side{code}. Wait a few "
+            "minutes and run again."
+        ) from None
+    if not isinstance(blob.time_created, datetime):
+        raise StoreError("Google Cloud Storage didn't say when the list was written.")
+    return data, blob.time_created

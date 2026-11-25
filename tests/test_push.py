@@ -121,6 +121,13 @@ def config(data: Path, key: dict | None = KEY, **store) -> Config:
     home.mkdir(parents=True, exist_ok=True)
     if key is not None:
         (home / "store-key.json").write_text(json.dumps(key), encoding="utf-8")
+    # The team's opt-out list, as an export's start fetched it (#132): empty here.
+    team_list = data / "slack" / "team_opted_out.json"
+    if not team_list.exists():
+        team_list.parent.mkdir(parents=True, exist_ok=True)
+        body = {"format": "diffdata-team-opted-out", "slack_opted_out": []}
+        body |= {"bucket": settings["bucket"], "folder": settings["folder"]}
+        team_list.write_text(json.dumps(body), encoding="utf-8")
     return Config(
         data_dir=data,
         slack_channels=(),
@@ -623,6 +630,7 @@ def test_diffdata_push_sends_through_the_store(data, tmp_path, monkeypatch, caps
         encoding="utf-8",
     )
     (tmp_path / "store-key.json").write_text(json.dumps(KEY), encoding="utf-8")
+    config(data)  # saves the team's fetched opt-out list, as an export's start would
     monkeypatch.chdir(tmp_path)
     opener = Opener()
     monkeypatch.setattr("diffdata.store.push.open_gcs", opener)
@@ -651,7 +659,7 @@ def test_a_real_scrub_is_pushed_and_nothing_from_outside_scrubbed_goes(
     people = slack_response(str(fixtures / "scrub" / "read_channel_people.txt"))
     slack_run(
         cfg,
-        datetime(2026, 10, 6, 12, 0, tzinfo=UTC),
+        datetime(2026, 10, 10, 12, 0, tzinfo=UTC),
         [
             ("slack_read_channel", {"channel_id": channel}, slack_response("read_channel.txt")),
             ("slack_read_thread", thread, slack_response("read_thread.txt")),
@@ -711,7 +719,7 @@ def late_joiner_scrub(tmp_path, slack_run, slack_response) -> Config:
     )
     slack_run(
         cfg,
-        datetime(2026, 10, 6, 12, 0, tzinfo=UTC),
+        datetime(2026, 10, 10, 12, 0, tzinfo=UTC),
         [
             ("slack_read_channel", {"channel_id": "C00000001"}, slack_response(str(read))),
             (

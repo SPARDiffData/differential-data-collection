@@ -12,9 +12,10 @@
 slack_channels = ["example-channel"]  # channel names without the '#', IDs ("C...") or channel links
 slack_workspace_url = "https://example.slack.com"  # your workspace's address, for message links
 slack_canvases = []                   # canvas IDs ("F...") or canvas links; read when they may have changed
-# CON-4, CON-5: Slack user IDs ("U...") of people who opted out of this channel. The project
-# team sends you these lines when the 7-day opt-out window closes. Their messages are left
-# out of everything diffdata builds. They're real IDs, so keep them here, never in the repo.
+# CON-4, CON-5: Slack user IDs ("U...") of people who opted out of this channel. Their
+# messages are left out of everything diffdata builds. They're real IDs, so keep them here,
+# never in the repo. With a team folder under [store], the export also fetches your team's
+# list from the store once the 7 days are over, and adds it to these (it never drops anyone).
 slack_opted_out = []
 # CON-5: the link to each channel's pinned notice (Copy link on the notice itself, not a reply
 # to it). Anyone whose latest join of a channel is after its notice is left out of that
