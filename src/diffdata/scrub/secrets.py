@@ -17,6 +17,10 @@ Secrets, in two parts:
     on the same terms (see ONE_CASE_MIN). It skips the IDs in Google links, so those links
     keep working, and meeting links. Inside other links it checks each part between
     slashes on its own, so a site's name stays readable.
+  - Three small rules of our own, for what gitleaks lets through: a password in a link
+    (user:password@host), a credential-named value in a link's query or after curl's -u,
+    and a password someone chose, after its name (PASSWORD_VALUE: password=..., "the db
+    password: ...", "my password is ..."), however plain it is. These become [secret].
 
 What we leave out of gitleaks, on purpose:
   - Its allowlists, global and per rule. They only stop a match being reported, so
@@ -115,7 +119,9 @@ LINK = re.compile(
 # the randomness check to take, so a Slack link needs no exception.
 GOOGLE_HOSTS = ("google.com", "googleusercontent.com")
 GOOGLE_QUERY_ID = re.compile(r"(?:^|&)id=(?P<id>[A-Za-z0-9_-]{20,})(?=&|$)")
-GOOGLE_ID = re.compile(r"/(?:d|e|folders)/(?P<id>[A-Za-z0-9_-]{20,})(?=/|$)")  # in the path
+# In the path: /d/ and /e/ (Docs), /folders/ (Drive) and /drive/ (a Colab notebook), up to
+# the next part of the path, the query or the fragment.
+GOOGLE_ID = re.compile(r"/(?:d|e|folders|drive)/(?P<id>[A-Za-z0-9_-]{20,})(?=[/?#]|$)")
 # A meeting link goes on past [ ] ( and ) in its query, up to a space or the markup around
 # it; inside Markdown's (link), up to the first ).
 # Phone numbers aren't read inside an email: the email step takes it whole.
@@ -128,15 +134,60 @@ PLACEHOLDER_ONLY = re.compile(r"[\"'`]*\[(?:secret\??|phone|email|meeting link|n
 OURS_SPREAD_ENTROPY = 3.0
 # Two small rules of our own, on top of gitleaks', for credentials it lets through when a
 # shell or a link carries on right after them: a credential-named value in a link's query
-# (?password=...&next=...), and curl's -u user:password followed by ; & or |.
+# (?password=...&next=..., ?db_password=...), and curl's -u user:password followed by ; & or |.
 QUERY_SECRET = re.compile(
-    r"(?i)[?&](?:password|passwd|pwd|pass|token|access_token|refresh_token|id_token|"
+    r"(?i)[?&](?:(?:[a-z0-9]{1,30}[_.-]){0,4}(?:password|passwd|pwd|passcode)|pass|token|"
+    r"access_token|refresh_token|id_token|"
     r"api_?key|key|secret|client_secret|auth|session_?id|sid|sig|signature)="
     r"(?P<secret>[^&#\s<>|\"'`()\[\]]+)"
 )
 CURL_USER = re.compile(
     r"(?<!\S)(?:-u|--user)(?:=|[ \t]{1,5})['\"]?"
     r"(?P<secret>[^\s;&|:'\"]+:[^\s;&|'\"]+)"
+)
+# A third rule of our own: a password someone chose, after its name. gitleaks' generic rule
+# skips a value that doesn't look random, so password=hunter2hunter2 got through it, and so
+# did some random ones. This takes the value however plain it is: after password, passwd, pwd
+# or passcode (a prefix joined by _ . or -, like DB_PASSWORD, is part of the name), then =, :
+# or :=; or in "my/our/your/the [word] password is ...". Markdown's * _ ~ around the name or
+# "is" are read past. Only the value goes. A name inside a longer word (passwords,
+# password_field, password issue) or in a link's query (QUERY_SECRET's) isn't read.
+# A value in quotes goes up to its closing quote, read past \" inside; one without, up to a
+# space or Slack's markup. With nothing after the name on its line, a next line holding one
+# word only is the value (password:\n  hunter2).
+PASSWORD_WORD = r"(?:password|passwd|pwd|passcode)"
+PASSWORD_VALUE = re.compile(
+    r"(?i)(?:"
+    r"(?<![A-Za-z0-9?&./_-])(?:[a-z0-9]{1,30}[_.-]){0,4}" + PASSWORD_WORD + r"(?![A-Za-z0-9-])"
+    r"[\"'`*_~]{0,3}[ \t]*(?P<sep>:=|=|:)[*_~]{0,3}"
+    r"|\b(?:my|our|your|the)[ \t]+(?:[\w-]{1,20}[ \t]+)?"
+    + PASSWORD_WORD
+    + r"[*_~]{0,3}[ \t]+is(?![\w-])(?:[ \t]*:)?[*_~]{0,3}"
+    r")(?:[ \t]*(?:\"(?P<dq>(?:[^\"\\\n]|\\.)+)\"|'(?P<sq>(?:[^'\\\n]|\\.)+)'"
+    r"|`(?P<bq>[^`\n]+)`|(?P<bare>[^\s<>|]+))"
+    r"|[ \t]*\r?\n[ \t]*(?P<line>[^\s<>|]+)[ \t]*(?=\r?\n|\Z))"
+)
+# Left off the end of a value without quotes: the end of a sentence or a bracket around it.
+PASSWORD_TRAIL = ".,;:)\"'`"
+# A value that starts with a placeholder (a person's too: a mention replaced later is still
+# one in the last check), a link or a Markdown link isn't a password, so a scrubbed copy
+# passes: "password: [Person 3] knows it", "password: \"[meeting link] (weekly call)\"". A
+# placeholder counts if a space or the value's end follows it; read past the value's end, as
+# a value without quotes stops at the space in [Person 3].
+PLACEHOLDER_AT = re.compile(
+    r"\[(?:secret\??|phone|email|meeting link|name\??|Person [1-9][0-9]*)\]"
+)
+LINK_AT = re.compile(r"(?i)https?://|www\.|\[[^\]\n]*\]\(")
+# A value that's a word of plain prose, not a password: "password: see vault", "the password
+# is in 1Password", "password: same as before". Only for a value without quotes after : or
+# "is": after = it's code, so password=wrong goes. A real password that's one of these stays.
+PROSE = frozenset(
+    "see ask check in on at by for from to via the a an is are was will be same as stored "
+    "saved sent shared kept use using required optional none null nil n/a na tbd tba unknown "
+    "empty blank not no yes wrong incorrect correct invalid expired changed reset too still "
+    "case also below above here there dm please it its it's this that now set hidden redacted "
+    "removed needed missing ok okay fine weak strong long short protected enabled disabled "
+    "encrypted hashed".split()
 )
 MEETING_HOSTS = (
     "zoom.us", "zoomgov.com", "meet.google.com", "teams.live.com", "webex.com",
@@ -518,6 +569,10 @@ def secrets(text: str) -> list[tuple[int, int, str]]:
             # where it's found, but only a value that looks random is replaced everywhere.
             if entropy(match["secret"]) > OURS_SPREAD_ENTROPY:
                 values.add(match["secret"])
+    for start, end in chosen_passwords(seen, low):
+        spans.append((start, end, True))
+        if entropy(seen[start:end]) > OURS_SPREAD_ENTROPY:
+            values.add(seen[start:end])
     # A secret found once is replaced everywhere it appears in the copy.
     for value in values:
         if len(value) < 8:
@@ -540,6 +595,34 @@ def secrets(text: str) -> list[tuple[int, int, str]]:
     # Back to the real text, covering any invisible characters inside.
     real = [(where[s], where[e - 1] + 1, sure) for s, e, sure in spans]
     return [(s, e, SECRET if sure else MAYBE_SECRET) for s, e, sure in merge(real)]
+
+
+def chosen_passwords(seen: str, low: str) -> list[tuple[int, int]]:
+    """Where PASSWORD_VALUE's values are in the text as rules read it (`low` is it in small
+    letters), leaving out a value with no letter or digit (password: ********), one that
+    starts with a placeholder or a link, and a prose word after : or "is"."""
+    if "pass" not in low and "pwd" not in low:
+        return []
+    found = []
+    for match in PASSWORD_VALUE.finditer(seen):
+        group = next(g for g in ("dq", "sq", "bq", "bare", "line") if match[g] is not None)
+        start, end = match.span(group)
+        if group in ("bare", "line"):
+            while end > start and seen[end - 1] in PASSWORD_TRAIL:
+                end -= 1
+        value = seen[start:end]
+        if not any(c.isalnum() for c in value) or PLACEHOLDER_ONLY.fullmatch(value):
+            continue
+        held = PLACEHOLDER_AT.match(seen, start)
+        if held and (held.end() >= end or seen[held.end()].isspace()):
+            continue
+        if LINK_AT.match(value):
+            continue
+        plain = group in ("bare", "line") and match["sep"] in (":", None)
+        if plain and value.lower() in PROSE:
+            continue
+        found.append((start, end))
+    return found
 
 
 def later_steps(text: str, where: list[int]) -> list[tuple[int, int]]:

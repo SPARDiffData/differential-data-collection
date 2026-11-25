@@ -117,7 +117,7 @@ Your decisions go in `approvals.jsonl`, next to `config.toml` in `~/.diffdata/`:
 
 Run `uv run diffdata scrub` after an export. It makes a scrubbed copy of each opted-in Slack day file and canvas in `scrubbed/` in your data folder. Your originals are only read. Each copy has:
 
-- **secrets** replaced: API keys, tokens, passwords and private keys become `[secret]`, using the rules of gitleaks v8.30.1, run in Python. Text that only looks random, like a key with no known shape, becomes `[secret?]` and is listed in `private/flags.md` by copy, never by its value. Google links keep their document IDs, so they still work, and inside other links a site's name stays readable;
+- **secrets** replaced: API keys, tokens, passwords and private keys become `[secret]`, using the rules of gitleaks v8.30.1, run in Python. A password written after its name (`password=…`, `the db password: …`, `my password is …`) goes however plain it is. Text that only looks random, like a key with no known shape, becomes `[secret?]` and is listed in `private/flags.md` by copy, never by its value. Google links keep their document IDs, so they still work, and inside other links a site's name stays readable;
 - **meeting links** (Zoom, Google Meet, Teams, Webex, Whereby, Jitsi, Calendly, GoTo) replaced whole, passcode and all, by `[meeting link]`;
 - **phone numbers** and `tel:` links replaced by `[phone]`, but not digits inside other links;
 - **emails, Slack IDs, mentions and the names in your people list** replaced by `[email]` and `[Person N]`.
