@@ -53,7 +53,7 @@ We build the **Produce, Collect and Store** layers, dogfooding on our own SPAR t
 | CON-2 | Consent is stored as a record: producer, sources, allowed consumers, allowed uses, date, policy version. | F |
 | CON-3 | A producer can revoke a source at any time. Collection stops on the next run. | M |
 | CON-4 | A producer can list exclusions (projects, people, keywords). Scrub uses them. | F |
-| CON-5 | A channel is collected only after a notice is posted in it. Its members have 7 days to opt out, and anyone who joined after the notice is left out. Direct messages and group DMs are never collected. A meeting with other people is collected only if every participant has agreed. Anyone can ask to be excluded. | F |
+| CON-5 | A channel is collected only after a notice is posted in it, or if everyone in it agreed directly. Its members have 7 days to opt out, and anyone who joined after the notice is left out. Direct messages and group DMs are never collected. A meeting with other people is collected only if every participant has agreed. Anyone can ask to be excluded. | F |
 | CON-6 | Approved consumers are chosen per producer. A new consumer needs the producer's approval. | F |
 | CON-7 | One-click opt-out notice: after signing up a channel, the producer posts and pins the channel notice in one step, with the opt-out form link and the date the 7-day opt-out window closes already filled in. The producer does the posting: the tool never writes to Slack on its own (a prefilled Slack message or a copy button, not a Slack write scope, unless the team decides otherwise). | L |
 
