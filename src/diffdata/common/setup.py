@@ -1,7 +1,10 @@
 """`diffdata setup` (ENG-1, CON-1, STO-1). Plans: Issue #130, and the team file from #132.
 
-Setup asks the producer three questions in their own terminal (the channels, the workspace
-address and their handle), and writes ~/.diffdata/config.toml for them. It takes the team
+Setup runs in the producer's own terminal and writes ~/.diffdata/config.toml for them. On a
+first run it asks only for the channels (and the workspace address, if no channel link gives
+it), chooses the data folder and a made-up handle, and shows everything on one screen: y
+writes it, n stops, and c asks each question in turn (revision 5 of #130). A re-run asks each
+question in turn, as before. It takes the team
 values (bucket, folder, project), the store key and the Google client file from the team
 file the project team sends, makes the data folder, and puts the key and the client file in
 place. So nobody edits TOML by hand, or saves a key by hand.
@@ -47,14 +50,19 @@ reworded for the team file, and 16 as Lachlan changed it, approved on 2026-11-25
   13  to take the handle from the computer or from Slack
   14  to change a saved handle by itself
   15  to take team values from anywhere but the team file the producer gives, or the
-      config.toml setup wrote before (the values the producer accepted then)
-  16  to use team values without showing them first and getting a typed yes. Every yes/no
-      question takes only y or n: Enter alone asks again
+      existing config.toml
+  16  to use team values without showing them first and getting a typed yes. On a first
+      run, the yes on the summary screen counts, since the screen shows the team values and
+      where they come from. Every question takes only the letters it lists: Enter alone, or
+      any other answer, asks again
   17  a direct message or a group DM as a channel (CON-5); the save hook also refuses a read
       of a group DM (discover/slack_inbox.py)
   18  to print anything from the store key or the Google client file in a team file, to put
       them anywhere but ~/.diffdata/, readable only by the producer, to replace one that's
       there without a typed yes, or to delete the team file without a typed yes
+  19  to write a value the producer hasn't seen: every value setup chose by itself (data
+      folder, workspace, team values, handle) is on the summary screen before the yes, with
+      the pseudonym line (revision 5, approved on 2026-11-25)
 """
 
 import json
@@ -131,6 +139,16 @@ class Prompter:
             if answer in ("n", "no"):
                 return False
             self.say("Please type y or n.")
+
+    def letter(self, question: str, letters: str) -> str:
+        """Like `yes`, for a question with more answers: only one of `letters` is an
+        answer. Enter alone, or anything else, asks again."""
+        shown = "/".join(letters)
+        while True:
+            answer = self.ask(f"{question} [{shown}] ").strip().lower()
+            if len(answer) == 1 and answer in letters:
+                return answer
+            self.say(f"Please type {', '.join(letters[:-1])} or {letters[-1]}.")
 
 
 # --- the team values ---------------------------------------------------------------------
@@ -563,6 +581,27 @@ def config_step(
 
     old_channels = sources.get("slack_channels")
     keep = ", ".join(old_channels) if isinstance(old_channels, list) and old_channels else ""
+    channels, link_space = ask_channels(prompter, keep)
+    old_space = sources.get("slack_workspace_url")
+    space = ask_workspace(prompter, link_space, old_space if isinstance(old_space, str) else "")
+
+    prompter.say(PSEUDONYM)
+    try:
+        handle_default = check_handle(str(store.get("producer", "")))
+    except SetupError:
+        handle_default = new_handle(values["project"], choose)
+    prompter.say("Use it, or type your own. Never your real name.")
+    handle = ask_until(
+        prompter,
+        f"Producer handle [Enter for {handle_default}]: ",
+        lambda t: check_handle(t if t.strip() else handle_default),
+    )
+    return with_answers(raw, channels, space, folder, values, handle), team
+
+
+def ask_channels(prompter: Prompter, keep: str) -> tuple[list[str], str | None]:
+    """The channels, and the workspace their links are from (None if none was a link).
+    `keep` is the current list, kept on Enter; "" if there is none."""
     prompter.say(
         "Which Slack channels should diffdata collect? Listing a channel is your opt-in. "
         "Type each name, or paste the channel's link, separated by commas."
@@ -590,9 +629,13 @@ def config_step(
             f"{entry} is stored as a channel ID. If it's a channel's name, run setup again and "
             "type it in lowercase."
         )
+    return channels, link_space
 
-    old_space = sources.get("slack_workspace_url")
-    space_default = link_space or (old_space if isinstance(old_space, str) else "")
+
+def ask_workspace(prompter: Prompter, link_space: str | None, old_space: str) -> str:
+    """The workspace address: the links' one, or the saved one, on Enter. A typed one must
+    match the links'."""
+    space_default = link_space or old_space
     while True:
         question = (
             f"Workspace address [Enter for {space_default}]: "
@@ -605,20 +648,18 @@ def config_step(
         if link_space and space != link_space:
             prompter.say("That isn't the workspace your channel links are from.")
             continue
-        break
+        return space
 
-    prompter.say(PSEUDONYM)
-    try:
-        handle_default = check_handle(str(store.get("producer", "")))
-    except SetupError:
-        handle_default = new_handle(values["project"], choose)
-    prompter.say("Use it, or type your own. Never your real name.")
-    handle = ask_until(
-        prompter,
-        f"Producer handle [Enter for {handle_default}]: ",
-        lambda t: check_handle(t if t.strip() else handle_default),
-    )
 
+def with_answers(
+    raw: dict,
+    channels: list[str],
+    space: str,
+    folder: str,
+    values: dict[str, str],
+    handle: str,
+) -> dict:
+    """`raw` with only setup's keys changed (must-refuse 3)."""
     new = deepcopy(raw)
     new_sources = new.setdefault("sources", {})
     new_sources["slack_channels"] = channels
@@ -629,7 +670,40 @@ def config_step(
     new_store.update(values)
     new_store["producer"] = handle
     new_store.setdefault("send_not_approved", "no")
-    return new, team
+    return new
+
+
+def quick_step(
+    prompter: Prompter,
+    team: TeamFile | None,
+    picker: Callable[[str], Path | None],
+    choose: Callable[[str], str],
+) -> tuple[dict, TeamFile]:
+    """A first run (revision 5): ask only what setup can't choose, and choose the rest. The
+    summary screen shows it all before anything is written (must-refuse 16 and 19)."""
+    if team is None:
+        team = ask_team_file(prompter, picker)
+    try:
+        shown = data_dir(DEFAULT_DATA_DIR)
+        if shown.exists() and not shown.is_dir():
+            raise SetupError(f"{shown} is a file, not a folder.")
+        folder = DEFAULT_DATA_DIR
+    except (UnsafeDataDirError, SetupError):
+        # folder_step says why, and asks.
+        folder = folder_step(prompter, picker, DEFAULT_DATA_DIR)
+    while True:
+        channels, link_space = ask_channels(prompter, "")
+        if not link_space:
+            space = ask_workspace(prompter, None, "")
+            break
+        try:
+            # The same check as a typed address.
+            space = parse_workspace(link_space)
+            break
+        except SetupError as e:
+            prompter.say(f"{e} Give the channels again.")
+    handle = new_handle(team.values["project"], choose)
+    return with_answers({}, channels, space, folder, team.values, handle), team
 
 
 def key_step(prompter: Prompter, folder: Path) -> None:
@@ -745,6 +819,32 @@ def check_existing(prompter: Prompter, settings: Path) -> None:
         prompter.say("Your config.toml passes diffdata's checks.")
 
 
+def show_summary(
+    prompter: Prompter, new: dict, team: TeamFile | None, settings: Path, first: bool
+) -> None:
+    """Everything setup will write. Nothing from the key or the client file is shown."""
+    store = new["store"]
+    prompter.say("")
+    prompter.say(f"Setup will write this to {settings}:" if first else "You chose:")
+    shown = [
+        f"{entry} (a channel ID)" if CHANNEL_ID.fullmatch(entry) else entry
+        for entry in new["sources"]["slack_channels"]
+    ]
+    prompter.say(f"  Channels:         {', '.join(shown)}")
+    prompter.say(f"  Workspace:        {new['sources']['slack_workspace_url']}")
+    prompter.say(f"  Data folder:      {data_dir(new['local']['data_dir'])}")
+    prompter.say(
+        f"  Team values:      bucket {store['bucket']}, folder {store['folder']}, "
+        f"project {store['project']}"
+    )
+    if team is not None:
+        parts = "a store key" + (" and a Google client file" if team.google_client else "")
+        prompter.say(
+            f"                    (from the team file {team.path}, which also holds {parts})"
+        )
+    prompter.say(f"  Producer handle:  {store['producer']} (a pseudonym)")
+
+
 def setup(
     team_file: Path | None = None,
     prompter: Prompter | None = None,
@@ -771,6 +871,9 @@ def setup(
             )
     team = read_team_file(team_file) if team_file is not None else None
     raw: dict = {}
+    # Decided once, before any question: a config that goes away while setup waits never
+    # turns a re-run into a first run (which would drop its other settings).
+    first = not settings.exists()
     if settings.exists():
         raw = read_raw(settings)
         prompter.say(f"You have a config.toml already, at {settings}.")
@@ -805,26 +908,28 @@ def setup(
                         ) from None
             key_step(prompter, folder)
             return 0
-    new, team = config_step(prompter, team, raw, picker, choose)
-
-    store = new["store"]
-    prompter.say("")
-    prompter.say("You chose:")
-    shown = [
-        f"{entry} (a channel ID)" if CHANNEL_ID.fullmatch(entry) else entry
-        for entry in new["sources"]["slack_channels"]
-    ]
-    prompter.say(f"  Channels:         {', '.join(shown)}")
-    prompter.say(f"  Workspace:        {new['sources']['slack_workspace_url']}")
-    prompter.say(f"  Data folder:      {data_dir(new['local']['data_dir'])}")
-    prompter.say(
-        f"  Team values:      bucket {store['bucket']}, folder {store['folder']}, "
-        f"project {store['project']}"
-    )
-    prompter.say(f"  Producer handle:  {store['producer']} (a pseudonym)")
-    if not prompter.yes(f"Write this to {settings}?"):
-        prompter.say(NOTHING_WRITTEN)
-        return 0
+    if first:
+        new, team = quick_step(prompter, team, picker, choose)
+    else:
+        new, team = config_step(prompter, team, raw, picker, choose)
+    while True:
+        show_summary(prompter, new, team, settings, first)
+        if not first:
+            if prompter.yes(f"Write this to {settings}?"):
+                break
+            prompter.say(NOTHING_WRITTEN)
+            return 0
+        prompter.say(PSEUDONYM)
+        answer = prompter.letter(
+            "Write this? Type y to write it, n to stop, or c to change something", "ync"
+        )
+        if answer == "y":
+            break
+        if answer == "n":
+            prompter.say(NOTHING_WRITTEN)
+            return 0
+        # c: each question in turn, with the shown values as the defaults; then the screen again.
+        new, team = config_step(prompter, team, new, picker, choose)
     try:
         if not write_config(settings, new, prompter):
             return 1
