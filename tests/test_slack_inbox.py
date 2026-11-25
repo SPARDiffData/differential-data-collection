@@ -207,6 +207,16 @@ def test_save_tells_claude_the_next_cursor_and_the_threads_to_read(config, capsy
     assert "Alex" not in note and "Kickoff" not in note  # IDs and counts only
 
 
+def test_a_post_with_forwarded_messages_is_listed_for_its_thread(config, capsys):
+    # #124: forwarded-message lines after the detail lines used to hide the Thread line.
+    begin(config, ["example-channel=C00000001"], now=T0)
+    hook = json.loads(payload())
+    hook["tool_response"] = connector_result("read_channel_forwarded.txt")
+    assert save(config, json.dumps(hook).encode("utf-8"), now=T0) == 0
+    note = hook_note(capsys)
+    assert "slack_read_thread: 1791298800.000700, 1791208800.000600." in note
+
+
 @pytest.fixture
 def overflowed(tmp_path):
     """Claude Code's layout: the session's transcript, and beside it a folder of the same
@@ -705,6 +715,22 @@ def test_an_opted_out_persons_stub_keeps_only_its_place(config, capsys):
         "Thread: 3 replies (latest: -)\n"
     )
     assert json.loads(path.read_text(encoding="utf-8"))["left_out"] == 2
+
+
+def test_an_opted_out_persons_post_with_forwarded_messages_keeps_its_thread_line(config, capsys):
+    # #124: their stub keeps the reply count, and drops the forwarded lines with their text.
+    opted = replace(config, slack_opted_out=("U00000003",))
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    save(opted, payload(response=connector_result("read_channel_forwarded.txt")), now=T0)
+    assert "slack_read_thread: 1791298800.000700, 1791208800.000600." in hook_note(capsys)
+    [path] = inbox_files(config)
+    text = json.loads(json.loads(path.read_text(encoding="utf-8"))["tool_response"][0]["text"])
+    riley = text["messages"].split("=== Message from ")[1]
+    assert riley == (
+        "Opted out (U00000003) at 2026-10-06 10:00:00 CDT ===\n"
+        "Message TS: 1791298800.000700\n"
+        "Thread: 2 replies (latest: -)\n\n"
+    )
 
 
 def test_text_that_looks_like_a_header_line_isnt_kept(config):

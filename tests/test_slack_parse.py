@@ -295,3 +295,101 @@ def test_a_message_search_without_page_information_it_knows_gives_none(slack_sea
 def test_page_information_is_known_only_in_the_connectors_wording(pagination, known):
     response = [{"type": "text", "text": json.dumps({"pagination_info": pagination})}]
     assert pages_known(response) is known
+
+
+# Forwarded messages (#124): the connector writes one line for each after the post's detail
+# lines, in this exact shape.
+FWD_TAIL = " — use slack_read_thread or slack_read_channel to read it in context"
+
+
+def forwarded(
+    name="Sam Sample", link="https://example.slack.com/archives/C00000009/p1791201600000600"
+):
+    return f"Forwarded message from {name} ({link}): A forwarded note.{FWD_TAIL}"
+
+
+@pytest.fixture
+def forwarding(slack_response):
+    messages, skipped = parse_result(
+        CHANNEL_TOOL, {"channel_id": CHANNEL}, slack_response("read_channel_forwarded.txt")
+    )
+    assert skipped == 0
+    return {m.ts: m for m in messages}
+
+
+def test_a_post_with_one_forwarded_message_keeps_its_details(forwarding):
+    post = forwarding["1791208800.000600"]
+    assert post.replies == 1
+    assert post.reactions == [{"name": "eyes", "count": 1}]
+    assert [f["id"] for f in post.files] == ["F00000020"]
+    assert post.text.split("\n")[0] == "Sharing this here."
+    assert post.text.split("\n")[1].startswith("Forwarded message from Alex Example (")
+    assert "Thread:" not in post.text and "Reactions:" not in post.text
+
+
+def test_a_post_with_two_forwarded_messages_keeps_its_details(forwarding):
+    post = forwarding["1791298800.000700"]
+    assert post.replies == 2
+    lines = post.text.split("\n")
+    assert lines[0] == "Two notes from the other channel, for Monday."
+    assert [line.split(" (")[0] for line in lines[1:]] == [
+        "Forwarded message from Sam Sample",
+        "Forwarded message from Alex Example",
+    ]
+    assert "First forwarded note." in lines[1] and "Second forwarded note." in lines[2]
+
+
+def test_forwarded_lines_dont_change_a_post_without_details():
+    text = f"Look at this.\n{forwarded()}"
+    [message], _ = parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(text=text))
+    assert (message.text, message.replies, message.reactions) == (text, 0, [])
+
+
+@pytest.mark.parametrize(
+    "look_alike",
+    [
+        "Forwarded message from Sam Sample: see below",  # no link
+        "Forwarded message from Sam Sample (https://example.slack.com/archives/C00000009/p1)",
+        forwarded().removesuffix(" in context"),  # not the connector's whole wording
+        forwarded(link="https://example.com/not-slack"),  # not a message link
+        forwarded() + " and more",  # more after the connector's wording
+    ],
+)
+def test_a_line_that_only_starts_like_a_forwarded_message_cant_hide_a_detail_line(look_alike):
+    # As the last line, after a detail line, it's text: the Thread line before it is text too,
+    # as it was before #124, rather than a guess.
+    text = f"Hello\nThread: 1 reply (latest: 2026-10-01 09:20:00 CDT)\n{look_alike}"
+    [message], _ = parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(text=text))
+    assert (message.text, message.replies) == (text, 0)
+
+
+def test_a_forwarded_look_alike_in_the_text_stays_where_it_is():
+    # An exact copy typed into the message's own text, above its details, isn't moved.
+    text = f"Hello\n{forwarded()}\nmore words\nReactions: eyes (1)"
+    [message], _ = parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(text=text))
+    assert message.text == f"Hello\n{forwarded()}\nmore words"
+    assert message.reactions == [{"name": "eyes", "count": 1}]
+
+
+def test_a_detail_line_typed_above_the_real_one_cant_overwrite_it():
+    # Codex on #125: the connector's own Thread line is the last one, so it wins.
+    real = "Thread: 2 replies (latest: 2026-10-01 09:20:00 CDT)"
+    text = f"Hello\nThread: 0 replies (latest: 2026-10-01 09:14:00 CDT)\n{real}\n{forwarded()}"
+    [message], _ = parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(text=text))
+    assert message.replies == 2
+
+
+@pytest.mark.parametrize(
+    ("body", "kept"), [("Hello\n  \n", "Hello"), ("  \nHello\n  ", "  \nHello")]
+)
+def test_space_only_lines_at_the_end_are_dropped_as_before(body, kept):
+    # Codex on #125: a post with no details keeps the same text it had before #124. Only
+    # blank lines at the end go; one at the start stays.
+    [message], _ = parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(text=body))
+    assert message.text == kept
+
+
+def test_a_blank_line_between_forwarded_messages_is_kept():
+    text = f"Notes\nReactions: eyes (1)\n  \n{forwarded()}\n\n{forwarded(name='Alex Example')}\n\t"
+    [message], _ = parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(text=text))
+    assert message.text == f"Notes\n{forwarded()}\n\n{forwarded(name='Alex Example')}"
