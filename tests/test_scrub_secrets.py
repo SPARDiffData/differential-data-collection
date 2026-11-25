@@ -848,6 +848,8 @@ def test_a_random_run_on_both_sides_of_an_email_or_phone_number_is_checked(text,
         ("Ok. Password is kite9.", "Ok. Password is [secret]."),
         ("Hi, password is kite9", "Hi, password is [secret]"),
         ("**Password's** fluffy42", "**Password's** [secret]"),
+        ("Password's owl7", "Password's [secret]"),
+        ("Password: wrong! (include the !)", "Password: [secret] (include the !)"),
         ("Password: simple! (include the !)", "Password: [secret] (include the !)"),
         ("Password is: abc123", "Password is: [secret]"),
         ("*Password is* abc123", "*Password is* [secret]"),
@@ -899,6 +901,7 @@ def test_must_refuse_every_random_16_character_password_is_replaced():
         "The password's length is 12. Your password's strength matters.",
         "Password is hard to remember, and the password's format is new.",
         "if (password is expected_password):",
+        "the password's owner is Sam, and the password's expiration date is set.",
     ],
 )
 def test_a_password_word_in_ordinary_prose_or_before_a_placeholder_is_left_alone(text):
@@ -943,6 +946,10 @@ def test_a_chosen_password_that_looks_random_is_replaced_everywhere_in_the_copy(
         (
             "Password is **fluffy42**. Try fluffy42 again.",
             "Password is [secret]. Try [secret] again.",
+        ),
+        (
+            "db_password: base64\nType base64 to log in.",
+            "db_password: [secret]\nType [secret] to log in.",
         ),
     ],
 )

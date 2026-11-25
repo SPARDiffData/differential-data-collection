@@ -228,7 +228,7 @@ PROSE = frozenset(
     "leaked known private temporary new old generated random true false length strength hash "
     "expiry policy rules format requirements managed locked broken being been just only very "
     "really so quite more less my your our their what which how why when where like given "
-    "rotated updated typed entered visible shown".split()
+    "rotated updated typed entered visible shown owner expiration".split()
 )
 MEETING_HOSTS = (
     "zoom.us", "zoomgov.com", "meet.google.com", "teams.live.com", "webex.com",
