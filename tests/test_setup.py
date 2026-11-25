@@ -97,7 +97,7 @@ def fixed(char="k"):
 def fresh_answers(channels: str = f"example-channel, {LINK}") -> list[str]:
     """Answers for a first setup with a team file: use the team values, the default data
     folder, the channels, the workspace, the made-up handle, write, keep the team file."""
-    return ["y", "", channels, "example.slack.com", "", "y", ""]
+    return ["y", "", channels, "example.slack.com", "", "y", "n"]
 
 
 def run(home, *answers, team="default", picker=no_picker, choose=None) -> tuple[int, Script]:
@@ -199,7 +199,7 @@ def test_the_handle_is_called_a_pseudonym_when_it_is_offered(home):
 
 def test_a_no_at_the_last_question_writes_nothing(home):
     answers = fresh_answers()
-    answers[5] = ""  # Write this? [y/N]
+    answers[5] = "n"  # Write this?
     code, script = run(home, *answers[:6])
     assert code == 0
     assert not settings(home).parent.exists()
@@ -244,7 +244,7 @@ def test_must_refuse_1_the_check_comes_before_anything_else(home, monkeypatch):
 def test_must_refuse_2_an_existing_config_is_kept_without_a_yes(home):
     path = existing(home)
     before = path.read_bytes()
-    code, script = run(home, "", team=None)  # Change it? [y/N]
+    code, script = run(home, "n", team=None)  # Change it?
     assert code == 0
     assert path.read_bytes() == before
     assert not (path.parent / setup.BACKUP_NAME).exists()
@@ -254,10 +254,10 @@ def test_must_refuse_2_an_existing_config_is_kept_without_a_yes(home):
 def test_must_refuse_2_a_team_file_isnt_used_without_changing_the_config(home):
     path = existing(home)
     before = path.read_bytes()
-    code, script = run(home, "")
+    code, script = run(home, "n", "n")  # Change it? no; put the key in place anyway? no
     assert code == 0
     assert path.read_bytes() == before
-    assert "team file wasn't used" in script.text
+    assert "answer y to Change it" in script.text
     assert not (home / ".diffdata" / "store-key.json").exists()
 
 
@@ -285,7 +285,7 @@ def test_must_refuse_2_an_old_backup_is_replaced_only_on_a_second_yes(home):
     backup = path.parent / setup.BACKUP_NAME
     backup.write_text("older backup\n", encoding="utf-8")
     before = path.read_bytes()
-    code, script = run(home, *CHANGE, "", team=None)
+    code, script = run(home, *CHANGE, "n", team=None)
     assert code == 1
     assert path.read_bytes() == before
     assert backup.read_text(encoding="utf-8") == "older backup\n"
@@ -598,9 +598,9 @@ def test_must_refuse_9_and_18_nothing_from_the_key_or_client_file_is_shown(home,
 def test_must_refuse_10_a_key_others_can_read_changes_only_on_a_typed_yes(home):
     existing(home)
     key = write_key(home, mode=0o644)
-    run(home, "", "", team=None)  # Change it? no; chmod? Enter
+    run(home, "n", "", "n", team=None)  # Change it? no; chmod? Enter asks again, then no
     assert stat.S_IMODE(key.stat().st_mode) == 0o644
-    run(home, "", "y", team=None)
+    run(home, "n", "y", team=None)
     assert stat.S_IMODE(key.stat().st_mode) == 0o600
 
 
@@ -609,13 +609,13 @@ def test_must_refuse_18_a_different_key_is_replaced_only_on_a_typed_yes(home):
     key = write_key(home, data=other)
     before = key.read_bytes()
     answers = fresh_answers()
-    answers[-1:] = ["", ""]  # replace the key? Enter; delete the team file? Enter
+    answers[-1:] = ["n", "n"]  # replace the key? no; delete the team file? no
     run(home, *answers)
     assert key.read_bytes() == before
 
     settings(home).unlink()
     answers = fresh_answers()
-    answers[-1:] = ["y", ""]
+    answers[-1:] = ["y", "n"]
     run(home, *answers)
     assert setup.push.read_key(key) == KEY
 
@@ -680,7 +680,7 @@ def test_must_refuse_18_a_key_write_cut_short_leaves_no_key(home, monkeypatch):
 
 def test_with_no_key_a_rerun_says_it_comes_in_the_team_file(home):
     existing(home)
-    _, script = run(home, "", team=None)
+    _, script = run(home, "n", team=None)
     assert "It comes in the team file" in script.text
 
 
@@ -753,9 +753,11 @@ def test_must_refuse_15_a_rerun_offers_the_values_setup_wrote_before(home):
 
 def test_must_refuse_16_team_values_need_a_typed_yes(home):
     other = team_file(home, name="team-b", folder="team-b")
-    answers = ["", str(other), "y", *fresh_answers()[1:]]  # Enter is a no: give another file
+    # Enter alone asks again; no: give another file; yes to its values.
+    answers = ["", "n", str(other), "y", *fresh_answers()[1:]]
     code, script = run(home, *answers)
     assert code == 0
+    assert "Please type y or n." in script.text
     assert "bucket example-bucket, folder team-a" in script.text
     assert tomllib.loads(settings(home).read_text())["store"]["folder"] == "team-b"
 
@@ -765,3 +767,83 @@ def test_team_command_and_the_team_flag_are_gone(capsys):
         cli.main(["team-command", "--bucket", "x", "--folder", "y", "--project", "z"])
     with pytest.raises(SystemExit):
         cli.main(["setup", "--team", "bucket=x,folder=y,project=z"])
+
+
+# --- round 3: explicit y/n, key install on "no change", capital names ----------------------
+
+
+def test_a_safety_question_takes_only_y_or_n():
+    script = Script("", "maybe", "Y", "", "no")
+    assert script.yes("Go?") is True
+    assert script.yes("Go?") is False
+    assert script.text.count("Please type y or n.") == 3
+
+
+@pytest.mark.parametrize(
+    ("where", "question"),
+    [(0, "Use these?"), (5, "Write this to"), (6, "Delete the team file")],
+)
+def test_must_refuse_16_enter_at_a_first_setup_question_asks_again(home, where, question):
+    answers = fresh_answers()
+    answers.insert(where, "")
+    code, script = run(home, *answers)
+    assert code == 0
+    asked = [line for line in script.shown if line.startswith(question)]
+    assert len(asked) == 2
+
+
+def test_enter_at_change_it_asks_again(home):
+    path = existing(home)
+    before = path.read_bytes()
+    _, script = run(home, "", "n", team=None)
+    assert sum(line.startswith("Change it?") for line in script.shown) == 2
+    assert path.read_bytes() == before
+
+
+def test_enter_at_replacing_an_old_backup_asks_again(home):
+    path = existing(home)
+    (path.parent / setup.BACKUP_NAME).write_text("older backup\n", encoding="utf-8")
+    _, script = run(home, *CHANGE, "", "n", team=None)
+    assert sum(line.startswith("There's an older") for line in script.shown) == 2
+
+
+def test_enter_at_replacing_a_key_asks_again(home):
+    other = {**KEY, "client_email": "other@example-project.iam.gserviceaccount.com"}
+    key = write_key(home, data=other)
+    before = key.read_bytes()
+    answers = fresh_answers()
+    answers[-1:] = ["", "n", "n"]  # replace? Enter asks again, then no; delete? no
+    _, script = run(home, *answers)
+    assert sum(line.startswith("There's a different store key") for line in script.shown) == 2
+    assert key.read_bytes() == before
+
+
+def test_with_no_change_the_team_files_parts_can_still_be_put_in_place(home):
+    path = existing(home)
+    before = path.read_bytes()
+    team = team_file(home)
+    # Change it? no; put the key and client file in place anyway? yes; delete? no
+    code, script = run(home, "n", "y", "n", team=team)
+    assert code == 0
+    assert path.read_bytes() == before  # the team values weren't used (16)
+    assert setup.push.read_key(home / ".diffdata" / "store-key.json") == KEY
+    assert (home / ".diffdata" / "google-client.json").exists()
+    assert team.exists()
+    assert no_marker(script.text)
+
+
+def test_with_no_change_and_a_no_the_team_file_is_left_alone(home):
+    existing(home)
+    team = team_file(home)
+    run(home, "n", "n", team=team)
+    assert not (home / ".diffdata" / "store-key.json").exists()
+    assert team.exists()
+
+
+@pytest.mark.parametrize("name", ["GENERAL", "CAREERS", "DESIGNS", "GROUPCHAT"])
+def test_a_name_typed_in_capitals_stays_a_name(home, name):
+    answers = fresh_answers(name)
+    code, _ = run(home, *answers)
+    assert code == 0
+    channels = tomllib.loads(settings(home).read_text())["sources"]["slack_channels"]
+    assert channels == [name.lower()]

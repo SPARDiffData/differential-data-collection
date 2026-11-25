@@ -48,7 +48,8 @@ file, waiting for approval there):
   14  to change a saved handle by itself
   15  to take team values from anywhere but the team file the producer gives, or the
       config.toml setup wrote before (the values the producer accepted then)
-  16  to use team values without showing them first and getting a typed yes
+  16  to use team values without showing them first and getting a typed yes. Every yes/no
+      question takes only y or n: Enter alone asks again
   17  a direct message or a group DM as a channel (CON-5); the save hook also refuses a read
       of a group DM (discover/slack_inbox.py)
   18  to print anything from the store key or the Google client file in a team file, to put
@@ -118,12 +119,11 @@ class Prompter:
     ask: Callable[[str], str] = input
     say: Callable[[str], None] = print
 
-    def yes(self, question: str, default: bool) -> bool:
-        hint = "[Y/n]" if default else "[y/N]"
+    def yes(self, question: str) -> bool:
+        """A safety question: only y, yes, n or no is an answer. Enter alone, or anything
+        else, asks again, so nothing is changed, or kept, by a key pressed by mistake."""
         while True:
-            answer = self.ask(f"{question} {hint} ").strip().lower()
-            if not answer:
-                return default
+            answer = self.ask(f"{question} [y/n] ").strip().lower()
             if answer in ("y", "yes"):
                 return True
             if answer in ("n", "no"):
@@ -383,8 +383,7 @@ def write_config(settings: Path, raw: dict, prompter: Prompter) -> bool:
                 f"setup again. {NOTHING_WRITTEN}"
             )
         if backup.exists() and not prompter.yes(
-            f"There's an older {BACKUP_NAME}. Replace it with a copy of the current config.toml?",
-            default=False,
+            f"There's an older {BACKUP_NAME}. Replace it with a copy of the current config.toml?"
         ):
             prompter.say(f"{NOTHING_WRITTEN} Move {backup} away to keep it, then run setup again.")
             return False
@@ -503,7 +502,7 @@ def team_step(
         prompter.say(
             f"  bucket {values['bucket']}, folder {values['folder']}, project {values['project']}"
         )
-        if prompter.yes("Use these?", default=False):
+        if prompter.yes("Use these?"):
             return values, team
         team = ask_team_file(prompter, picker)
 
@@ -634,8 +633,7 @@ def key_step(prompter: Prompter, folder: Path) -> None:
     if os.name != "nt" and mode & 0o077:
         if prompter.yes(
             f"Others on this computer can read {push.KEY_NAME}. Make it readable only by you "
-            "(chmod 600)?",
-            default=False,
+            "(chmod 600)?"
         ):
             os.chmod(key, 0o600)
 
@@ -651,8 +649,7 @@ def install_file(prompter: Prompter, target: Path, data: bytes, label: str) -> N
             prompter.say(f"The {label} at {target} is the same as the team file's.")
             return
         if not prompter.yes(
-            f"There's a different {label} at {target}. Replace it with the team file's?",
-            default=False,
+            f"There's a different {label} at {target}. Replace it with the team file's?"
         ):
             prompter.say(f"Kept the {label} that was there.")
             return
@@ -689,7 +686,7 @@ def install_team_file(prompter: Prompter, folder: Path, team: TeamFile) -> None:
     install_file(prompter, folder / push.KEY_NAME, team.store_key, "store key")
     if team.google_client is not None:
         install_file(prompter, folder / CLIENT_NAME, team.google_client, "Google client file")
-    if prompter.yes(f"Delete the team file at {team.path}?", default=False):
+    if prompter.yes(f"Delete the team file at {team.path}?"):
         team.path.unlink()
         prompter.say("Deleted the team file.")
 
@@ -732,10 +729,21 @@ def setup(
     if settings.exists():
         raw = read_raw(settings)
         prompter.say(f"You have a config.toml already, at {settings}.")
-        if not prompter.yes("Change it?", default=False):
-            if team is not None:
-                prompter.say("So the team file wasn't used.")
+        if not prompter.yes("Change it?"):
             check_existing(prompter, settings)
+            if team is not None:
+                prompter.say(
+                    "So the team file's team values weren't used. To use them, run setup again "
+                    "and answer y to Change it."
+                )
+                parts = "store key" + (" and Google client file" if team.google_client else "")
+                if prompter.yes(f"Put the team file's {parts} in place anyway?"):
+                    try:
+                        install_team_file(prompter, folder, team)
+                    except OSError as e:
+                        raise SetupError(
+                            f"Couldn't put the team file's parts in place: {e}"
+                        ) from None
             key_step(prompter, folder)
             return 0
     new, team = config_step(prompter, team, raw, picker, choose)
@@ -751,7 +759,7 @@ def setup(
         f"project {store['project']}"
     )
     prompter.say(f"  Producer handle:  {store['producer']} (a pseudonym)")
-    if not prompter.yes(f"Write this to {settings}?", default=False):
+    if not prompter.yes(f"Write this to {settings}?"):
         prompter.say(NOTHING_WRITTEN)
         return 0
     try:

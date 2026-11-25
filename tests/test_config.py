@@ -449,3 +449,17 @@ def test_a_dm_or_group_dm_in_slack_channels_is_refused(tmp_path, listed):
     with pytest.raises(ConfigError, match="CON-5") as e:
         load_config(path)
     assert "D00000001" not in str(e.value) and "alex" not in str(e.value)
+
+
+# Round 3 on #131: real Slack IDs have a digit, so a name typed in capitals stays a name.
+@pytest.mark.parametrize("name", ["GENERAL", "CAREERS", "DESIGNS", "GROUPCHAT"])
+def test_a_name_in_capitals_is_neither_an_id_nor_a_dm(tmp_path, name):
+    assert config_module.channel_id(name) is None
+    assert not config_module.is_direct_message(name)
+    data = (tmp_path / "data").as_posix()
+    path = write_config(
+        tmp_path, f'[sources]\nslack_channels = ["{name}"]\n[local]\ndata_dir = "{data}"\n'
+    )
+    config = load_config(path)
+    assert config.slack_channels == (name.lower(),)
+    assert config.slack_channel_ids == ()

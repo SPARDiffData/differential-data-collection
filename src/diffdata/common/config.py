@@ -21,15 +21,19 @@ CANVAS_LINK = re.compile(r"https://[a-z0-9-]+\.slack\.com/docs/T[A-Z0-9]+/(F[A-Z
 # A channel is listed by its name, its ID, or a link to it or to one of its messages:
 # https://<workspace>.slack.com/archives/<ID>, maybe followed by /p<digits>. Names are lowercase,
 # IDs uppercase, so an ID is told apart before the name is made lowercase.
-CHANNEL_ID = re.compile(r"[CG][A-Z0-9]{6,}")
+# A real ID always has a digit, so a name typed in capitals (GENERAL) stays a name.
+CHANNEL_ID = re.compile(r"[CG](?=[A-Z]*[0-9])[A-Z0-9]{6,}")
 CHANNEL_LINK = re.compile(
-    r"https://([a-z0-9-]+)\.slack\.com/archives/([CG][A-Z0-9]{6,})(?:/p\d+)?/?(?:\?.*)?"
+    r"https://([a-z0-9-]+)\.slack\.com/archives/([CG](?=[A-Z]*[0-9])[A-Z0-9]{6,})"
+    r"(?:/p\d+)?/?(?:\?.*)?"
 )
 # CON-5: a direct message ("D..." ID or link) or a group DM (Slack names it "mpdm-...") is never
 # collected: the other people in it never agreed. Listing one is refused, and the save hook
 # refuses a read of a channel whose name says it's a group DM.
-DM_ID = re.compile(r"D[A-Z0-9]{6,}")
-DM_LINK = re.compile(r"https://[a-z0-9-]+\.slack\.com/archives/D[A-Z0-9]{6,}(?:/p\d+)?/?(?:\?.*)?")
+DM_ID = re.compile(r"D(?=[A-Z]*[0-9])[A-Z0-9]{6,}")
+DM_LINK = re.compile(
+    r"https://[a-z0-9-]+\.slack\.com/archives/D(?=[A-Z]*[0-9])[A-Z0-9]{6,}(?:/p\d+)?/?(?:\?.*)?"
+)
 GROUP_DM_PREFIX = "mpdm-"
 # What setup takes as a channel name: no spaces, dots, slashes or other marks a pasted
 # sentence or link has. load_config() doesn't check it yet, so no existing config breaks.
