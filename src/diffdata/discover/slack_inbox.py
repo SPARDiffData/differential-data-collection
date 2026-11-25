@@ -55,6 +55,7 @@ from pathlib import Path
 from diffdata.collect import slack_canvas
 from diffdata.common.config import (
     CHANNEL_ID,
+    NO_NOTICE,
     Config,
     ConfigError,
     channel_name,
@@ -391,6 +392,31 @@ def begin(config: Config, pairs: list[str], now: datetime | None = None, full: b
             raise SlackExportError(
                 f"{which} isn't in slack_channels in config.toml. Listing a channel there "
                 "is the opt-in to collecting it (CON-1)."
+            )
+        # Checked here too, so the export stops before reading anything rather than at the
+        # build (#118). A channel listed by ID has its name from an earlier read, if any. A
+        # name given here counts only for a channel config.toml lists by that name, never by
+        # ID, so it can't borrow another channel's entry.
+        by_name = name in config.slack_channels and channel_id not in config.slack_channel_ids
+        listed_name = name if by_name else ""
+        known = listed_name or run_channel_names(config.data_dir).get(channel_id, "")
+        try:
+            notice = config.notice(channel_id, known)
+        except ConfigError as e:
+            raise SlackExportError(str(e)) from e
+        which = f"#{name}" if name else "A channel listed by its ID"
+        if notice is None:
+            raise SlackExportError(
+                f"{which} has no entry in slack_notices in config.toml. Add the link to its "
+                'pinned notice (Copy link), or "none" if the channel has no notice because '
+                "everyone in it agreed directly. For a channel slack_channels lists by ID, key "
+                "the entry by that ID."
+            )
+        if notice != NO_NOTICE and notice.partition("/")[0] != channel_id:
+            raise SlackExportError(
+                f"The slack_notices link for {which[0].lower() + which[1:]} in config.toml "
+                "points to a different channel. Use Copy link on the notice pinned in that "
+                "channel."
             )
         # Its name is kept only if config.toml lists it by name: a channel listed by ID gets
         # its name from its first read, which the save hook checks against the ID.

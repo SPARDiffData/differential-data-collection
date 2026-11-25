@@ -23,6 +23,13 @@ def config(tmp_path):
     return Config(
         data_dir=tmp_path / "data",
         slack_channels=("example-channel",),
+        # Keyed by name and by ID, for the tests that list a channel by its ID (#118).
+        slack_notices=(
+            ("example-channel", "none"),
+            ("other-channel", "none"),
+            (CHANNEL, "none"),
+            ("C00000002", "none"),
+        ),
         slack_workspace_url="https://example.slack.com",
     )
 
@@ -71,7 +78,11 @@ def test_begin_refuses_a_malformed_channel_or_a_dm(config, pair):
 
 
 def test_begin_needs_the_workspace_address(tmp_path):
-    config = Config(data_dir=tmp_path / "data", slack_channels=("example-channel",))
+    config = Config(
+        data_dir=tmp_path / "data",
+        slack_channels=("example-channel",),
+        slack_notices=(("example-channel", "none"), ("other-channel", "none")),
+    )
     with pytest.raises(SlackExportError, match="slack_workspace_url"):
         begin(config, ["example-channel=C00000001"], now=T0)
 
@@ -279,6 +290,7 @@ def test_cli_begin_and_abort(tmp_path, monkeypatch, capsys):
     data = (tmp_path / "data").as_posix()
     (tmp_path / "config.toml").write_text(
         '[sources]\nslack_channels = ["example-channel"]\n'
+        'slack_notices = { "example-channel" = "none" }\n'
         'slack_workspace_url = "https://example.slack.com"\n'
         f'[local]\ndata_dir = "{data}"\n',
         encoding="utf-8",
@@ -595,6 +607,7 @@ def test_two_channel_reads_saved_together_both_keep_their_check_mark(tmp_path):
     config = Config(
         data_dir=tmp_path / "data",
         slack_channels=("example-channel", "other-channel"),
+        slack_notices=(("example-channel", "none"), ("other-channel", "none")),
         slack_workspace_url="https://example.slack.com",
     )
     begin(config, ["example-channel=C00000001", "other-channel=C00000002"], now=T0)
@@ -648,6 +661,7 @@ def test_check_stops_the_read_when_the_run_file_is_damaged(
     data = tmp_path / "data"
     (tmp_path / "config.toml").write_text(
         '[sources]\nslack_channels = ["example-channel"]\n'
+        'slack_notices = { "example-channel" = "none" }\n'
         'slack_workspace_url = "https://example.slack.com"\n'
         f'[local]\ndata_dir = "{data.as_posix()}"\n',
         encoding="utf-8",

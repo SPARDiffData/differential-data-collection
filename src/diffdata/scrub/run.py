@@ -39,14 +39,16 @@ from diffdata import __version__
 from diffdata.collect import slack_canvas
 from diffdata.common.config import Config
 from diffdata.common.documents import documents_dir
-from diffdata.discover.slack_export import read_store
+from diffdata.discover import slack_state
+from diffdata.discover.slack_export import read_inbox, read_store, saved_records
 from diffdata.discover.slack_inbox import (
     SlackExportError,
     applied_stamp,
-    opt_out_stamp,
+    inbox_dir,
     run_channel_names,
     slack_dir,
 )
+from diffdata.discover.slack_joins import is_held, late_joiners, left_out_stamp
 from diffdata.scrub.people import (
     NUMBERS_FILE,
     PEOPLE_FILE,
@@ -197,28 +199,56 @@ def scrub(config: Config) -> str:
         (private / LOCK).unlink(missing_ok=True)
 
 
+def saved_left_out(config: Config) -> tuple[dict[str, set[str]], dict[str, tuple], str]:
+    """Who the build leaves out, worked out from the saved data the same way the build does,
+    so a join saved since the last build, or a changed notice link, is caught too (#118).
+    Returns each channel's late joiners, where its held-back messages start, and the stamp a
+    build that applied all of it writes. The push checks the same stamp (store/push.py)."""
+    data = config.data_dir
+    channel_dirs = sorted(p for p in inbox_dir(data).glob("*") if p.is_dir())
+    try:
+        inbox = {d.name: read_inbox(d, d.name, config.slack_workspace_url) for d in channel_dirs}
+        late, held_after, _ = late_joiners(
+            config,
+            saved_records(data, inbox),
+            run_channel_names(data),
+            slack_state.start_points(inbox_dir(data))[0],
+        )
+    except SlackExportError as e:
+        raise ScrubError(str(e)) from e
+    return late, held_after, left_out_stamp(set(config.slack_opted_out), late, held_after)
+
+
 def make_copies(config: Config, earlier: bool) -> str:
     data = config.data_dir
     opted_out = set(config.slack_opted_out)
     stores = sorted((slack_dir(data) / "store").glob("*/messages.jsonl"))
+    late, held_after, expected = saved_left_out(config)
     # Read once, before anything is checked or copied, and written into the manifest as it
     # was read: a build finishing during the scrub then makes the manifest stale, never
     # current (store/push.py compares the two).
     stamp = applied_stamp(data)
-    if stores and stamp != opt_out_stamp(opted_out):
+    if stores and stamp != expected:
         # The last finished build applied a different list, or none, or stopped partway.
         raise ScrubError(
-            "slack_opted_out in config.toml has changed since the last build, or the last "
-            "build didn't finish, so nothing was scrubbed. Run uv run diffdata discover slack "
-            "build first, then scrub again."
+            "slack_opted_out or slack_notices in config.toml has changed since the last "
+            "build, a new export or a join has been saved since then, or the last build "
+            "didn't finish, so nothing was scrubbed. Run uv run diffdata discover slack build "
+            "first, then scrub again."
         )
     for store in stores:
-        if any(record["user_id"] in opted_out for record in read_store(store)):
+        channel_id = store.parent.name
+        gone = opted_out | late.get(channel_id, set())
+        if any(
+            record["user_id"] in gone or is_held(record, held_after, channel_id)
+            for record in read_store(store)
+        ):
             # The build is what leaves them out (#105), so it has to run first.
             raise ScrubError(
-                "Some people in slack_opted_out in config.toml are still in the saved Slack "
-                "data, so nothing was scrubbed. Run uv run diffdata discover slack build "
-                "first, then scrub again."
+                "The saved Slack data still has messages the build leaves out (by people in "
+                "slack_opted_out, by people who joined after a notice, or newer than the last "
+                "complete export), so nothing was scrubbed. Run "
+                "uv run diffdata discover slack build first, then scrub again."
             )
     people_file, numbers_file = data / PEOPLE_FILE, data / NUMBERS_FILE
     given = read_given(numbers_file)
@@ -289,8 +319,9 @@ def make_copies(config: Config, earlier: bool) -> str:
         "tool": f"diffdata {__version__}",
         "approved_for_release": False,
         "note": NOTE,
-        # Which opt-out list the build had applied when these copies were made, so a push can
-        # tell if the list changed since (store/push.py). A fingerprint: it names nobody.
+        # Who the build had left out when these copies were made (opt-outs, late joiners and
+        # held-back points), so a push can tell if that changed since (store/push.py). A
+        # fingerprint: it names nobody. The field keeps its first name.
         "opt_out_stamp": stamp,
         "copies": copies,
         "held_back": held,

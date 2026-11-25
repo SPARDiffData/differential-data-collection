@@ -29,6 +29,7 @@ def config(tmp_path):
     return Config(
         data_dir=tmp_path / "data",
         slack_channels=("example-channel",),
+        slack_notices=(("example-channel", "none"), ("other-channel", "none")),
         slack_workspace_url="https://example.slack.com",
         slack_canvases=(CANVAS,),
     )
@@ -715,6 +716,7 @@ def test_cli_canvases_due(tmp_path, monkeypatch, capsys):
     data = (tmp_path / "data").as_posix()
     (tmp_path / "config.toml").write_text(
         f'[sources]\nslack_channels = ["example-channel"]\nslack_canvases = ["{CANVAS}"]\n'
+        'slack_notices = { "example-channel" = "none" }\n'
         'slack_workspace_url = "https://example.slack.com"\n'
         f'[local]\ndata_dir = "{data}"\n',
         encoding="utf-8",

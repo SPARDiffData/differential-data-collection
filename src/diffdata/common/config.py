@@ -50,6 +50,15 @@ DOC_LINK = re.compile(
 # least one a digit. The same shape the scrub's people list takes (scrub/people.py).
 USER_ID = re.compile(r"[UW](?=[A-Z]*[0-9])[A-Z0-9]{8,}")
 OPT_OUT_KEY = "slack_opted_out"
+NOTICES_KEY = "slack_notices"
+# A notice is named by its message link, from Slack's "Copy link":
+# https://<workspace>.slack.com/archives/<channel ID>/p<16 digits>. Only the post itself, not a
+# reply in a thread, since a reply isn't what the channel sees pinned.
+NOTICE_LINK = re.compile(
+    r"https://[a-z0-9-]+(?:\.enterprise)?\.slack\.com/archives/([CG][A-Z0-9]{6,})/p(\d{10})(\d{6})/?"
+)
+# A channel where everyone agreed directly, so there's no notice to check joins against.
+NO_NOTICE = "none"
 # Every setting [local] and [store] take. Anything else is a typo, and stops the run.
 LOCAL_KEYS = {"data_dir"}
 STORE_KEYS = {"backend", "bucket", "folder", "producer", "project", "send_not_approved"}
@@ -79,6 +88,7 @@ SOURCES_KEYS = {
     "google_docs",
     "folders",
     OPT_OUT_KEY,
+    NOTICES_KEY,
 }
 
 
@@ -124,6 +134,11 @@ class Config:
     # CON-4, CON-5: Slack user IDs of people who opted out. Their messages are left out of
     # everything the build saves. Real IDs, so they live here only, never in code or output.
     slack_opted_out: tuple[str, ...] = ()
+    # CON-5: each channel's pinned notice, as (channel, "<channel ID>/<message ts>"), or
+    # (channel, "none") for a channel with no notice. The channel is its name, or its ID for
+    # an entry keyed by ID or link. Anyone whose latest join is after the notice is left out
+    # of that channel like an opted-out person (#118).
+    slack_notices: tuple[tuple[str, str], ...] = ()
     # STO-1, STO-2: where `diffdata push` sends the scrubbed copies. Checked by the push
     # itself, so other commands still run while [store] is empty.
     store_backend: str = ""
@@ -142,6 +157,20 @@ class Config:
         return channel_id in self.slack_channel_ids or (
             bool(name) and channel_name(name) in self.slack_channels
         )
+
+    def notice(self, channel_id: str, name: str | None = None) -> str | None:
+        """This channel's slack_notices value, from an entry keyed by its ID (or a link to it)
+        or by its name, as slack_channels can list it either way. None if it has neither. Two
+        entries that disagree are refused, since either could be the one meant (#118)."""
+        notices = dict(self.slack_notices)
+        by_id = notices.get(channel_id)
+        by_name = notices.get(channel_name(name)) if name else None
+        if by_id is not None and by_name is not None and by_id != by_name:
+            raise ConfigError(
+                "slack_notices in config.toml has two different entries for one channel, one "
+                "by its name and one by its ID or link. Keep one."
+            )
+        return by_id if by_id is not None else by_name
 
 
 def channel_name(name: str) -> str:
@@ -353,6 +382,7 @@ def load_config(path: str | Path | None = None) -> Config:
                 "are the same person. Remove one, or replace it with the ID you meant."
             )
         user_ids.append(found)
+    notices = read_notices(sources.get(NOTICES_KEY, {}), path)
     refresh_days = sources.get("canvas_refresh_days", CANVAS_REFRESH_DAYS)
     # bool is a kind of int in Python, so true would otherwise pass as 1.
     if isinstance(refresh_days, bool) or not isinstance(refresh_days, int) or refresh_days < 1:
@@ -378,6 +408,7 @@ def load_config(path: str | Path | None = None) -> Config:
         canvas_refresh_days=refresh_days,
         google_docs=tuple(doc_ids),
         slack_opted_out=tuple(user_ids),
+        slack_notices=notices,
         store_backend=store.get("backend", ""),
         store_bucket=store.get("bucket", ""),
         store_folder=store.get("folder", ""),
@@ -386,3 +417,55 @@ def load_config(path: str | Path | None = None) -> Config:
         store_send_not_approved=store.get("send_not_approved", ""),
         path=path,
     )
+
+
+def read_notices(table, path: Path) -> tuple[tuple[str, str], ...]:
+    """slack_notices: each listed channel's notice link, or "none". Checked here for shape
+    only. Whether a channel being built has an entry, and whether its link is that channel's,
+    is checked at build time, when the channel's ID is known (discover/slack_joins.py). A link
+    is never printed: it's a real message's address."""
+    if not isinstance(table, dict):
+        raise ConfigError(
+            f"slack_notices in {path} must be a table of channel names and notice links, like "
+            'slack_notices = { "example-channel" = "https://<workspace>.slack.com/archives/'
+            'C.../p..." }.'
+        )
+    # An entry for a channel no longer in slack_channels is allowed: its saved data is still
+    # built, so it still needs one. A typo still stops the build, since the channel it was
+    # meant for then has no entry (discover/slack_joins.py).
+    found: dict[str, str] = {}
+    for number, (key, value) in enumerate(table.items(), start=1):
+        # Keyed by the channel's name, or by its ID or a link to it, as slack_channels can
+        # list it. An ID is never printed: it's a real channel's.
+        by_id = channel_id(key)
+        if by_id is None and "://" in key:
+            raise ConfigError(
+                f"A key in slack_notices in {path} is a link, but not to a Slack channel "
+                "(https://<workspace>.slack.com/archives/C...). Key it by the channel's name "
+                "or ID instead."
+            )
+        name = by_id or channel_name(key)
+        # A key is never printed: it may be an ID, or something pasted, even a token.
+        shown = f"entry {number}"
+        if name in found:
+            raise ConfigError(
+                f"slack_notices in {path} has two entries for the same channel. Keep one."
+            )
+        if not isinstance(value, str):
+            raise ConfigError(
+                f"The slack_notices {shown} in {path} must be a notice link, in quotes."
+            )
+        value = value.strip()
+        if value.lower() == NO_NOTICE:
+            found[name] = NO_NOTICE
+            continue
+        link = NOTICE_LINK.fullmatch(value)
+        if link is None:
+            raise ConfigError(
+                f"The slack_notices {shown} in {path} isn't a link to a Slack message "
+                "(https://<workspace>.slack.com/archives/C.../p...). Use Copy link on the "
+                'pinned notice itself, not a reply to it, or write "none" for a channel with '
+                "no notice. Nothing was collected."
+            )
+        found[name] = f"{link[1]}/{link[2]}.{link[3]}"
+    return tuple(sorted(found.items()))

@@ -110,7 +110,10 @@ NOT_A_TERMINAL = (
     "Terminal or PowerShell and run it there. Nothing was written."
 )
 NOTHING_WRITTEN = "Nothing was written."
-NEXT_STEP = "Next: open Claude Code in the repo folder and run /slack-export."
+NEXT_STEP = (
+    "Next: add each channel's notice link under slack_notices in config.toml (see the "
+    "README), then open Claude Code in the repo folder and run /slack-export."
+)
 TEAM_FORMAT = "diffdata-team"
 TEAM_VERSION = 1
 TEAM_FILE_KEYS = {"format", "version", *TEAM_KEYS, "store_key", "google_client"}
@@ -344,6 +347,11 @@ def toml_value(value, where: str) -> str:
         return toml_string(value)
     if isinstance(value, list) and all(isinstance(item, str) for item in value):
         return "[" + ", ".join(toml_string(item) for item in value) + "]"
+    if isinstance(value, dict) and all(isinstance(item, str) for item in value.values()):
+        # An inline table of strings, like slack_notices (#118).
+        return (
+            "{ " + ", ".join(f"{toml_key(k)} = {toml_string(v)}" for k, v in value.items()) + " }"
+        )
     # Setup never drops a setting, so one it can't write again stops it instead.
     raise SetupError(
         f"Setup can't keep {where} as it is in your config.toml. Change it there by hand, or "

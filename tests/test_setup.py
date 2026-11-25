@@ -150,6 +150,8 @@ slack_canvases = ["F00000001"]
 canvas_refresh_days = 3
 google_docs = ["1AbCdEfGhIjKlMnOpQrStUvWx"]
 slack_opted_out = ["U00000001", "W00000002"]
+slack_notices.old-channel = "none"
+slack_notices.C00000002 = "https://example.slack.com/archives/C00000002/p1790900000000000"
 folders = []
 
 [local]
@@ -292,7 +294,8 @@ def test_must_refuse_2_and_3_a_change_keeps_a_backup_and_every_other_setting(hom
     new = tomllib.loads(path.read_text(encoding="utf-8"))
     assert new["sources"]["slack_channels"] == ["new-channel"]
     old["sources"]["slack_channels"] = ["new-channel"]
-    assert new == old  # slack_opted_out, canvases, docs, refresh days, send_not_approved
+    assert new == old  # slack_opted_out, slack_notices, canvases, docs, refresh days, ...
+    assert new["sources"]["slack_notices"]["old-channel"] == "none"  # kept exactly (#118)
 
 
 def test_a_rerun_says_typed_channels_replace_the_list(home):

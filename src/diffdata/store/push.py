@@ -50,7 +50,7 @@ from pathlib import Path
 from diffdata import __version__
 from diffdata.common.config import Config
 from diffdata.common.paths import find_git_root, synced_by
-from diffdata.discover.slack_inbox import applied_stamp, opt_out_stamp
+from diffdata.discover.slack_inbox import applied_stamp
 from diffdata.scrub.people import PEOPLE_FILE, PeopleError, nfc, read_people
 from diffdata.scrub.run import (
     CHANNEL_LINE,
@@ -58,7 +58,9 @@ from diffdata.scrub.run import (
     LOCK,
     PRIVATE,
     SCRUBBED,
+    ScrubError,
     is_link,
+    saved_left_out,
     write_file,
 )
 from diffdata.scrub.secrets import RulesError, rules
@@ -431,19 +433,21 @@ def last_check(data: Path) -> Scrubber:
         ) from None
 
 
-def plan(data: Path, found: Settings, opted_out=()) -> tuple[dict, list[Upload], int]:
-    """Every check on the copies, before anything is sent. Returns the manifest, what to send,
-    and how many canvas copies were left out for having no date. A copy is named by its place
-    in the manifest, never by its path: the manifest could have been edited."""
+def plan(data: Path, found: Settings, expected: str) -> tuple[dict, list[Upload], int]:
+    """Every check on the copies, before anything is sent. `expected` is the left-out stamp
+    worked out from config.toml and the saved data now (scrub/run.py). Returns the manifest,
+    what to send, and how many canvas copies were left out for having no date. A copy is named
+    by its place in the manifest, never by its path: the manifest could have been edited."""
     manifest = read_manifest(data)
     prefix = found.prefix(manifest["approved_for_release"])
-    if not (manifest["opt_out_stamp"] == applied_stamp(data) == opt_out_stamp(opted_out)):
-        # The copies were made under a different opt-out list than the one in config.toml
-        # now, or than the last build applied: they could hold someone who has opted out.
+    if not (manifest["opt_out_stamp"] == applied_stamp(data) == expected):
+        # The copies were made leaving out different people than config.toml and the saved
+        # joins leave out now, or than the last build applied: they could hold someone who
+        # opted out or joined a channel after its notice (#118).
         raise PushError(
-            f"slack_opted_out in config.toml has changed since these copies were made. Run uv "
-            f"run diffdata discover slack build, then uv run diffdata scrub, then push. "
-            f"{NOTHING_SENT}"
+            "slack_opted_out or slack_notices in config.toml has changed since these copies "
+            "were made, or a new export or join has been saved since then. Run uv run diffdata "
+            f"discover slack build, then uv run diffdata scrub, then push. {NOTHING_SENT}"
         )
     scrubbed = data / SCRUBBED
     held = {(h["source"], h["id"]) for h in manifest["held_back"]}
@@ -538,7 +542,11 @@ def push(config: Config, opener: Callable[[str, dict], Store] | None = None) -> 
     found = settings(config)
     check_environment()
     with holding_lock(config.data_dir):
-        manifest, uploads, undated = plan(config.data_dir, found, config.slack_opted_out)
+        try:
+            expected = saved_left_out(config)[2]
+        except ScrubError as e:
+            raise PushError(f"{e} {NOTHING_SENT}") from e
+        manifest, uploads, undated = plan(config.data_dir, found, expected)
         if not manifest["approved_for_release"] and config.store_send_not_approved != "yes":
             raise PushError(
                 "These copies are marked not approved for release: names of people who aren't "

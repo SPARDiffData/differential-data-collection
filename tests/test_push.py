@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -123,6 +124,9 @@ def config(data: Path, key: dict | None = KEY, **store) -> Config:
     return Config(
         data_dir=data,
         slack_channels=(),
+        # make_scrub's made-up inbox and store folders are read as channels, so each needs an
+        # entry (#118).
+        slack_notices=(("run", "none"), ("CFAKE0001", "none")),
         path=home / "config.toml",
         **{f"store_{k}": v for k, v in settings.items()},
     )
@@ -611,7 +615,9 @@ def test_diffdata_push_reports_a_refusal_and_fails(tmp_path, monkeypatch, capsys
 
 def test_diffdata_push_sends_through_the_store(data, tmp_path, monkeypatch, capsys):
     (tmp_path / "config.toml").write_text(
-        f'[local]\ndata_dir = "{data.as_posix()}"\n\n[store]\nbackend = "gcs"\n'
+        f'[local]\ndata_dir = "{data.as_posix()}"\n\n'
+        '[sources]\nslack_notices = { "run" = "none", CFAKE0001 = "none" }\n\n'
+        '[store]\nbackend = "gcs"\n'
         'bucket = "fake-pilot-bucket"\nfolder = "fake-team"\nproducer = "fake-producer"\n'
         'project = "fake-project"\nsend_not_approved = "yes"\n',
         encoding="utf-8",
@@ -636,6 +642,7 @@ def test_a_real_scrub_is_pushed_and_nothing_from_outside_scrubbed_goes(
     cfg = Config(
         data_dir=tmp_path / "data",
         slack_channels=("example-channel",),
+        slack_notices=(("example-channel", "none"),),
         slack_workspace_url="https://example.slack.com",
         slack_canvases=(canvas_id,),
     )
@@ -656,7 +663,7 @@ def test_a_real_scrub_is_pushed_and_nothing_from_outside_scrubbed_goes(
     scrub(cfg)
     manifest = json.loads((cfg.data_dir / "scrubbed" / "manifest.json").read_text("utf-8"))
     store = FakeStore()
-    push(config(cfg.data_dir), Opener(store))
+    push(replace(config(cfg.data_dir), slack_notices=cfg.slack_notices), Opener(store))
     copies = {k: v for k, v in store.objects.items() if "/pushes/" not in k}
     assert len(copies) == len(manifest["copies"]) > 1
     scrubbed = {(cfg.data_dir / "scrubbed" / c["path"]).read_bytes() for c in manifest["copies"]}
@@ -665,6 +672,90 @@ def test_a_real_scrub_is_pushed_and_nothing_from_outside_scrubbed_goes(
     sent = b"".join(store.objects.values()).decode("utf-8")
     for name in ("Alex Example", "Sam Sample", "example.com"):
         assert name not in sent
+
+
+# #118: the push checks the same left-out stamp as the scrub, late joiners included.
+
+NOTICED = "C00000001/1790900000.000000"  # the notice went up on Oct 1
+JORDAN = "U00000009"
+
+
+def late_joiner_scrub(tmp_path, slack_run, slack_response) -> Config:
+    """A real export, build and scrub of #example-channel with a notice, where Jordan (made
+    up) joined after it and posted, and Sam joined before it. Returns a config the push can
+    use."""
+    original = (Path(__file__).parent / "fixtures" / "slack" / "read_channel.txt").read_text(
+        encoding="utf-8"
+    )
+    head, _, rest = original.partition("\n\n")
+    joins = "".join(
+        f"=== Message from Jordan Join <jordan@example.com> ({JORDAN}) at 2026-10-02 12:00:00 "
+        f"CDT ===\nMessage TS: {ts}\n{text}\n\n"
+        for ts, text in (
+            ("1790990000.000450", "Jordan's late message"),
+            ("1790960000.000390", f"<@{JORDAN}|Jordan Join> has joined the channel"),
+        )
+    )
+    # Sam (made up) joined before the notice, so they stay, unless the notice moves earlier.
+    joins += (
+        "=== Message from Sam Sample <sam@example.com> (U00000002) at 2026-10-02 12:00:00 CDT "
+        "===\nMessage TS: 1790800000.000050\n<@U00000002|Sam Sample> has joined the channel\n\n"
+    )
+    read = tmp_path / "read_channel_late.txt"
+    read.write_text(head + "\n\n" + joins + rest, encoding="utf-8")
+    cfg = replace(
+        config(tmp_path / "data"),
+        slack_channels=("example-channel",),
+        slack_notices=(("example-channel", NOTICED),),
+        slack_workspace_url="https://example.slack.com",
+    )
+    slack_run(
+        cfg,
+        datetime(2026, 10, 6, 12, 0, tzinfo=UTC),
+        [
+            ("slack_read_channel", {"channel_id": "C00000001"}, slack_response(str(read))),
+            (
+                "slack_read_thread",
+                {"channel_id": "C00000001", "message_ts": "1790864040.000100"},
+                slack_response("read_thread.txt"),
+            ),
+        ],
+    )
+    report = build(cfg)
+    # A complete run, so nothing is held back: Jordan is out for joining late, not for that.
+    assert "held back" not in report
+    assert "1 person(s) joined a channel after its notice" in report
+    scrub(cfg)
+    return cfg
+
+
+def test_copies_that_leave_out_a_late_joiner_are_sent(tmp_path, slack_run, slack_response):
+    cfg = late_joiner_scrub(tmp_path, slack_run, slack_response)
+    store = FakeStore()
+    push(cfg, Opener(store))
+    sent = b"".join(store.objects.values()).decode("utf-8")
+    assert len(store.objects) > 1
+    assert "Jordan" not in sent and JORDAN not in sent
+
+
+def test_must_refuse_a_push_after_the_notice_moved_with_no_build_since(
+    tmp_path, slack_run, slack_response
+):
+    # The notice link was corrected to an earlier post after the scrub: someone else now
+    # joined after it, so the copies could hold them.
+    cfg = late_joiner_scrub(tmp_path, slack_run, slack_response)
+    earlier = replace(cfg, slack_notices=(("example-channel", "C00000001/1790000000.000000"),))
+    refused(earlier, "slack_notices")
+    # Sam's join (before the old notice) is after the earlier one, so they're late now too.
+    assert "2 person(s) joined a channel after its notice" in build(earlier)
+
+
+def test_must_refuse_a_push_when_a_built_channel_has_no_notice_entry(
+    tmp_path, slack_run, slack_response
+):
+    cfg = late_joiner_scrub(tmp_path, slack_run, slack_response)
+    message = refused(replace(cfg, slack_notices=()), "slack_notices", "channel 1")
+    assert "example-channel" not in message
 
 
 # Review fixes after Codex's review of #114.
@@ -1034,6 +1125,7 @@ def test_copies_made_before_an_opt_out_are_never_sent(data):
     cfg = Config(
         data_dir=data,
         slack_channels=(),
+        slack_notices=(("run", "none"), ("CFAKE0001", "none")),
         slack_opted_out=(SECRETS[1],),
         **{f"store_{k}": v for k, v in vars(push_module.settings(config(data))).items()},
     )
