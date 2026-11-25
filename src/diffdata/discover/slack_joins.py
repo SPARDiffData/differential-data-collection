@@ -26,7 +26,7 @@ folder, but never reach the store, the day files, the reference log or the scrub
 
 import re
 
-from diffdata.common.config import NO_NOTICE, Config
+from diffdata.common.config import NO_NOTICE, Config, ConfigError
 from diffdata.discover.slack_inbox import SlackExportError, opt_out_stamp
 from diffdata.discover.slack_state import planned_start
 
@@ -51,27 +51,46 @@ def joins(records: list[dict]) -> dict[str, str]:
     return latest
 
 
-def notice_for(config: Config, channel_id: str, name: str | None) -> str | None:
+def notice_for(
+    config: Config, channel_id: str, name: str | None, has_reads: bool = True
+) -> str | None:
     """The ts of this channel's notice, or None when it's set to "none". Stops the build when
-    there's no entry, or the link is another channel's."""
-    notices = dict(config.slack_notices)
+    there's no entry, the link is another channel's, or the channel has a notice but no saved
+    reads to find its joins in."""
     # Channels are named by their place in slack_channels: output may be shared (DIS-1).
-    listed = list(config.slack_channels)
-    shown = (
-        f"channel {listed.index(name) + 1} in slack_channels"
-        if name in listed
-        else ("a channel in the saved data that isn't in slack_channels")
+    # A Config made in code can leave listed_channels empty.
+    listed = list(config.listed_channels or config.slack_channels + config.slack_channel_ids)
+    place = (
+        listed.index(channel_id)
+        if channel_id in listed
+        else (listed.index(name) if name in listed else None)
     )
-    if name is None or name not in notices:
+    shown = (
+        f"channel {place + 1} in slack_channels"
+        if place is not None
+        else "a channel in the saved data that isn't in slack_channels"
+    )
+    try:
+        value = config.notice(channel_id, name)
+    except ConfigError as e:
+        raise SlackExportError(f"{e} Nothing was built or scrubbed.") from e
+    if value is None:
         raise SlackExportError(
             f"slack_notices in config.toml has no entry for {shown}, so nothing was built or "
             'scrubbed. Add the link to the channel\'s pinned notice (Copy link), or "none" if '
-            "the channel has no notice because everyone in it agreed directly."
+            "the channel has no notice because everyone in it agreed directly. Key it by the "
+            "channel's name or ID, as slack_channels lists it."
         )
-    value = notices[name]
     if value == NO_NOTICE:
         return None
     linked_channel, _, ts = value.partition("/")
+    if not has_reads:
+        raise SlackExportError(
+            f"The saved Slack reads for {shown} are missing from the inbox folder in your data "
+            "folder, so who joined after its notice can't be checked. Nothing was built or "
+            "scrubbed. Put the inbox folder back, or run /slack-export full to read the "
+            "channel again."
+        )
     if linked_channel != channel_id:
         raise SlackExportError(
             f"The slack_notices link for {shown} in config.toml points to a different channel, "
@@ -83,7 +102,7 @@ def notice_for(config: Config, channel_id: str, name: str | None) -> str | None:
 
 def late_joiners(
     config: Config,
-    records: dict[str, list[dict]],
+    records: dict[str, list[dict] | None],
     names: dict[str, str],
     points: dict[str, str],
 ) -> tuple[dict[str, set[str]], dict[str, tuple[int, int]], list[str]]:
@@ -96,7 +115,7 @@ def late_joiners(
     unchecked: list[str] = []
     for channel_id, messages in sorted(records.items()):
         name = names.get(channel_id)
-        notice = notice_for(config, channel_id, name)
+        notice = notice_for(config, channel_id, name, has_reads=messages is not None)
         if notice is None:
             unchecked.append(channel_id)
             late[channel_id] = set()

@@ -199,6 +199,21 @@ def test_claudes_file_tools_cant_write_the_files_that_opt_items_in(edit):
     assert denied(edit)
 
 
+# STO-1: the team's store key can add files to the team's folder in the bucket, so no AI tool
+# reads it, writes it or names it in a command (decision 5 on #114).
+STORE_KEY_USES = [
+    "Read(~/.diffdata/store-key.json)",
+    "Edit(~/.diffdata/store-key.json)",
+    "Bash(cat ~/.diffdata/store-key.json)",
+    "PowerShell(Get-Content ~/.diffdata/store-key.json)",
+]
+
+
+@pytest.mark.parametrize("use", STORE_KEY_USES)
+def test_claudes_tools_cant_read_write_or_name_the_store_key(use):
+    assert denied(use)
+
+
 @pytest.mark.parametrize("edit", DEVELOPMENT_EDITS)
 def test_editing_the_consent_code_and_the_example_config_isnt_blocked(edit):
     assert not denied(edit)
@@ -341,13 +356,14 @@ def test_the_review_agent_runs_review_pr_without_posting():
 
 
 def test_review_pr_asks_for_a_box_the_pr_template_has():
-    # /review-pr checks Paul's consent, scrub and store PRs for this box by its opening words.
+    # /review-pr checks consent, scrub and store PRs for this box by its opening words.
     template = (ROOT / ".github" / "pull_request_template.md").read_text(encoding="utf-8")
     review_pr = (ROOT / ".claude" / "commands" / "review-pr.md").read_text(encoding="utf-8")
-    box = "Paul's own consent, scrub or store PR"
+    box = "Consent, scrub or store"
     assert f"- [ ] {box}:" in template
     assert f'box that starts "{box}"' in review_pr
     assert "Solo phase:" not in template
+    assert "Paul's own consent, scrub or store PR:" not in template
 
 
 def test_review_pr_reads_a_contributing_section_that_exists():
@@ -357,3 +373,102 @@ def test_review_pr_reads_a_contributing_section_that_exists():
     assert f'including "{section}"' in review_pr
     assert f"\n### {section}\n" in contributing
     assert "(#human-review-for-consent-scrub-and-store)" in contributing
+
+
+def test_review_pr_never_offers_a_verdict_that_waits_for_paul():
+    # Since 2026-11-23 PRs don't wait for Paul's review (#121): the author reviews and merges.
+    review_pr = (ROOT / ".claude" / "commands" / "review-pr.md").read_text(encoding="utf-8")
+    verdict = next(line for line in review_pr.splitlines() if line.startswith("**Verdict:**"))
+    assert "Paul" not in verdict
+
+
+# CON-1, #130: `diffdata setup` writes the channel list, which is the producer's opt-in, so
+# only a person typing in a terminal runs it. It refuses outside a terminal, and these rules
+# stop Claude's shell tools running it or importing its code.
+SETUP_RUNS = [
+    "Bash(uv run diffdata setup)",
+    "Bash(uv run diffdata setup ~/Downloads/team-a.diffdata-team.json)",
+    "Bash(echo y | script -q /dev/null uv run diffdata setup)",
+    "Bash(.venv/bin/diffdata setup)",
+    "Bash(uv run python -m diffdata setup)",
+    'Bash(uv run python -c "from diffdata.common import setup")',
+    'Bash(uv run python -c "import diffdata.common.setup")',
+    "PowerShell(uv run diffdata setup)",
+    "PowerShell(.venv\\Scripts\\diffdata.exe setup)",
+    'PowerShell(uv run python -c "from diffdata.common import setup")',
+]
+SETUP_DEVELOPMENT_RUNS = [
+    "Bash(uv run pytest tests/test_setup.py)",
+    "Bash(git add src/diffdata/common/setup.py)",
+]
+
+
+@pytest.mark.parametrize("command", SETUP_RUNS)
+def test_claudes_shell_tools_cant_run_setup(command):
+    assert denied(command)
+
+
+@pytest.mark.parametrize("command", SETUP_DEVELOPMENT_RUNS)
+def test_working_on_the_setup_code_isnt_blocked(command):
+    assert not denied(command)
+
+
+# #132: a team file holds the team's store key, so no AI tool reads, writes or names one.
+# In Claude Code, a Read or Edit rule with no prefix covers only the folder Claude runs in,
+# and `//` anchors it at the filesystem root, so the rules use `//**/` to cover a team file
+# anywhere, such as in ~/Downloads (https://code.claude.com/docs/en/permissions, "Read and
+# Edit"). fnmatch here only shows the rules exist and match absolute paths; it can't prove
+# Claude Code's own path rules. The hands-on check on #131 asks Claude to read one.
+TEAM_FILE_RULES = ["Read(//**/*.diffdata-team.json)", "Edit(//**/*.diffdata-team.json)"]
+TEAM_FILE_USES = [
+    "Read(//Users/example/Downloads/team-a.diffdata-team.json)",
+    "Edit(//tmp/team-a.diffdata-team.json)",
+    "Bash(cat ~/Downloads/team-a.diffdata-team.json)",
+    "PowerShell(Get-Content team-a.diffdata-team.json)",
+]
+
+
+@pytest.mark.parametrize("use", TEAM_FILE_USES)
+def test_claudes_tools_cant_read_write_or_name_a_team_file(use):
+    assert denied(use)
+
+
+def test_the_team_file_rules_are_anchored_at_the_filesystem_root():
+    rules = deny_rules()
+    assert all(rule in rules for rule in TEAM_FILE_RULES)
+    # No Read or Edit rule for a team file without `//`: it would cover the repo folder only.
+    loose = [r for r in rules if "diffdata-team" in r and r.startswith(("Read(", "Edit("))]
+    assert all(rule.startswith(("Read(//", "Edit(//")) for rule in loose)
+
+
+# #132: `diffdata admin add-team` changes the Cloud project and makes a team's key, so only the
+# project team runs it, in their own terminal. It refuses outside a terminal, and these rules
+# stop Claude's shell tools running it or importing its code.
+ADMIN_RUNS = [
+    "Bash(uv run diffdata admin add-team team-a --bucket example-bucket)",
+    "Bash(echo y | script -q /dev/null uv run diffdata admin add-team team-a)",
+    "Bash(.venv/bin/diffdata admin add-team team-a)",
+    "Bash(uv run python -m diffdata admin add-team team-a)",
+    'Bash(uv run python -c "from diffdata.store import admin")',
+    'Bash(uv run python -c "import diffdata.store.admin")',
+    "PowerShell(uv run diffdata admin add-team team-a)",
+    "PowerShell(.venv\\Scripts\\diffdata.exe admin add-team team-a)",
+    'PowerShell(uv run python -c "from diffdata.store import admin")',
+    "Read(//Users/example/diffdata-teams/team-a.diffdata-team.json)",
+    "Bash(ls -l ~/diffdata-teams/team-a.diffdata-team.json)",
+]
+ADMIN_DEVELOPMENT_RUNS = [
+    "Bash(uv run pytest tests/test_admin.py)",
+    "Bash(git add src/diffdata/store/admin.py)",
+    "Bash(uv run ruff check src/diffdata/store/admin.py)",
+]
+
+
+@pytest.mark.parametrize("command", ADMIN_RUNS)
+def test_claudes_tools_cant_run_admin_or_read_what_it_writes(command):
+    assert denied(command)
+
+
+@pytest.mark.parametrize("command", ADMIN_DEVELOPMENT_RUNS)
+def test_working_on_the_admin_code_isnt_blocked(command):
+    assert not denied(command)

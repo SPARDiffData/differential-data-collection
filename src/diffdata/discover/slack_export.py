@@ -58,6 +58,17 @@ from diffdata.discover.slack_joins import is_held, late_joiners, left_out_stamp
 from diffdata.discover.slack_parse import OPTED_OUT_NAME, parse_result, permalink, to_markdown
 
 
+def saved_records(data: Path, inbox: dict[str, tuple]) -> dict[str, list[dict] | None]:
+    """Each channel's saved messages, for the late-joiner check (slack_joins.py). A channel
+    whose store outlived its inbox folder is listed too, as None: its joins can't be seen, so
+    a notice on it stops the build (#118). Its store isn't used for this, since the build
+    removes a late joiner's join line from it, and the answer would change."""
+    records: dict[str, list[dict] | None] = {c: found[0] for c, found in inbox.items()}
+    for store_file in sorted((slack_dir(data) / "store").glob("*/messages.jsonl")):
+        records.setdefault(store_file.parent.name, None)
+    return records
+
+
 def build(config: Config) -> str:
     """Build the store and the view for every channel in the inbox. Returns counts only."""
     require_workspace(config)
@@ -75,9 +86,7 @@ def build(config: Config) -> str:
     # Who joined each channel after its notice (#118). A channel with no entry in
     # slack_notices stops the build here, before anything changes.
     points, outcomes = slack_state.start_points(inbox_dir(data))
-    late, held, unchecked = late_joiners(
-        config, {c: found[0] for c, found in inbox.items()}, names, points
-    )
+    late, held, unchecked = late_joiners(config, saved_records(data, inbox), names, points)
     held_messages: set[tuple[str, str]] = set()  # newer than any complete run has read
 
     def leave_out(channel_id: str) -> set[str]:

@@ -33,10 +33,9 @@ If `gh` is missing or not logged in (`gh auth status`), tell the user, then fall
 3. **No real data or secrets (hard rule).** Every changed file, including fixtures, docs and notebooks: real names, emails, message text, document content, tokens, keys, `.env`, `config.toml`, or files under `data/`, `output/` or `exports/`. Fixtures must be obviously synthetic. If you find something real, put it first under Must fix and tell the user directly: the repo is public, so it's already exposed once pushed. A real secret must be revoked now, and Paul must be told today.
 4. **Tests.** Is changed behavior covered by new or updated tests? Do the tests use only synthetic fixtures?
 5. **Lane.** The branch should be `<lane>/<short-name>`, and the changed files should stay inside `src/diffdata/<lane>/` and its tests, unless the Issue says otherwise. Lane `repo` covers docs, CI and tooling.
-6. **Human review needed?** If the diff touches `src/diffdata/consent/`, `src/diffdata/scrub/` or `src/diffdata/store/`, this AI review isn't enough on its own ("Review policy" in `CONTRIBUTING.md`).
-   - **Teammates' PRs.** If the author isn't Paul (GitHub login `PaulsForge`), Paul reviews the PR before merge, whatever it touches. With nothing under Must fix, the verdict is "Ready for Paul's review", never "Ready to merge".
-   - **Paul's own consent, scrub or store PRs.** The human review has four parts: Paul approved the plan's must-refuse list, Paul checks the change by hand, Lachlan reads the code, and both AI reviews run (this one and Codex's). The PR ticks the template's box that starts "Paul's own consent, scrub or store PR". If the box isn't ticked, ask for it under Must fix: the PR has to say what human review it got. If there's no agreed plan, or it has no must-refuse list, ask under Must fix for one to be agreed and posted on the Issue. Check that each item on the list has a test showing the refusal. A missing one goes under Must fix, as changed behavior without tests. With nothing under Must fix, the verdict is "Ready once Paul's hands-on check, Lachlan's read and Codex's review are in".
-   - **Older boxes.** If a PR ticks the old "Solo phase" box, or a box saying Paul reads every changed line, ask under Must fix for the box above instead.
+6. **Human review needed?** On every PR: PRs don't wait for Paul ("Review policy" in `CONTRIBUTING.md`). The author does the human review and merges, so never give "Ready for Paul's review" as the verdict. If the diff touches `src/diffdata/consent/`, `src/diffdata/scrub/` or `src/diffdata/store/`, this AI review isn't enough on its own ("Review policy" in `CONTRIBUTING.md`).
+   - **Consent, scrub or store PRs.** The human review has four parts: the author approved the plan's must-refuse list, the author checks the change by hand, the author reads the code, and the AI reviews run (this one, and Codex's if the author has it). The PR ticks the template's box that starts "Consent, scrub or store". If the box isn't ticked, ask for it under Must fix: the PR has to say what human review it got. If there's no agreed plan, or it has no must-refuse list, ask under Must fix for one to be agreed and posted on the Issue. Check that each item on the list has a test showing the refusal. A missing one goes under Must fix, as changed behavior without tests. With nothing under Must fix, the verdict is "Ready once the author's hands-on check is done".
+   - **Older boxes.** If a PR ticks an older review box, such as "Paul's own consent, scrub or store PR" or "Solo phase", accept it, but note under Nice to have that the template's box has changed.
 7. **Description.** Could a teammate who doesn't code follow the What, Why and How it was tested?
 8. **CI.** Is it passing?
 
@@ -49,7 +48,7 @@ Write the review in exactly this shape, short and in plain words:
 ```
 ## AI review (separate context)
 
-**Verdict:** Ready to merge | Ready for Paul's review | Fix the must-fix items first | Ready once Paul's hands-on check, Lachlan's read and Codex's review are in
+**Verdict:** Ready to merge | Fix the must-fix items first | Ready once the author's hands-on check is done
 
 ### Must fix
 - `path/to/file.py:42`: what's wrong, and what to do about it.
@@ -66,9 +65,9 @@ Write the review in exactly this shape, short and in plain words:
 
 **Otherwise,** show the review, then ask: "Post this as a comment on PR #<n>?" Only on a yes, post it straight from the command line, so no file is written: in the Bash tool, not PowerShell, which has no heredoc, run `gh pr comment <n> --body-file -` with the review in a quoted heredoc (`<<'REVIEW'`, then the review, then `REVIEW` on its own line).
 
-## 5. A Codex focus line, for Paul's review
+## 5. A Codex focus line
 
-Codex is OpenAI's coding agent. It gives Paul a second AI review, from a different company, on risky changes: it runs only on Paul's machine and costs API credits ("Review policy" in `CONTRIBUTING.md`). **With `--no-post`,** always add the line when the diff qualifies: the calling session drops it if Codex isn't run. **Otherwise, if the user isn't Paul or doesn't have Codex, skip this step:** it's part of Paul's review, not yours. Whether Codex runs was agreed when the work started. This line only gives it the brief, if it does.
+Codex is OpenAI's coding agent. It gives a second AI review, from a different company, and we recommend it on top of this one ("Review policy" in `CONTRIBUTING.md`). **With `--no-post`,** always add the line when the diff qualifies: the calling session drops it if Codex isn't run. **Otherwise, if the user doesn't have Codex, skip this step.** This line only gives Codex its brief.
 
 If the diff changes any file under `src/` or `.claude/`, end with one line that carries the Issue's context, since Codex can't reach GitHub:
 

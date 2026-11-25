@@ -25,10 +25,10 @@ def test_stage_package_imports(stage):
     importlib.import_module(f"diffdata.{stage}")
 
 
-@pytest.mark.parametrize("command", cli.STUBS)
-def test_stub_command_says_not_built_yet(command, capsys):
-    assert cli.main([command]) == 1
-    assert "not built yet" in capsys.readouterr().err
+def test_stub_commands_say_not_built_yet(capsys):
+    for command in cli.STUBS:  # none right now, but a new stage starts as one
+        assert cli.main([command]) == 1
+        assert "not built yet" in capsys.readouterr().err
 
 
 def test_no_command_prints_help(capsys):

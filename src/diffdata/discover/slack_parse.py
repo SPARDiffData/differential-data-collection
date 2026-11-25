@@ -10,6 +10,10 @@ of text blocks holding JSON, whose `messages` field is that text. In detailed mo
     the message text, any number of lines
     Thread: 3 replies (latest: ...)
     Reactions: +1 (2)
+    Forwarded message from Name (https://.../archives/C.../p...): text — use ... in context
+
+  A post that forwards messages has one "Forwarded message from" line for each, after its
+  detail lines (#124). They stay part of the post's text.
 
   slack_read_thread:
     === THREAD PARENT MESSAGE ===
@@ -65,6 +69,16 @@ META = {
     "Reactions": re.compile(r"[^\s,()]+ \(\d+\)(?:, [^\s,()]+ \(\d+\))*"),  # "+1 (2), eyes (1)"
     "Files": re.compile(r".+ \(ID: F[A-Z0-9]+, [^()]+\)"),  # "name (ID: F..., type, size)"
 }
+# A forwarded message, as a channel read writes it after the post's detail lines (#124):
+# "Forwarded message from Name (https://<workspace>/archives/C.../p...): text — use
+# slack_read_thread or slack_read_channel to read it in context". Only a whole line in this
+# shape counts, and only at the very end of a message, so a line of the message's own text
+# that only starts like one can't move or hide a detail line.
+FORWARDED = re.compile(
+    r"Forwarded message from .+ \(https://[A-Za-z0-9.-]+/archives/[A-Z][A-Z0-9]+/p[0-9]+"
+    r"(?:\?[^\s()]*)?\): .*"
+    r" \u2014 use slack_read_thread or slack_read_channel to read it in context"
+)
 # Seconds, a dot, then a sequence number. Ten digits of seconds last until the year 2286;
 # anything else would crash the build when it's turned into a date.
 TS = re.compile(r"[0-9]{1,10}\.[0-9]+")
@@ -232,10 +246,7 @@ def parse_block(block: str, who: str | None) -> Message | None:
     if ts is None or who is None or not TS.fullmatch(ts):
         return None
 
-    meta: dict[str, str] = {}
-    while lines and (not lines[-1].strip() or detail_line(lines[-1])):
-        if detail := detail_line(lines.pop()):
-            meta[detail[0]] = detail[1]
+    lines, meta = split_details(lines)
 
     author = AUTHOR.match(who)
     if author is None:  # a shape we don't know might carry an email, so don't keep any of it
@@ -255,6 +266,38 @@ def parse_block(block: str, who: str | None) -> Message | None:
         ],
         replies=int(match[1]) if (match := REPLIES.match(meta.get("Thread", ""))) else 0,
     )
+
+
+def split_details(lines: list[str]) -> tuple[list[str], dict[str, str]]:
+    """A message's lines after its header, split into its text and its detail lines, as
+    {key: value}. Forwarded-message lines at the very end come after the detail lines, so
+    they're set aside first, then put back at the end of the text."""
+    end = len(lines)
+    while end and (not lines[end - 1].strip() or FORWARDED.fullmatch(lines[end - 1].rstrip())):
+        end -= 1
+    forwarded = trim_blank(lines[end:])
+    text, meta = lines[:end], {}
+    while text and (not text[-1].strip() or detail_line(text[-1])):
+        if detail := detail_line(text.pop()):
+            # The scan runs from the end, so the first one found is the connector's own line.
+            # A look-alike typed higher up in the text can't overwrite it.
+            meta.setdefault(detail[0], detail[1])
+    if not meta:  # no detail lines under them: as before #124, only blank lines at the end go
+        end = len(lines)
+        while end and not lines[end - 1].strip():
+            end -= 1
+        return lines[:end], meta
+    return [*text, *forwarded], meta
+
+
+def trim_blank(lines: list[str]) -> list[str]:
+    """The lines without blank or space-only lines at either end."""
+    start, end = 0, len(lines)
+    while start < end and not lines[start].strip():
+        start += 1
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    return lines[start:end]
 
 
 def detail_line(line: str) -> tuple[str, str] | None:
@@ -527,15 +570,11 @@ def leave_out_text(
                 marker[0][:start] + stub_author + marker[0][marker.end("who") - marker.start() :]
             ]
         stub += [line for line in head if line.startswith(("Time: ", "Message TS: "))]
-        details = lines[len(head) :]
-        while details and detail_line(details[-1]):
-            if detail_line(details[-1])[0] == "Thread" and (
-                count := REPLIES.match(detail_line(details[-1])[1])
-            ):
-                # Rebuilt from the count alone: the "latest" part could be their own words.
-                n = int(count[1])
-                stub.append(f"Thread: {n} {'reply' if n == 1 else 'replies'} (latest: -)")
-            details.pop()
+        _, details = split_details(lines[len(head) :])
+        if count := REPLIES.match(details.get("Thread", "")):
+            # Rebuilt from the count alone: the "latest" part could be their own words.
+            n = int(count[1])
+            stub.append(f"Thread: {n} {'reply' if n == 1 else 'replies'} (latest: -)")
         trailing = len(block) - len(block.rstrip("\n"))
         parts.append("\n".join(stub) + "\n" * max(trailing, 1))
     return "".join(parts)

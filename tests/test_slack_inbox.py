@@ -23,7 +23,13 @@ def config(tmp_path):
     return Config(
         data_dir=tmp_path / "data",
         slack_channels=("example-channel",),
-        slack_notices=(("example-channel", "none"), ("other-channel", "none")),
+        # Keyed by name and by ID, for the tests that list a channel by its ID (#118).
+        slack_notices=(
+            ("example-channel", "none"),
+            ("other-channel", "none"),
+            (CHANNEL, "none"),
+            ("C00000002", "none"),
+        ),
         slack_workspace_url="https://example.slack.com",
     )
 
@@ -210,6 +216,16 @@ def test_save_tells_claude_the_next_cursor_and_the_threads_to_read(config, capsy
     assert "cursor `FAKECURSOR01`" in note
     assert "slack_read_thread: 1790864040.000100." in note
     assert "Alex" not in note and "Kickoff" not in note  # IDs and counts only
+
+
+def test_a_post_with_forwarded_messages_is_listed_for_its_thread(config, capsys):
+    # #124: forwarded-message lines after the detail lines used to hide the Thread line.
+    begin(config, ["example-channel=C00000001"], now=T0)
+    hook = json.loads(payload())
+    hook["tool_response"] = connector_result("read_channel_forwarded.txt")
+    assert save(config, json.dumps(hook).encode("utf-8"), now=T0) == 0
+    note = hook_note(capsys)
+    assert "slack_read_thread: 1791298800.000700, 1791208800.000600." in note
 
 
 @pytest.fixture
@@ -715,6 +731,22 @@ def test_an_opted_out_persons_stub_keeps_only_its_place(config, capsys):
     assert json.loads(path.read_text(encoding="utf-8"))["left_out"] == 2
 
 
+def test_an_opted_out_persons_post_with_forwarded_messages_keeps_its_thread_line(config, capsys):
+    # #124: their stub keeps the reply count, and drops the forwarded lines with their text.
+    opted = replace(config, slack_opted_out=("U00000003",))
+    begin(opted, ["example-channel=C00000001"], now=T0)
+    save(opted, payload(response=connector_result("read_channel_forwarded.txt")), now=T0)
+    assert "slack_read_thread: 1791298800.000700, 1791208800.000600." in hook_note(capsys)
+    [path] = inbox_files(config)
+    text = json.loads(json.loads(path.read_text(encoding="utf-8"))["tool_response"][0]["text"])
+    riley = text["messages"].split("=== Message from ")[1]
+    assert riley == (
+        "Opted out (U00000003) at 2026-10-06 10:00:00 CDT ===\n"
+        "Message TS: 1791298800.000700\n"
+        "Thread: 2 replies (latest: -)\n\n"
+    )
+
+
 def test_text_that_looks_like_a_header_line_isnt_kept(config):
     opted = replace(config, slack_opted_out=(OPTED_OUT,))
     text = (
@@ -1213,3 +1245,175 @@ def test_an_empty_page_still_saves_while_anyone_opted_out(config):
     assert save(opted, payload(), now=T0) == 0  # the channel line alone
     assert save(opted, thread_payload(wrapped("")), now=T0) == 0
     assert len(inbox_files(config)) == 2
+
+
+# Decision 2 on #130: a channel listed by ID. begin takes it bare, and the save hook learns
+# its name from the first read, whose ID must match. Only listed channels are ever saved.
+@pytest.fixture
+def by_id(config):
+    return replace(config, slack_channels=(), slack_channel_ids=(CHANNEL,))
+
+
+def test_begin_takes_a_bare_id_for_a_channel_listed_by_id(by_id):
+    begin(by_id, [CHANNEL], now=T0)
+    assert open_run(by_id.data_dir).channels == {CHANNEL: ""}
+
+
+def test_begin_takes_name_and_id_for_a_channel_listed_by_id_but_learns_the_name(by_id):
+    begin(by_id, [f"some-name={CHANNEL}"], now=T0)
+    assert open_run(by_id.data_dir).channels == {CHANNEL: ""}
+
+
+@pytest.mark.parametrize("pair", ["C00000009", "example-channel=C00000009"])
+def test_begin_refuses_an_id_that_isnt_listed_without_naming_it(by_id, pair):
+    with pytest.raises(SlackExportError, match="CON-1") as e:
+        begin(by_id, [pair], now=T0)
+    assert "C00000009" not in str(e.value)
+
+
+def test_begin_refuses_a_bare_id_for_a_channel_listed_only_by_name(config):
+    with pytest.raises(SlackExportError, match="CON-1"):
+        begin(config, [CHANNEL], now=T0)
+
+
+def test_the_first_read_of_a_channel_listed_by_id_records_its_name(by_id):
+    begin(by_id, [CHANNEL], now=T0)
+    assert save(by_id, payload(), now=T0) == 0
+    assert open_run(by_id.data_dir).channels == {CHANNEL: "example-channel"}
+    assert slack_inbox.run_channel_names(by_id.data_dir) == {CHANNEL: "example-channel"}
+    # After a rename, the name must match the one now recorded.
+    response = [
+        {"type": "text", "text": json.dumps({"messages": "Channel: #renamed (C00000001)\n"})}
+    ]
+    assert save(by_id, payload(response=response, call="toolu_0002"), now=T0) == 2
+
+
+@pytest.mark.parametrize(
+    "header", ["Channel: #example-channel (C00000009)\n", "no header at all\n"]
+)
+def test_a_read_of_another_channel_is_refused_for_a_channel_listed_by_id(by_id, capsys, header):
+    begin(by_id, [CHANNEL], now=T0)
+    response = [{"type": "text", "text": json.dumps({"messages": header})}]
+    assert save(by_id, payload(response=response), now=T0) == 2
+    err = capsys.readouterr().err
+    assert "CON-1" in err and "listed by its ID" in err and CHANNEL not in err
+    assert inbox_files(by_id) == []
+    assert open_run(by_id.data_dir).channels == {CHANNEL: ""}
+
+
+def test_a_thread_before_the_first_read_is_refused_for_a_channel_listed_by_id(by_id, capsys):
+    begin(by_id, [CHANNEL], now=T0)
+    assert save(by_id, payload(tool="slack_read_thread"), now=T0) == 2
+    err = capsys.readouterr().err
+    assert "before the channel" in err and CHANNEL not in err
+
+
+def test_a_run_with_no_name_yet_never_hides_a_known_name(by_id):
+    begin(by_id, [CHANNEL], now=T0)
+    assert save(by_id, payload(), now=T0) == 0
+    abort(by_id)
+    begin(by_id, [CHANNEL], now=T0 + timedelta(hours=1))  # open, nothing read yet
+    assert slack_inbox.run_channel_names(by_id.data_dir) == {CHANNEL: "example-channel"}
+
+
+def test_the_channels_step_lists_names_and_ids(tmp_path, capsys, monkeypatch):
+    data = (tmp_path / "data").as_posix()
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f'[sources]\nslack_channels = ["example-channel", "C00000002"]\n[local]\n'
+        f'data_dir = "{data}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["discover", "slack", "channels"]) == 0
+    assert capsys.readouterr().out.splitlines()[1:] == ["example-channel", "C00000002"]
+
+
+def test_two_names_learned_together_are_both_kept(config):
+    by_id = replace(config, slack_channels=(), slack_channel_ids=(CHANNEL, "C00000002"))
+    begin(by_id, [CHANNEL, "C00000002"], now=T0)
+    run_id = open_run(by_id.data_dir).run_id
+    slack_inbox.record_channel_name(by_id.data_dir, run_id, CHANNEL, "example-channel")
+    slack_inbox.record_channel_name(by_id.data_dir, run_id, "C00000002", "other")
+    assert open_run(by_id.data_dir).channels == {CHANNEL: "example-channel", "C00000002": "other"}
+
+
+def test_a_held_run_lock_stops_the_save_and_says_so(config, monkeypatch, capsys):
+    by_id = replace(config, slack_channels=(), slack_channel_ids=(CHANNEL,))
+    begin(by_id, [CHANNEL], now=T0)
+    monkeypatch.setattr(slack_inbox, "LEFT_OUT_WAIT_SECONDS", 0.1)
+    lock = slack_inbox.run_path(by_id.data_dir).with_name("run.json.lock")
+    lock.write_text("", encoding="utf-8")
+    assert save(by_id, payload(), now=T0) == 2
+    assert "run.json.lock" in capsys.readouterr().err
+    assert open_run(by_id.data_dir).channels == {CHANNEL: ""}
+    assert inbox_files(by_id) == []  # no read saved without its channel's name
+
+
+def test_names_learned_by_overlapping_saves_are_both_kept(config, monkeypatch):
+    """A second hook starts while the first holds the run: it must wait, then add its name
+    to the run as the first left it."""
+    import threading
+    import time
+
+    by_id = replace(config, slack_channels=(), slack_channel_ids=(CHANNEL, "C00000002"))
+    begin(by_id, [CHANNEL, "C00000002"], now=T0)
+    run_id = open_run(by_id.data_dir).run_id
+    real_open_run = slack_inbox.open_run
+    second: list[threading.Thread] = []
+
+    def open_run_then_overlap(data):
+        found = real_open_run(data)
+        if not second:
+            other = threading.Thread(
+                target=slack_inbox.record_channel_name,
+                args=(by_id.data_dir, run_id, "C00000002", "other"),
+            )
+            second.append(other)
+            other.start()
+            time.sleep(0.2)  # the second hook is now waiting, or racing
+        return found
+
+    monkeypatch.setattr(slack_inbox, "open_run", open_run_then_overlap)
+    slack_inbox.record_channel_name(by_id.data_dir, run_id, CHANNEL, "example-channel")
+    second[0].join(timeout=5)
+    assert real_open_run(by_id.data_dir).channels == {
+        CHANNEL: "example-channel",
+        "C00000002": "other",
+    }
+
+
+def test_the_channels_step_keeps_config_order(tmp_path, capsys, monkeypatch):
+    data = (tmp_path / "data").as_posix()
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f'[sources]\nslack_channels = ["C00000002", "example-channel"]\n[local]\n'
+        f'data_dir = "{data}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["discover", "slack", "channels"]) == 0
+    assert capsys.readouterr().out.splitlines()[1:] == ["C00000002", "example-channel"]
+
+
+# CON-5, must-refuse 17 on #130: a group DM is never saved, whether listed by ID or name.
+def group_dm_read(channel=CHANNEL):
+    header = f"Channel: #mpdm-alex--sam--kim-1 ({channel})\n"
+    return [{"type": "text", "text": json.dumps({"messages": header})}]
+
+
+def test_a_group_dm_listed_by_id_is_refused_at_its_first_read(by_id, capsys):
+    begin(by_id, [CHANNEL], now=T0)
+    assert save(by_id, payload(response=group_dm_read()), now=T0) == 2
+    err = capsys.readouterr().err
+    assert "group DM" in err and "CON-5" in err and "alex" not in err
+    assert inbox_files(by_id) == []
+    assert open_run(by_id.data_dir).channels == {CHANNEL: ""}
+    # Its threads can't be saved either: the channel never passed its check.
+    assert save(by_id, payload(tool="slack_read_thread", call="toolu_0002"), now=T0) == 2
+
+
+def test_begin_refuses_a_group_dm_name(config):
+    group = replace(config, slack_channels=("mpdm-alex--sam-1",))
+    with pytest.raises(SlackExportError, match="CON-5"):
+        begin(group, [f"mpdm-alex--sam-1={CHANNEL}"], now=T0)

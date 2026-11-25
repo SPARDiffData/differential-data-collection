@@ -4,8 +4,10 @@ from the plan on Issue #66, one test per item. Synthetic fixtures only."""
 import hashlib
 import json
 import os
+import random
 import re
 import shutil
+import string
 import sys
 import time
 import unicodedata
@@ -19,6 +21,7 @@ from diffdata import cli
 from diffdata.common.config import Config
 from diffdata.discover.slack_export import build
 from diffdata.scrub import run as scrub_run
+from diffdata.scrub import secrets
 from diffdata.scrub.people import People, Person, read_people, render
 from diffdata.scrub.run import ScrubError, scrub
 from diffdata.scrub.text import LATIN, Scrubber
@@ -281,8 +284,9 @@ def test_the_report_gives_counts_only(scrubbed):
         "5 scrubbed copy(ies): 4 Slack day file(s) and 1 canvas(es), with 3 flag(s) for review.",
         "What was flagged is in private/flags.md in your data folder.",
         "The people list has 8 people, 8 of them new.",
-        "These copies are not approved for release: phone numbers, meeting links and secrets "
-        "aren't checked yet.",
+        "These copies are not approved for release: names of people who aren't in the people "
+        "list, and links that open the original, aren't checked yet. Read your copies before "
+        "you push.",
     ]
 
 
@@ -1168,3 +1172,158 @@ def test_text_with_no_latin_letters_is_read_quickly_with_a_long_people_list():
     assert scrubber.scrub(text)[0] == text
     assert scrubber.leftovers(text) == []
     assert time.perf_counter() - started < 2
+
+
+# Secrets, meeting links and phone numbers (#117), end to end. The finders' own tests are in
+# test_scrub_secrets.py. Fake values are built from parts, as there.
+
+
+def plant(config, day: int = 3) -> dict[str, str]:
+    """Made-up secrets, a meeting link and a phone number in one day file's original."""
+    rng = random.Random(117)
+    alnum = string.ascii_letters + string.digits
+    values = {
+        "github": "gh" + "p_" + "".join(rng.choice(alnum) for _ in range(36)),
+        "random": "".join(rng.choice(alnum) for _ in range(40)),
+        "meeting": "https://zoom.us/j/12345678901?pwd="
+        + "".join(rng.choice(alnum) for _ in range(20)),
+        "phone": "+44 20 7946 0958",
+        "anthropic": "sk-"
+        + "ant-"
+        + "api03-"
+        + "".join(rng.choice(alnum) for _ in range(93))
+        + "AA",
+        "link password": "".join(rng.choice(alnum) for _ in range(16)),
+    }
+    # Invisible characters inside the key, also through its second half, so every raw piece
+    # of that half is under 20 characters (must-refuse 17).
+    rest = values["anthropic"][54:]
+    split = (
+        values["anthropic"][:54]
+        + "\u200b"
+        + "\u00ad".join(rest[i : i + 15] for i in range(0, len(rest), 15))
+    )
+    day_file = config.data_dir / "slack" / "export" / "example-channel" / f"2026-10-0{day}.md"
+    lines = (
+        f"My token is {values['github']} and the other is {values['random']}.\n"
+        f"Join {values['meeting']} or call {values['phone']}.\n"
+        f"And split: {split}\n"
+        f"DB at postgres://admin:{values['link password']}@db.internal.test/app\n"
+    )
+    day_file.write_bytes(day_file.read_bytes() + lines.encode("utf-8"))
+    return values
+
+
+def test_secrets_links_and_phones_are_replaced_and_quoted_nowhere(config, export):
+    export()
+    values = plant(config)
+    report = scrub(config)
+    later = copies(config)[DAY.format(3)]
+    assert "My token is [secret] and the other is [secret?]." in later
+    assert "Join [meeting link] or call [phone]." in later
+    assert "And split: [secret]\n" in later
+    assert "DB at postgres://admin:[secret]@db.internal.test/app" in later
+    every = [*copies(config).values(), report, flags(config)]
+    fragments = {v[i : i + 12] for v in values.values() for i in range(0, len(v) - 12, 6)}
+    fragments = {f for f in fragments if not f.startswith(("https://zoo", "+44 20"))}
+    fragments.add("7946 0958")  # the phone number, which the filter above leaves out
+    for text in every:
+        assert not [f for f in fragments if f in text]
+    listed = flags(config)
+    assert "## Text that looks random, maybe a key or password, hidden as [secret?]" in listed
+    assert f"- [secret?]: {DAY.format(3)} (1)" in listed
+
+
+def test_the_manifest_lists_the_new_checks_and_says_whats_not_checked(config, scrubbed):
+    manifest = json.loads(copies(config)["manifest.json"])
+    assert manifest["approved_for_release"] is False
+    assert manifest["copies"][0]["checks"][:3] == ["secrets", "meeting links", "phone numbers"]
+    assert "gitleaks v8.30.1" in manifest["note"]
+    assert "Not checked yet: names of people who aren't in the people list" in manifest["note"]
+    assert "aren't checked yet" not in manifest["note"].split("Not checked yet")[0]
+
+
+@pytest.mark.parametrize(
+    "step, kind",
+    [
+        ("secrets", "a secret"),
+        ("meeting_links", "a meeting link"),
+        ("phone_numbers", "a phone number"),
+    ],
+)
+def test_a_copy_where_one_survives_is_held_back_by_kind(config, export, monkeypatch, step, kind):
+    export()
+    plant(config)
+    monkeypatch.setattr(Scrubber, step, lambda self, text, flags: text)  # a broken step
+    scrub(config)
+    found = copies(config)
+    assert DAY.format(3) not in found and DAY.format(1) in found
+    held = json.loads(found["manifest.json"])["held_back"]
+    assert held == [
+        {"source": "slack", "id": "C00000001/2026-10-03", "why": f"the last check found {kind}"}
+    ]
+
+
+def test_must_refuse_17_a_replacement_that_leaves_half_a_split_key_is_held_back(
+    config, export, monkeypatch
+):
+    export()
+    plant(config)
+    real = Scrubber.secrets
+
+    def stops_at_the_invisible_character(self, text, flags):
+        cut = text.find("\u200b")
+        return real(self, text[:cut], flags) + text[cut:] if cut != -1 else real(self, text, flags)
+
+    monkeypatch.setattr(Scrubber, "secrets", stops_at_the_invisible_character)
+    scrub(config)
+    found = copies(config)
+    assert DAY.format(3) not in found
+    assert not (config.data_dir / "scrubbed" / DAY.format(3)).exists()
+    why = json.loads(found["manifest.json"])["held_back"][0]["why"]
+    assert why == "the last check found a secret"
+
+
+@pytest.mark.parametrize("problem", ["missing", "changed", "won't parse", "won't compile"])
+def test_a_broken_or_changed_rule_file_stops_the_scrub_before_anything(
+    config, scrubbed, monkeypatch, tmp_path, problem
+):
+    rules_file = tmp_path / "gitleaks.toml"
+    if problem == "changed":
+        rules_file.write_bytes(secrets.RULES_FILE.read_bytes() + b"\n# changed\n")
+    elif problem == "won't parse":
+        rules_file.write_bytes(b"[[rules]\nid = ")
+    elif problem == "won't compile":
+        rules_file.write_bytes(b"[[rules]]\nid = 'broken-rule'\nregex = '''(unclosed'''\n")
+    if problem in ("won't parse", "won't compile"):
+        digest = hashlib.sha256(rules_file.read_bytes()).hexdigest()
+        monkeypatch.setattr(secrets, "RULES_SHA256", digest)
+    monkeypatch.setattr(secrets, "RULES_FILE", rules_file)
+    secrets.compiled.cache_clear()
+    before_copies, before_originals = copies(config), originals(config)
+    before_private = sorted((config.data_dir / "private").iterdir())
+    try:
+        with pytest.raises(ScrubError) as stopped:
+            scrub(config)
+    finally:
+        secrets.compiled.cache_clear()
+    message = str(stopped.value)
+    assert "nothing was scrubbed" in message
+    assert {"missing": "is missing", "changed": "isn't the pinned", "won't parse": "can't be read",
+            "won't compile": "won't compile in Python"}[problem] in message  # fmt: skip
+    assert copies(config) == before_copies and originals(config) == before_originals
+    assert sorted((config.data_dir / "private").iterdir()) == before_private
+
+
+# Decision 2 on #130: a channel listed by ID gets its copies, as one listed by name does.
+def test_a_channel_listed_by_id_gets_the_same_copies_as_by_name(config, export):
+    export()
+
+    def channel_copies(listed: Config) -> list:
+        return [s for s in scrub_run.sources(listed)[0] if s.kind == "slack"]
+
+    by_name = channel_copies(config)
+    by_id = channel_copies(replace(config, slack_channels=(), slack_channel_ids=(CHANNEL,)))
+    neither = channel_copies(replace(config, slack_channels=(), slack_channel_ids=("C0000009",)))
+    assert by_name and by_id == by_name
+    assert neither == []

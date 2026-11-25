@@ -29,14 +29,16 @@ If a change would break one of these, or you aren't sure, stop and ask the user.
 - Write PR descriptions a non-coder can follow, using the PR template.
 - Don't change `docs/requirements.md` unless the Issue asks. Requirement IDs never change once used.
 - Several sessions can work at once, each in its own folder (a git worktree) on its own branch. Only one session pushes to a branch. Only one `/slack-export` runs at a time, because every session on the machine shares the data folder.
-- Never run `diffdata consent review` or `withdraw`: a person types those in their own terminal. Never change `approvals.jsonl` or `config.toml` in `~/.diffdata/` either, by any route: what they hold is the user's opt-in. `.claude/settings.json` refuses Claude's file tools on those two files, and any shell command whose text names the consent commands or imports `consent.review` or `consent.approvals`, so pass a commit message, PR text or comment that mentions them from a file (`git commit -F`, `gh pr comment --body-file`).
+- Never run `diffdata consent review` or `withdraw`, or `diffdata setup`, or `diffdata admin`: a person types those in their own terminal. Never change `approvals.jsonl` or `config.toml` in `~/.diffdata/` either, by any route: what they hold is the user's opt-in. `.claude/settings.json` refuses Claude's file tools on those two files, and any shell command whose text names the consent commands or imports `consent.review` or `consent.approvals`, so pass a commit message, PR text or comment that mentions them from a file (`git commit -F`, `gh pr comment --body-file`).
 
 ## Real data in a session
 
 These rules keep real data out of the repo and out of other companies' AI tools.
 
 - **A session that has seen real data keeps it in its transcript.** That's any session that ran `/slack-export`, read Slack or Google live, or opened files in the data folder. Never hand its transcript to another AI tool: no `/codex:transfer` from it, and no `--source` pointing at it.
-- **Codex, or any AI tool outside Claude, never gets the data folder, `config.toml` or `.env`.** It sends what it reads to its company.
+- **Codex, or any AI tool outside Claude, never gets the data folder, `config.toml`, `.env` or `store-key.json`.** It sends what it reads to its company.
+- **Never read, open, copy or print `~/.diffdata/store-key.json`, by any route.** It's the team's key for adding files to the bucket. `.claude/settings.json` refuses Claude's file tools on it, and any shell command that names it. If a push says the key is missing or wrong, tell the user to fix it themselves.
+- **Never read, open, copy or print a team file (`*.diffdata-team.json`), by any route.** It holds the team's store key. `.claude/settings.json` refuses Claude's tools on it. Only the producer gives it to `diffdata setup`, in their own terminal.
 - **Invent every value in fixtures and code comments.** When a live read shows you a format, copy its structure (field names, separators, the wording of notices) and make up every value: IDs, names, titles, times, sizes and cursors. Use values nobody saw, such as round times and `FAKE-` IDs.
 - **Scan before anything leaves the machine.** Before each commit, search the staged diff for real values: the workspace's ID prefixes, people's names, email domains, titles, times and sizes. Scan PR descriptions, comments and Issues the same way before posting them. GitHub keeps every edit, so fixing a post afterwards is too late.
 - **If `/slack-export` fails, don't fix the code in that session.** Take the error message to a coding session, with any real values in it (times, IDs, names, quoted text) replaced by placeholders first. A session handed real values counts as having seen real data.
@@ -58,7 +60,7 @@ These rules keep real data out of the repo and out of other companies' AI tools.
 
 ```
 src/diffdata/
-  cli.py            the `diffdata` command; `discover slack`, `consent`, `collect google-docs` and `scrub` are built, the rest are stubs
+  cli.py            the `diffdata` command; `setup`, `discover slack`, `consent`, `collect google-docs`, `scrub` and `push` are built
   consent/ discover/ collect/ organize/ scrub/ store/    one package per stage
   consent/approvals.py   the approvals file next to config.toml (CON-1, CON-3): approved, skipped or withdrawn, per canvas or Google file; it only grows
   consent/review.py   `diffdata consent review` and `withdraw`: a person approves new items from the reference log, typed in a terminal; they refuse to run anywhere else, as in Claude's tools
@@ -68,9 +70,12 @@ src/diffdata/
   collect/google_signin.py   the Google sign-in (COL-4), through Google's Picker with `drive.file` only; the token stays in ~/.diffdata/
   collect/google_fetch.py    fetches the docs listed in `google_docs` or approved at review with that sign-in, read-only, and saves each fetch unchanged (COL-4, COL-5)
   collect/google_doc.py, gdocs_changelog.py   the reader: what any fetch saved, in the shared format, with the changelog replayed
-  scrub/            `diffdata scrub` (SCR-2): scrubbed copies in <data>/scrubbed/, built all or nothing (run.py), with the people list in <data>/private/ (people.py) and the replacements and last check in text.py
+  scrub/            `diffdata scrub` (SCR-1, SCR-2): scrubbed copies in <data>/scrubbed/, built all or nothing (run.py), with the people list in <data>/private/ (people.py), the replacements and last check in text.py, and secrets, meeting links and phone numbers found by secrets.py from gitleaks' pinned rules in scrub/rules/
+  store/            `diffdata push` (STO-1 to STO-3, STO-9, STO-11): sends the passed scrubbed copies, create-only, through one `Store` interface (backend.py); the Google Cloud Storage version is gcs.py
+  store/admin.py    `diffdata admin add-team`, for the project team (#132): a team's managed folder, upload account and key, and its team file, through `gcloud`
   common/           shared pieces; paths.py holds the data folder guards, config.py reads config.toml
   common/documents.py   the shared document format (ORG-2): raw, versions, event log, clean copies
+  common/setup.py   `diffdata setup` (#130): reads the team file, asks for the channels, shows every value on one screen before writing config.toml, and puts the store key in place; it refuses to run anywhere but a terminal a person types in
 tests/              pytest; fixtures/ holds synthetic data only
 docs/requirements.md
 config.example.toml copy to ~/.diffdata/config.toml, outside the repo, and fill in
@@ -99,6 +104,6 @@ CI runs lint and tests on Windows, macOS and Linux for every PR.
 
 ## Reviews and versions
 
-Every PR gets reviewed before merge, starting with `/review-pr <number>` in its own context: the `pr-reviewer` agent, or a separate Claude session. On Paul's PRs, the session that wrote the code runs the reviews and posts them, adding Codex only for risky changes, after Claude's review and once its must-fix items are fixed. When a task starts, if the user has Codex, say whether a Codex review is worth it under that rule, and let them confirm it along with the plan. Paul reviews teammates' PRs, and Claude never pushes to a teammate's branch. A human must also review anything touching consent, scrub or store. For a teammate's PR, that's Paul. For Paul's own: Paul approves the plan's must-refuse list before coding and checks it by hand before merge, Lachlan reads the code, and both AI reviews run. The commit Paul merges always gets a final `/review-pr`. The full workflow is in "Review policy" in [CONTRIBUTING.md](CONTRIBUTING.md).
+Every PR gets reviewed before merge, starting with `/review-pr <number>` in its own context: the `pr-reviewer` agent, or a separate Claude session. A Codex review on top is recommended, especially for consent, scrub and store, `.claude/` hooks and permissions, and large changes: the session that wrote the code runs it after Claude's review, once its must-fix items are fixed, if the user has Codex. **Don't wait for Paul's approval, and don't send PRs to him for review:** since 2026-11-23 the author reviews and merges, and Paul checks after the fact from a daily update. At the end of a working day, offer to draft that update: the PRs merged, decisions made without Paul, and anything he should check. Claude never pushes to a teammate's branch. For consent, scrub and store, the author also approves the plan's must-refuse list before coding, checks each refusal by hand before merge, and reads the code. The commit that merges always gets a final `/review-pr`. The full workflow is in "Review policy" in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The version lives in `pyproject.toml` only (0.MINOR.PATCH, matching the phases in the requirements). Paul tags releases and keeps [CHANGELOG.md](CHANGELOG.md).

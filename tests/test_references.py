@@ -618,3 +618,10 @@ def test_a_title_or_name_cant_start_a_new_line_in_the_view():
     lines = render([entry], {CHANNEL: "example-channel"}, {}).splitlines()
     assert "### Notes ### b) Fake entry" in lines
     assert not any(line.startswith(("### b)", "- 2026-10-01")) for line in lines)
+
+
+# Decision 2 on #130: a place in a channel listed by ID is still opted in.
+def test_a_channel_listed_by_id_keeps_its_sources_current(config, export):
+    export()
+    build(replace(config, slack_channels=(), slack_channel_ids=(CHANNEL,)))
+    assert states(config)[DOC] != "history-only"

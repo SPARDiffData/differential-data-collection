@@ -422,3 +422,117 @@ def test_a_message_just_before_the_last_complete_runs_start_is_still_held_back(
     report = short_read(channel_read(late_post), when=T0 + timedelta(days=3))
     assert "Jordan" not in everything_built(config)
     assert "1 message(s) held back" in report
+
+
+# Merged with #131: slack_channels can list a channel by its ID or a link, so slack_notices
+# can key its entry the same way.
+
+
+def test_a_notice_entry_can_be_keyed_by_the_channels_id_or_a_link(tmp_path):
+    by_id = load_config(write(tmp_path, f'slack_notices = {{ {CHANNEL} = "{NOTICE}" }}'))
+    assert by_id.slack_notices == ((CHANNEL, NOTICED),)
+    link = f"https://example.slack.com/archives/{CHANNEL}"
+    by_link = load_config(write(tmp_path, f'slack_notices = {{ "{link}" = "none" }}'))
+    assert by_link.slack_notices == ((CHANNEL, "none"),)
+
+
+def test_a_bad_notice_keyed_by_id_never_prints_the_id(tmp_path):
+    with pytest.raises(ConfigError, match="slack_notices entry 1 in") as e:
+        load_config(write(tmp_path, f'slack_notices = {{ {CHANNEL} = "not a link" }}'))
+    assert CHANNEL not in str(e.value)
+
+
+def test_a_channel_listed_by_id_uses_its_id_keyed_notice(config, export_run, channel_read):
+    by_id = replace(
+        config,
+        slack_channels=(),
+        slack_channel_ids=(CHANNEL,),
+        listed_channels=(CHANNEL,),
+        slack_notices=((CHANNEL, NOTICED),),
+    )
+    report = export_run(channel_read(JORDAN_POSTS, JORDAN_JOINS), settings=by_id)
+    assert all(r["user_id"] != LATE for r in store(by_id))
+    assert "1 person(s) joined a channel after its notice" in report
+
+
+def test_begin_takes_a_bare_id_with_an_id_keyed_notice(config):
+    by_id = replace(config, slack_channels=(), slack_channel_ids=(CHANNEL,))
+    begin(replace(by_id, slack_notices=((CHANNEL, NOTICED),)), [CHANNEL], now=T0)
+
+
+def test_must_refuse_begin_for_a_bare_id_with_only_a_name_keyed_notice_and_no_name_yet(config):
+    # Before its first read, a channel listed by ID has no name, so a name-keyed entry can't
+    # be matched to it. begin stops before any read, without printing the ID.
+    by_id = replace(config, slack_channels=(), slack_channel_ids=(CHANNEL,))
+    with pytest.raises(SlackExportError, match="key the entry by that ID") as e:
+        begin(by_id, [CHANNEL], now=T0)
+    assert CHANNEL not in str(e.value)
+
+
+def test_must_refuse_two_different_notice_entries_for_one_channel(config, export_run, channel_read):
+    both = replace(config, slack_notices=(("example-channel", NOTICED), (CHANNEL, "none")))
+    with pytest.raises(SlackExportError, match="two different entries"):
+        begin(both, [f"example-channel={CHANNEL}"], now=T0)
+    export_run(channel_read(JORDAN_POSTS, JORDAN_JOINS))
+    with pytest.raises(SlackExportError, match="two different entries"):
+        build(both)
+    with pytest.raises(ScrubError, match="two different entries"):
+        scrub(both)
+
+
+def test_the_same_notice_keyed_by_name_and_id_is_fine(config, export_run, channel_read):
+    both = replace(config, slack_notices=(("example-channel", NOTICED), (CHANNEL, NOTICED)))
+    export_run(channel_read(JORDAN_POSTS, JORDAN_JOINS), settings=both)
+    assert all(r["user_id"] != LATE for r in store(both))
+
+
+# Codex's review of the merge.
+
+
+def test_a_link_key_that_isnt_a_channel_link_is_refused_and_never_printed(tmp_path):
+    key = "https://example.enterprise.slack.com/archives/C00000001"
+    with pytest.raises(ConfigError, match="a link, but not to a Slack channel") as e:
+        load_config(write(tmp_path, f'slack_notices = {{ "{key}" = "none" }}'))
+    assert key not in str(e.value)
+
+
+def test_a_bad_notice_under_an_odd_key_never_prints_the_key(tmp_path):
+    # A made-up token shape, built from parts so the repo never holds one whole.
+    key = "xo" + "xb-1111-2222-fakefakefake"
+    toml = f'slack_notices = {{ "example-channel" = "none", "{key}" = "not a link" }}'
+    with pytest.raises(ConfigError, match="slack_notices entry 2 in") as e:
+        load_config(write(tmp_path, toml))
+    assert key not in str(e.value)
+
+
+def test_must_refuse_begin_borrowing_another_channels_entry_by_a_given_name(config):
+    # C00000001 is listed by ID. A name given to begin isn't how config.toml lists it, so it
+    # can't pick up the "none" entry of a channel with that name.
+    for listed in [(), ("other-channel",)]:  # even when another channel is listed by it
+        by_id = replace(
+            config,
+            slack_channels=listed,
+            slack_channel_ids=(CHANNEL,),
+            slack_notices=(("other-channel", "none"),),
+        )
+        with pytest.raises(SlackExportError, match="no entry in slack_notices"):
+            begin(by_id, [f"other-channel={CHANNEL}"], now=T0)
+
+
+def test_must_refuse_a_store_whose_inbox_is_gone_is_still_checked_against_its_notice(
+    config, export_run, channel_read
+):
+    unchecked = replace(config, slack_notices=(("example-channel", "none"),))
+    export_run(channel_read(JORDAN_POSTS, JORDAN_JOINS), settings=unchecked)
+    assert any(r["user_id"] == LATE for r in store(config))  # "none": not checked
+    import shutil
+
+    shutil.rmtree(config.data_dir / "slack" / "inbox" / CHANNEL)
+    build(unchecked)  # still "none": nothing to check, so it builds
+    # A notice is added now. With no saved reads, no join can be seen: both stop.
+    with pytest.raises(SlackExportError, match="reads for channel 1 in slack_channels are miss"):
+        build(config)
+    with pytest.raises(ScrubError, match="are missing") as e:
+        scrub(config)
+    assert CHANNEL not in str(e.value) and "example-channel" not in str(e.value)
+    assert any(r["user_id"] == LATE for r in store(config))  # the build changed nothing

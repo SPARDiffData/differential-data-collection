@@ -234,3 +234,6 @@ approvals.jsonl
 
 # Claude Code personal settings
 .claude/settings.local.json
+
+# The team's store key belongs in ~/.diffdata/, never in a repo (store/push.py).
+store-key.json

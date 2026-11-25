@@ -372,3 +372,94 @@ def test_a_lowercase_key_that_isnt_close_to_a_setting_is_never_printed(tmp_path)
     with pytest.raises(ConfigError, match="a key under sources that isn't a setting name") as e:
         load_config(path)
     assert "alex" not in str(e.value)
+
+
+# Decision 2 on #130: a channel is listed by its name, its ID, or a link to it.
+def test_a_channel_can_be_listed_by_its_id_or_its_link(tmp_path):
+    data = (tmp_path / "data").as_posix()
+    channels = (
+        '["example-channel", "C00000002", '
+        '"https://example.slack.com/archives/G00000003", '
+        '"https://example.slack.com/archives/C00000004/p1700000000000100"]'
+    )
+    path = write_config(
+        tmp_path, f'[sources]\nslack_channels = {channels}\n[local]\ndata_dir = "{data}"\n'
+    )
+    config = load_config(path)
+    assert config.slack_channels == ("example-channel",)
+    assert config.slack_channel_ids == ("C00000002", "G00000003", "C00000004")
+    assert config.lists_channel("C00000002")
+    assert config.lists_channel("C00000009", "Example-Channel")
+    assert not config.lists_channel("C00000009", "other")
+    assert not config.lists_channel("C00000009")
+
+
+def test_a_lowercase_name_that_looks_like_an_id_stays_a_name(tmp_path):
+    data = (tmp_path / "data").as_posix()
+    path = write_config(
+        tmp_path, f'[sources]\nslack_channels = ["c00000002"]\n[local]\ndata_dir = "{data}"\n'
+    )
+    config = load_config(path)
+    assert config.slack_channels == ("c00000002",)
+    assert config.slack_channel_ids == ()
+
+
+@pytest.mark.parametrize(
+    "listed",
+    [
+        '["https://example.slack.com/docs/T00000001/F00000001"]',  # a canvas link
+        '["https://example.com/archives/C00000002"]',  # not Slack
+    ],
+)
+def test_a_link_that_isnt_to_a_channel_is_refused_without_quoting_it(tmp_path, listed):
+    data = (tmp_path / "data").as_posix()
+    path = write_config(
+        tmp_path, f'[sources]\nslack_channels = {listed}\n[local]\ndata_dir = "{data}"\n'
+    )
+    with pytest.raises(ConfigError, match="Entry 1 in slack_channels") as e:
+        load_config(path)
+    assert "example" not in str(e.value).replace(str(path), "")
+
+
+def test_the_same_channel_id_twice_is_refused(tmp_path):
+    data = (tmp_path / "data").as_posix()
+    channels = '["C00000002", "x", "https://example.slack.com/archives/C00000002"]'
+    path = write_config(
+        tmp_path, f'[sources]\nslack_channels = {channels}\n[local]\ndata_dir = "{data}"\n'
+    )
+    with pytest.raises(ConfigError, match="Entries 1 and 3"):
+        load_config(path)
+
+
+# CON-5, must-refuse 17 on #130: a DM or a group DM is never listed.
+@pytest.mark.parametrize(
+    "listed",
+    [
+        '["D00000001"]',
+        '["https://example.slack.com/archives/D00000001"]',
+        '["mpdm-alex--sam--kim-1"]',
+        '["#MPDM-alex--sam-1"]',
+    ],
+)
+def test_a_dm_or_group_dm_in_slack_channels_is_refused(tmp_path, listed):
+    data = (tmp_path / "data").as_posix()
+    path = write_config(
+        tmp_path, f'[sources]\nslack_channels = {listed}\n[local]\ndata_dir = "{data}"\n'
+    )
+    with pytest.raises(ConfigError, match="CON-5") as e:
+        load_config(path)
+    assert "D00000001" not in str(e.value) and "alex" not in str(e.value)
+
+
+# Round 3 on #131: real Slack IDs have a digit, so a name typed in capitals stays a name.
+@pytest.mark.parametrize("name", ["GENERAL", "CAREERS", "DESIGNS", "GROUPCHAT"])
+def test_a_name_in_capitals_is_neither_an_id_nor_a_dm(tmp_path, name):
+    assert config_module.channel_id(name) is None
+    assert not config_module.is_direct_message(name)
+    data = (tmp_path / "data").as_posix()
+    path = write_config(
+        tmp_path, f'[sources]\nslack_channels = ["{name}"]\n[local]\ndata_dir = "{data}"\n'
+    )
+    config = load_config(path)
+    assert config.slack_channels == (name.lower(),)
+    assert config.slack_channel_ids == ()

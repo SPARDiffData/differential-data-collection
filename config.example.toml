@@ -1,4 +1,6 @@
 # diffdata configuration.
+# The easy way: run `uv run diffdata setup` in your own terminal. It writes this file for you.
+# To do it by hand instead:
 # Copy this file to config.toml in a .diffdata folder in your home folder
 # (C:\Users\<you>\.diffdata\config.toml on Windows, ~/.diffdata/config.toml on a Mac)
 # and fill in your own values. Outside the repo, tools working in it can't read it.
@@ -7,7 +9,7 @@
 [sources]
 # CON-1: listing a channel or folder here is your opt-in to collecting it.
 # Remove it and collection stops on the next run (CON-3).
-slack_channels = ["example-channel"]  # channel names, without the '#'
+slack_channels = ["example-channel"]  # channel names without the '#', IDs ("C...") or channel links
 slack_workspace_url = "https://example.slack.com"  # your workspace's address, for message links
 slack_canvases = []                   # canvas IDs ("F...") or canvas links; read when they may have changed
 # CON-4, CON-5: Slack user IDs ("U...") of people who opted out of this channel. The project
@@ -19,6 +21,7 @@ slack_opted_out = []
 # channel, like someone in slack_opted_out: they never got the notice or its 7 days. Every
 # channel you export needs an entry. Write "none" for a channel with no notice, such as one
 # where everyone agreed directly, and the build will say it wasn't checked.
+# Key an entry by the channel's name, or by its ID if slack_channels lists it by ID.
 slack_notices = { "example-channel" = "none" }
 # Canvases and Google files found in your Slack data are approved or skipped in your own
 # terminal with `uv run diffdata consent review`, and withdrawn with
@@ -37,7 +40,17 @@ data_dir = "~/diffdata-data"
 
 [store]
 # STO-1: the pilot store is a Google Cloud Storage bucket (decision D3 in the Second
-# Half Plan). Nothing reads this section yet: the upload isn't built.
+# Half Plan). `uv run diffdata push` sends your scrubbed copies there, and refuses to run
+# until every setting below is filled in. The project team gives your team this whole block
+# except producer, and a key, all in one team file: `uv run diffdata setup <team file>` puts
+# the key next to this file as store-key.json. It can only add files to your team's
+# folder. Never share it or open it in an AI tool.
 backend = "gcs"
-bucket = ""  # the bucket's name, from the project team
-folder = ""  # your team's folder in the bucket
+bucket = ""    # the bucket's name, from the project team
+folder = ""    # your team's folder in the bucket, from the project team
+producer = ""  # a pseudonym that labels your copies in the shared store instead of your name; never your real name
+project = ""   # your project's short name, from the project team
+# Copies are marked not approved for release: names of people who aren't in the people list
+# aren't checked yet. "yes" sends them anyway, to a part of the folder consumers never get.
+send_not_approved = "no"
+# folder, producer and project are plain names: letters, digits, - and _ only.

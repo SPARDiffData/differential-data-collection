@@ -31,6 +31,7 @@ import shutil
 import tempfile
 import time
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,7 +40,7 @@ from diffdata.collect import slack_canvas
 from diffdata.common.config import Config
 from diffdata.common.documents import documents_dir
 from diffdata.discover import slack_state
-from diffdata.discover.slack_export import read_inbox, read_store
+from diffdata.discover.slack_export import read_inbox, read_store, saved_records
 from diffdata.discover.slack_inbox import (
     SlackExportError,
     applied_stamp,
@@ -61,7 +62,16 @@ from diffdata.scrub.people import (
     render,
     seen_in_slack,
 )
-from diffdata.scrub.text import CHECKS, SHARED, UNKNOWN_ID, UNKNOWN_MENTION, Flag, Scrubber
+from diffdata.scrub.secrets import RULES_RELEASE, RulesError, rules
+from diffdata.scrub.text import (
+    CHECKS,
+    MAYBE_SECRET,
+    SHARED,
+    UNKNOWN_ID,
+    UNKNOWN_MENTION,
+    Flag,
+    Scrubber,
+)
 
 SCRUBBED = "scrubbed"
 IN_PROGRESS = "scrubbed-in-progress"
@@ -85,7 +95,16 @@ FLAG_KINDS = {
     SHARED: "A name more than one person has, hidden as [name]",
     UNKNOWN_MENTION: "A mention of someone not in the list, hidden as @[name?]",
     UNKNOWN_ID: "A Slack ID of someone not in the list, hidden as [name?]",
+    MAYBE_SECRET: "Text that looks random, maybe a key or password, hidden as [secret?]",
 }
+# What's checked and what isn't, for anyone who reads the manifest (Paul, #117).
+NOTE = (
+    "Not approved for release. Replaced: secrets (the rules of "
+    f"{RULES_RELEASE}, run in Python, and a randomness check), meeting links, phone "
+    "numbers, emails, Slack IDs, mentions and the names in the people list. Not checked "
+    "yet: names of people who aren't in the people list, and links that open the original "
+    "(a doc shared with anyone who has the link, a Slack file)."
+)
 FLAGS_HEADER = """\
 # Flags from the last scrub
 
@@ -93,7 +112,10 @@ The scrub hid these without knowing who they are. Each one is real text from you
 so this file stays in private/ and is never shared.
 
 To resolve one, edit people.toml: add it to someone's nicknames (or a Slack ID to their
-slack_ids) if it's them, or to not_names if it isn't a name. The next scrub applies it."""
+slack_ids) if it's them, or to not_names if it isn't a name. The next scrub applies it.
+
+A possible secret ([secret?]) is listed by copy only, never by its value. It stays hidden
+either way; look at the original if you need to know what it was."""
 
 
 class ScrubError(Exception):
@@ -108,11 +130,12 @@ class Source:
     copy: str  # where its copy goes, under scrubbed/
 
 
-def opted_in(config: Config) -> tuple[set[str], set[str]]:
-    """The channels (by name) and canvases (by ID) that get a scrubbed copy: the ones listed
-    in config.toml right now (CON-1). Anything else gets none, and its earlier copy is gone
-    after the next run. This rule lives only here, so the approval step can add to it."""
-    return set(config.slack_channels), set(config.slack_canvases)
+def opted_in(config: Config) -> tuple[Callable[[str, str], bool], set[str]]:
+    """The channels (a test on ID and name) and canvases (by ID) that get a scrubbed copy: the
+    ones listed in config.toml right now, by name or by ID (CON-1). Anything else gets none,
+    and its earlier copy is gone after the next run. This rule lives only here, so the
+    approval step can add to it."""
+    return config.lists_channel, set(config.slack_canvases)
 
 
 def sources(config: Config) -> tuple[list[Source], int]:
@@ -122,7 +145,7 @@ def sources(config: Config) -> tuple[list[Source], int]:
     channels, canvases = opted_in(config)
     found = []
     for channel_id, name in sorted(run_channel_names(data).items()):
-        if name not in channels or not SAFE_ID.fullmatch(channel_id):
+        if not channels(channel_id, name) or not SAFE_ID.fullmatch(channel_id):
             continue
         # The view's folder, named as slack_export.build names it.
         folder = slack_dir(data) / "export" / re.sub(r"[^a-z0-9_-]", "-", name.lower())
@@ -147,6 +170,10 @@ def scrub(config: Config) -> str:
     data = config.data_dir
     if not data.is_dir():
         raise ScrubError("The data folder doesn't exist yet. Run /slack-export first.")
+    try:
+        rules()  # a missing or changed rule file stops the run before anything is touched
+    except RulesError as e:
+        raise ScrubError(str(e)) from None
     for name in (SCRUBBED, IN_PROGRESS, PRIVATE):
         refuse_links(data, name)
     for name in (SCRUBBED, IN_PROGRESS):
@@ -158,8 +185,8 @@ def scrub(config: Config) -> str:
         (private / LOCK).touch(exist_ok=False)
     except FileExistsError:
         raise ScrubError(
-            f"Another scrub is running, or one stopped without finishing. If none is "
-            f"running, delete {PRIVATE}/{LOCK} in your data folder and run again."
+            f"Another scrub or a push is running, or a scrub stopped without finishing. If "
+            f"neither is running, delete {PRIVATE}/{LOCK} in your data folder and run again."
         ) from None
     try:
         return make_copies(config, earlier)
@@ -172,23 +199,36 @@ def scrub(config: Config) -> str:
         (private / LOCK).unlink(missing_ok=True)
 
 
-def make_copies(config: Config, earlier: bool) -> str:
+def saved_left_out(config: Config) -> tuple[dict[str, set[str]], dict[str, tuple], str]:
+    """Who the build leaves out, worked out from the saved data the same way the build does,
+    so a join saved since the last build, or a changed notice link, is caught too (#118).
+    Returns each channel's late joiners, where its held-back messages start, and the stamp a
+    build that applied all of it writes. The push checks the same stamp (store/push.py)."""
     data = config.data_dir
-    opted_out = set(config.slack_opted_out)
-    stores = sorted((slack_dir(data) / "store").glob("*/messages.jsonl"))
-    # Worked out from the saved data the same way the build does, so a join saved since the
-    # last build, or a changed notice link, is caught here too (#118).
     channel_dirs = sorted(p for p in inbox_dir(data).glob("*") if p.is_dir())
     try:
-        late, held, _ = late_joiners(
+        inbox = {d.name: read_inbox(d, d.name, config.slack_workspace_url) for d in channel_dirs}
+        late, held_after, _ = late_joiners(
             config,
-            {d.name: read_inbox(d, d.name, config.slack_workspace_url)[0] for d in channel_dirs},
+            saved_records(data, inbox),
             run_channel_names(data),
             slack_state.start_points(inbox_dir(data))[0],
         )
     except SlackExportError as e:
         raise ScrubError(str(e)) from e
-    if stores and applied_stamp(data) != left_out_stamp(opted_out, late, held):
+    return late, held_after, left_out_stamp(set(config.slack_opted_out), late, held_after)
+
+
+def make_copies(config: Config, earlier: bool) -> str:
+    data = config.data_dir
+    opted_out = set(config.slack_opted_out)
+    stores = sorted((slack_dir(data) / "store").glob("*/messages.jsonl"))
+    late, held_after, expected = saved_left_out(config)
+    # Read once, before anything is checked or copied, and written into the manifest as it
+    # was read: a build finishing during the scrub then makes the manifest stale, never
+    # current (store/push.py compares the two).
+    stamp = applied_stamp(data)
+    if stores and stamp != expected:
         # The last finished build applied a different list, or none, or stopped partway.
         raise ScrubError(
             "slack_opted_out or slack_notices in config.toml has changed since the last "
@@ -200,7 +240,7 @@ def make_copies(config: Config, earlier: bool) -> str:
         channel_id = store.parent.name
         gone = opted_out | late.get(channel_id, set())
         if any(
-            record["user_id"] in gone or is_held(record, held, channel_id)
+            record["user_id"] in gone or is_held(record, held_after, channel_id)
             for record in read_store(store)
         ):
             # The build is what leaves them out (#105), so it has to run first.
@@ -278,10 +318,11 @@ def make_copies(config: Config, earlier: bool) -> str:
     manifest = {
         "tool": f"diffdata {__version__}",
         "approved_for_release": False,
-        "note": (
-            "Not approved for release. Names, Slack IDs and emails are replaced. Phone "
-            "numbers, meeting links and secrets aren't checked yet."
-        ),
+        "note": NOTE,
+        # Who the build had left out when these copies were made (opt-outs, late joiners and
+        # held-back points), so a push can tell if that changed since (store/push.py). A
+        # fingerprint: it names nobody. The field keeps its first name.
+        "opt_out_stamp": stamp,
         "copies": copies,
         "held_back": held,
     }
@@ -308,8 +349,9 @@ def make_copies(config: Config, earlier: bool) -> str:
         )
     report.append(f"The people list has {len(people.people)} people, {new} of them new.")
     report.append(
-        "These copies are not approved for release: phone numbers, meeting links and "
-        "secrets aren't checked yet."
+        "These copies are not approved for release: names of people who aren't in the "
+        "people list, and links that open the original, aren't checked yet. Read your "
+        "copies before you push."
     )
     return "\n".join(report)
 
@@ -326,7 +368,8 @@ def render_flags(flags: list[tuple[str, Flag]]) -> str:
             lines += ["", f"## {title}", ""]
         for flag in found:
             shown = ("@" if kind == UNKNOWN_MENTION else "") + flag.text
-            text = json.dumps(shown, ensure_ascii=False)  # quoted, so any text stays one line
+            # quoted, so any text stays one line. A possible secret is never written down.
+            text = "[secret?]" if kind == MAYBE_SECRET else json.dumps(shown, ensure_ascii=False)
             shared = f", shared by {' and '.join(flag.shared_by)}" if flag.shared_by else ""
             where = ", ".join(f"{copy} ({n})" for copy, n in sorted(places[flag].items()))
             lines.append(f"- {text}{shared}: {where}")
