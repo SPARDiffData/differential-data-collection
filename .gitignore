@@ -237,3 +237,9 @@ approvals.jsonl
 
 # The team's store key belongs in ~/.diffdata/, never in a repo (store/push.py).
 store-key.json
+
+# Files a Claude session can bring into a worktree from the folder it started in
+# (notes, old copies of the repo). They never belong in a commit.
+daily-update-*.md
+/ddc/
+/repo/
