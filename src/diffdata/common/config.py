@@ -105,7 +105,8 @@ def opt_out_keys(table: dict, where: str) -> list[str]:
         squashed = re.sub(r"[^a-z]", "", key.lower())
         if "optout" in squashed or "optedout" in squashed:
             found.append(f"{where}{key}")
-        if isinstance(value, dict):
+        # slack_notices is keyed by channel names, and a channel may be named like the list.
+        if isinstance(value, dict) and f"{where}{key}" != f"sources.{NOTICES_KEY}":
             found += opt_out_keys(value, f"{where}{key}.")
     return found
 

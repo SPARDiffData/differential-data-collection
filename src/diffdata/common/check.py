@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from diffdata.common import config as config_module
-from diffdata.common.config import ConfigError, load_config
+from diffdata.common.config import CHANNEL_ID, Config, ConfigError, load_config
 from diffdata.common.paths import UnsafeDataDirError, find_git_root, synced_by
 
 CLAUDE_MIN = (2, 1, 295)
@@ -267,7 +267,7 @@ def state_items(settings: Path | None = None) -> list[Item]:
         )
     else:
         try:
-            load_config(settings)
+            config = load_config(settings)
         except (ConfigError, UnsafeDataDirError) as e:
             items.append(Item("config.toml", False, f"{settings} doesn't pass its checks: {e}"))
         except Exception as e:
@@ -281,6 +281,7 @@ def state_items(settings: Path | None = None) -> list[Item]:
             )
         else:
             items.append(Item("config.toml", True, str(settings)))
+            items += notice_items(config)
     key = settings.parent / KEY_NAME
     try:
         info = key.lstat()
@@ -334,6 +335,41 @@ def state_items(settings: Path | None = None) -> list[Item]:
         )
     else:
         items.append(Item("Store key", True, str(key)))
+    return items
+
+
+def notice_items(config: Config) -> list[Item]:
+    """A FIX line for each listed channel with no slack_notices entry, since the build stops
+    at it (#119; plan #130, revision 6). Read from config.toml only: a channel listed by name
+    with an entry keyed by its ID can't be matched without Slack, so it reads as missing."""
+    items: list[Item] = []
+    # Keyed as config.py reads them: a channel's ID (from an ID or a link), or its name.
+    notices = dict(config.slack_notices)
+    unmatched_ids = any(
+        CHANNEL_ID.fullmatch(key) and key not in config.listed_channels for key in notices
+    )
+    for number, listed in enumerate(config.listed_channels, start=1):
+        by_id = CHANNEL_ID.fullmatch(listed) is not None
+        if listed not in notices:
+            shown = f"{listed}, a channel ID" if by_id else listed
+            items.append(
+                Item(
+                    "Notice",
+                    False,
+                    f"Channel {number} in slack_channels ({shown}) has no notice link, so "
+                    "/slack-export stops at it. Run `uv run diffdata setup`, answer y to Change "
+                    "it, and paste the pinned notice's link, or type none if everyone in it "
+                    "agreed directly."
+                    + (
+                        " (An entry keyed by a channel's ID may be this one's: if it is, it's "
+                        "fine.)"
+                        if unmatched_ids and not by_id
+                        else ""
+                    ),
+                )
+            )
+    if config.listed_channels and not items:
+        items.append(Item("Notices", True, "every listed channel has an entry"))
     return items
 
 
