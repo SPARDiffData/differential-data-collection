@@ -26,8 +26,8 @@ The producer handle is a pseudonym: it labels the producer's copies in the share
 in place of their name. Setup makes one up from the project name and 4 random characters. It
 never reads the computer's user name, the Slack name or the Git name for it.
 
-What setup refuses (the plan's must-refuse list on #130; 15 to 18 as reworded for the team
-file, waiting for approval there):
+What setup refuses (the plan's must-refuse list, approved on #130 and #132; 15 to 18 as
+reworded for the team file, and 16 as Lachlan changed it, approved on 2026-11-25):
   1   to run unless its input and output are a terminal a person types in
   2   to overwrite a config without a typed yes; it keeps the old one as config.toml.bak, and
       replaces an old .bak only on a second yes
@@ -736,6 +736,20 @@ def setup(
                     "So the team file's team values weren't used. To use them, run setup again "
                     "and answer y to Change it."
                 )
+                values = team.values
+                prompter.say(
+                    f"The team file is for bucket {values['bucket']}, folder {values['folder']}, "
+                    f"project {values['project']}."
+                )
+                store = raw.get("store", {})
+                if all(str(store.get(key, "")) == values[key] for key in TEAM_KEYS):
+                    prompter.say("These match your config.toml.")
+                else:
+                    prompter.say(
+                        "These don't match the team values in your config.toml, so push will "
+                        "fail with this team file's key. To fix it, run setup again with this "
+                        "team file and answer y to Change it."
+                    )
                 parts = "store key" + (" and Google client file" if team.google_client else "")
                 if prompter.yes(f"Put the team file's {parts} in place anyway?"):
                     try:

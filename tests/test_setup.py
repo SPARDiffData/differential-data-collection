@@ -847,3 +847,26 @@ def test_a_name_typed_in_capitals_stays_a_name(home, name):
     assert code == 0
     channels = tomllib.loads(settings(home).read_text())["sources"]["slack_channels"]
     assert channels == [name.lower()]
+
+
+def test_with_no_change_a_matching_team_file_says_it_matches(home):
+    existing(home)  # bucket example-bucket, folder team-a, project example-project
+    _, script = run(home, "n", "n", team=team_file(home))
+    assert "bucket example-bucket, folder team-a, project example-project" in script.text
+    assert "These match your config.toml." in script.text
+    assert "push will fail" not in script.text
+
+
+def test_with_no_change_a_team_file_for_another_folder_warns_before_the_offer(home):
+    path = existing(home)
+    before = path.read_bytes()
+    other = team_file(home, name="team-b", folder="team-b")
+    # Change it? no; put in place anyway? Enter asks again, then no
+    _, script = run(home, "n", "", "n", team=other)
+    text = script.text
+    assert "folder team-b" in text
+    assert "don't match" in text and "push will fail" in text and "answer y to Change it" in text
+    assert text.index("push will fail") < text.index("in place anyway?")
+    assert sum(line.startswith("Put the team file's") for line in script.shown) == 2
+    assert path.read_bytes() == before
+    assert not (home / ".diffdata" / "store-key.json").exists()
