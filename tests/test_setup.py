@@ -938,3 +938,79 @@ def test_a_dm_shaped_capitals_entry_in_config_says_to_retype_in_lowercase(tmp_pa
     with pytest.raises(config_module.ConfigError, match="type it in lowercase") as e:
         config_module.load_config(path)
     assert "Entry 1" in str(e.value) and "DESIGN2024" not in str(e.value)
+
+
+# --- round 7: JSON comparison, lowercase hint, typed data folder ------------------------
+
+
+def test_a_hand_saved_key_with_the_same_contents_counts_as_the_same(home):
+    key = home / ".diffdata" / "store-key.json"
+    key.parent.mkdir()
+    key.write_text(json.dumps(KEY, separators=(",", ":")), encoding="utf-8")  # no newline
+    os.chmod(key, 0o600)  # so there's no chmod question
+    before = key.read_bytes()
+    answers = fresh_answers()
+    answers[-1] = "n"  # no replace question; delete the team file? no
+    _, script = run(home, *answers)
+    assert "is the same as the team file's" in script.text
+    assert not any(line.startswith("There's a different") for line in script.shown)
+    assert key.read_bytes() == before  # left as it was
+
+
+def test_a_key_with_different_contents_is_still_different(home):
+    write_key(home, data={**KEY, "private_key_id": "another"})
+    answers = fresh_answers()
+    answers[-1:] = ["n"]  # replace? no
+    _, script = run(home, *answers)
+    assert any(line.startswith("There's a different store key") for line in script.shown)
+
+
+def test_a_hand_saved_client_file_with_the_same_contents_counts_as_the_same(home):
+    folder = home / ".diffdata"
+    folder.mkdir()
+    (folder / "google-client.json").write_text(json.dumps(CLIENT, indent=4), encoding="utf-8")
+    answers = fresh_answers()
+    _, script = run(home, *answers)
+    assert "The Google client file at" in script.text and "is the same" in script.text
+
+
+@pytest.mark.parametrize("entry", ["DESIGN2024", "DEV1TEAM"])
+def test_a_dm_shaped_capitals_entry_at_setup_says_to_type_it_in_lowercase(home, entry):
+    answers = fresh_answers()
+    answers[2:3] = [entry, entry.lower()]
+    code, script = run(home, *answers)
+    assert code == 0
+    assert "type it in lowercase" in script.text
+    channels = tomllib.loads(settings(home).read_text())["sources"]["slack_channels"]
+    assert channels == [entry.lower()]
+
+
+def test_a_real_dm_link_gets_no_lowercase_hint(home):
+    answers = fresh_answers()
+    answers[2:3] = ["https://example.slack.com/archives/D00000001", "example-channel"]
+    _, script = run(home, *answers)
+    assert "direct message" in script.text and "lowercase" not in script.text
+
+
+def test_a_path_typed_at_the_data_folder_prompt_is_checked_and_used(home):
+    good = home / "typed-here"
+    answers = fresh_answers()
+    answers[1:2] = [str(good), ""]  # a typed path; it's shown again; Enter uses it
+    code, _ = run(home, *answers)
+    assert code == 0
+    assert tomllib.loads(settings(home).read_text())["local"]["data_dir"] == str(good)
+    assert good.is_dir()
+
+
+@pytest.mark.parametrize("place", ["repo/data", "Dropbox/data"])
+def test_a_path_typed_at_the_data_folder_prompt_gets_the_same_checks(home, place):
+    (home / "repo" / ".git").mkdir(parents=True)
+    good = home / "good-data"
+    answers = fresh_answers()
+    # A refused typed path goes to choosing: no picker, so a typed path again; then Enter.
+    answers[1:2] = [str(home / place), str(good), ""]
+    code, script = run(home, *answers)
+    assert code == 0
+    assert "Choose another folder" in script.text
+    assert tomllib.loads(settings(home).read_text())["local"]["data_dir"] == str(good)
+    assert not (home / place).exists()

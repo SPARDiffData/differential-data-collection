@@ -75,6 +75,7 @@ from diffdata.common import config as config_module
 from diffdata.common.config import (
     CHANNEL_ID,
     CHANNEL_NAME,
+    DM_ID,
     WORKSPACE_URL,
     ConfigError,
     channel_id,
@@ -229,9 +230,14 @@ def parse_channels(text: str) -> tuple[list[str], str | None]:
     workspaces: set[str] = set()
     for number, part in enumerate((p for p in re.split(r"[,\s]+", text) if p), start=1):
         if is_direct_message(part):
+            hint = (
+                " If it's a channel's name typed in capitals, type it in lowercase."
+                if DM_ID.fullmatch(part.strip())
+                else ""
+            )
             raise SetupError(
                 f"Channel {number} is a direct message or a group DM. diffdata never collects "
-                "those: the other people in them never agreed (CON-5). List channels only."
+                f"those: the other people in them never agreed (CON-5). List channels only.{hint}"
             )
         found = channel_id(part)
         if found is not None:
@@ -522,12 +528,14 @@ def folder_step(prompter: Prompter, picker: Callable[[str], Path | None], curren
                 prompter.say(f"{e} Choose another folder.")
             else:
                 answer = prompter.ask(
-                    f"Data folder: {shown}. Press Enter to use it, or type C to choose another: "
+                    f"Data folder: {shown}. Press Enter to use it, type C to choose another, "
+                    "or type another folder's full path: "
                 ).strip()
                 if not answer:
                     return proposed
                 if answer.lower() != "c":
-                    prompter.say("Press Enter, or type C.")
+                    # A typed path gets the same checks as a picked one, then is shown again.
+                    proposed = str(Path(answer).expanduser().resolve())
                     continue
         chosen = picker("folder")
         if chosen is None:
@@ -652,6 +660,15 @@ def key_step(prompter: Prompter, folder: Path) -> None:
             os.chmod(key, 0o600)
 
 
+def same_json(found: bytes, wanted: bytes) -> bool:
+    """Whether two JSON files hold the same contents, however they're laid out: a key saved
+    by hand often has other spacing, or no newline at the end."""
+    try:
+        return json.loads(found.decode("utf-8")) == json.loads(wanted.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+
+
 def install_file(prompter: Prompter, target: Path, data: bytes, label: str) -> bool:
     """Put one part of the team file in place, readable only by the producer. A file that's
     there already is replaced only on a typed yes, and never written through a link. True if
@@ -660,7 +677,7 @@ def install_file(prompter: Prompter, target: Path, data: bytes, label: str) -> b
         prompter.say(f"{target} is a link or a folder, so the {label} wasn't put there.")
         return False
     if target.exists():
-        if target.read_bytes() == data:
+        if same_json(target.read_bytes(), data):
             prompter.say(f"The {label} at {target} is the same as the team file's.")
             return True
         if not prompter.yes(
