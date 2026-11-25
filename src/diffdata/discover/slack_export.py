@@ -37,7 +37,7 @@ from diffdata import __version__
 from diffdata.collect import slack_canvas
 from diffdata.common.config import Config
 from diffdata.common.documents import documents_dir
-from diffdata.discover import references, slack_state
+from diffdata.discover import references, slack_state, team_optouts
 from diffdata.discover.slack_inbox import (
     SAVED_TOOLS,
     SlackExportError,
@@ -72,6 +72,11 @@ def saved_records(data: Path, inbox: dict[str, tuple]) -> dict[str, list[dict] |
 def build(config: Config) -> str:
     """Build the store and the view for every channel in the inbox. Returns counts only."""
     require_workspace(config)
+    try:
+        # With a team folder, its fetched opt-out list must be here (#132, item 11).
+        team_optouts.require_saved(config, "nothing was built")
+    except team_optouts.ListError as e:
+        raise SlackExportError(str(e)) from None
     data = config.data_dir
     names = run_channel_names(data)
     run = open_run(data)

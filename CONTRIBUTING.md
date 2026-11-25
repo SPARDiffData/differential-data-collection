@@ -142,6 +142,17 @@ uv run diffdata admin add-team team-a --bucket example-bucket --project example-
 - `--optout-form` is the shared opt-out form's pre-filled link, cut just after the team field's `=`. It prints the team's own link, and the channel notice with the link in it, for the producer to post. The notice wording is a placeholder until it's agreed.
 - If it stops partway, it lists what it changed. Run it again with the same values to finish: it skips what's there. If the team file can't be written, it deletes the key it just made, so a second run can finish.
 
+**The opt-out list on day 7** (#132, decision 6). The producer's export won't start until 7 days after a channel's notice, and then only once the team's list is in its folder. When the 7 days are over, look at the form's answers for the team, find each person's Slack user ID (`U…`), and run, in your own terminal:
+
+```bash
+uv run diffdata admin optouts team-a --bucket example-bucket
+```
+
+- Paste the IDs when it asks, one per line, then an empty line. Type `none` if nobody opted out. IDs never go on the command line, so they stay out of your shell's history.
+- It shows the team, how many are on the list already, and each ID it will add, and writes nothing until you type y. It writes `team-a/_config/opted-out.json`, which the team's upload key, its producers and the project's admins can read (the producers' read access to the team's folder covers `_config/` too).
+- A list that's there already is only added to, never shortened. If someone opts out late, run it again with their ID. If the list changed while you typed, it stops: run it again.
+- Write it only after every channel's 7 days are over: the producer's export refuses a list written before then, since the last answers may be missing from it.
+
 ## Getting help
 
 - Stuck with Git or Claude: First try asking your current Claude session.  If that doesn't work, start a new Claude session, explain you're learning, and need help.  If that still doesn't resolve ask in the team Slack channel, or ask Paul. A tip: When Paul ran his first Claude Code work, he kept 2 sessions going at once.  The actual code development, and another acting as a trusted mentor that could answer questions and give advice.

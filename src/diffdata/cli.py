@@ -1,9 +1,9 @@
 """The `diffdata` command.
 
-`setup` (ENG-1, CON-1, STO-1), `check` (ENG-1), `admin add-team` (STO-1, for the project
-team), `discover slack` (DIS-1), `consent` (CON-1, CON-3), `collect google-docs` (COL-4,
-COL-5), `scrub` (SCR-1, SCR-2) and `push` (STO-1, STO-2, STO-3) are built. Any other
-subcommand added before it's built is a stub that names the requirement IDs
+`setup` (ENG-1, CON-1, STO-1), `check` (ENG-1), `admin add-team` and `optouts` (STO-1, CON-4,
+for the project team), `discover slack` (DIS-1), `consent` (CON-1, CON-3), `collect
+google-docs` (COL-4, COL-5), `scrub` (SCR-1, SCR-2) and `push` (STO-1, STO-2, STO-3) are built.
+Any other subcommand added before it's built is a stub that names the requirement IDs
 (docs/requirements.md) its feature Issue will build.
 """
 
@@ -24,6 +24,11 @@ from diffdata.store import admin as store_admin
 from diffdata.store import push as store_push
 from diffdata.store.backend import StoreError
 
+try:
+    import termios  # macOS and Linux, where admin runs
+except ImportError:  # Windows
+    termios = None
+
 # subcommand -> (help text, requirement IDs it will implement)
 COMMANDS = {
     "setup": (
@@ -35,7 +40,8 @@ COMMANDS = {
         "ENG-1",
     ),
     "admin": (
-        "For the project team: set up a pilot team's folder, upload key and team file.",
+        "For the project team: set up a pilot team's folder, upload key and team file, and "
+        "write its opt-out list on day 7.",
         "STO-1",
     ),
     "discover": ("Find Slack messages and the sources they reference.", "DIS-1, DIS-2, DIS-3"),
@@ -131,6 +137,14 @@ def add_admin_steps(admin: argparse.ArgumentParser) -> None:
         metavar="PATH",
         help="The Desktop app client file, to put in the team file.",
     )
+    optouts_help = (
+        "On day 7, after looking at the opt-out form's answers: write the team's opted-out "
+        "Slack IDs to its folder, where the producer's export fetches them (#132). You paste "
+        "the IDs when asked."
+    )
+    optouts = steps.add_parser("optouts", help=optouts_help, description=optouts_help)
+    optouts.add_argument("team", metavar="TEAM", help="The team's folder name.")
+    optouts.add_argument("--bucket", required=True, help="The pilot's bucket.")
 
 
 def add_collect_sources(collect: argparse.ArgumentParser) -> None:
@@ -238,6 +252,15 @@ def run_admin(args: argparse.Namespace) -> int:
         )
         return 1
     try:
+        if args.step == "optouts":
+            prompter = producer_setup.Prompter()
+
+            def fresh_yes(question: str) -> bool:
+                # Drop anything pasted ahead, so a "y" in the paste can't answer (item 9).
+                termios.tcflush(sys.stdin, termios.TCIFLUSH)
+                return prompter.yes(question)
+
+            return store_admin.optouts(args.team, args.bucket, ask=prompter.ask, ask_yes=fresh_yes)
         client = args.google_client
         team = store_admin.Team(
             name=args.team,

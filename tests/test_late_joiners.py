@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from conftest import team_store
 
 from diffdata.common.config import ConfigError, load_config
 from diffdata.discover.slack_export import build
@@ -15,7 +16,7 @@ from diffdata.scrub.run import ScrubError, scrub
 
 CHANNEL = "C00000001"
 PARENT = "1790864040.000100"
-T0 = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
+T0 = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)  # after the notice's 7 days
 SLACK_FIXTURES = Path(__file__).parent / "fixtures" / "slack"
 # The notice went up on Oct 1, between the kickoff post and the rest.
 NOTICE = "https://example.slack.com/archives/C00000001/p1790900000000000"
@@ -58,6 +59,7 @@ def config(tmp_path):
         slack_channels=("example-channel",),
         slack_notices=(("example-channel", NOTICED),),
         slack_workspace_url="https://example.slack.com",
+        **team_store(tmp_path),
     )
 
 
@@ -234,10 +236,11 @@ def test_a_channel_set_to_none_keeps_the_opt_out_lists_own_stamp(config, export_
 
 
 def write(tmp_path, notices: str, channels='["example-channel"]') -> Path:
-    path = tmp_path / "config.toml"
+    path = team_store(tmp_path)["path"]  # with the team's made-up key next to it
     path.write_text(
         f"[local]\ndata_dir = '{(tmp_path / 'data').as_posix()}'\n\n[sources]\n"
-        f"slack_channels = {channels}\n{notices}\n",
+        f"slack_channels = {channels}\n{notices}\n\n"
+        '[store]\nbucket = "fake-bucket"\nfolder = "fake-team"\n',
         encoding="utf-8",
     )
     return path
@@ -370,7 +373,7 @@ def test_must_refuse_a_test_run_after_a_complete_one_holds_back_only_whats_newer
     config, export_run, short_read, channel_read
 ):
     export_run(channel_read(SAM_JOINED_EARLY))
-    newer = message("Jordan Join", LATE, "1791200000.000600", "Jordan's newer message")
+    newer = message("Jordan Join", LATE, "1791700000.000600", "Jordan's newer message")
     report = short_read(channel_read(newer), when=T0 + timedelta(days=3))
     assert "Jordan" not in everything_built(config)
     assert any(r["ts"] == "1791021600.000500" for r in store(config))  # covered: kept

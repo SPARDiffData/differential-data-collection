@@ -64,7 +64,7 @@ from diffdata.common.config import (
 )
 from diffdata.common.paths import UnsafeDataDirError
 from diffdata.consent import approvals
-from diffdata.discover import slack_state
+from diffdata.discover import slack_state, team_optouts
 from diffdata.discover.slack_parse import (
     OPTED_OUT_NAME,
     id_left,
@@ -366,13 +366,21 @@ def shown_channel(run: Run, channel_id: str) -> str:
     return f"#{name}" if name else "the channel listed by its ID"
 
 
-def begin(config: Config, pairs: list[str], now: datetime | None = None, full: bool = False) -> str:
+def begin(
+    config: Config,
+    pairs: list[str],
+    now: datetime | None = None,
+    full: bool = False,
+    fetch: team_optouts.Fetcher | None = None,
+) -> str:
     """Open an export run for `pairs` like "example-channel=C00000001", or a bare ID for a
     channel config.toml lists by ID. Returns a report, which says where each channel's read
-    and search start. A full run starts every channel from the beginning."""
+    and search start. A full run starts every channel from the beginning. Before that, every
+    channel's 7-day window must have closed, and the team's opt-out list is fetched (#132)."""
     now = now or datetime.now(UTC)
     require_workspace(config)
     channels: dict[str, str] = {}
+    notices: dict[str, str] = {}  # how each channel is shown -> its slack_notices value
     for pair in pairs:
         name, sep, channel_id = pair.partition("=")
         if not sep:  # a bare ID
@@ -421,8 +429,20 @@ def begin(config: Config, pairs: list[str], now: datetime | None = None, full: b
         # Its name is kept only if config.toml lists it by name: a channel listed by ID gets
         # its name from its first read, which the save hook checks against the ID.
         channels[channel_id] = name if name in config.slack_channels else ""
+        notices[channel_id] = notice
 
-    notes = []
+    # Both before anything changes: a run is opened only once they pass (#132, items 10, 11).
+    try:
+        # Shown by name, or by place for a channel listed by ID: output may be shared.
+        shown = {
+            (f"#{channels[c]}" if channels[c] else f"Channel {place} given to begin"): n
+            for place, (c, n) in enumerate(notices.items(), start=1)
+        }
+        closes = team_optouts.check_windows(shown, now)
+        fetched = team_optouts.fetch_list(config, closes, fetch)
+    except team_optouts.ListError as e:
+        raise SlackExportError(str(e)) from None
+    notes = [fetched]
     previous = open_run(config.data_dir)
     if previous is not None:
         close_run(config.data_dir, previous, "replaced by a new run", now)
@@ -541,6 +561,10 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
             f"The Slack export run {run.run_id} expired after {RUN_MINUTES} minutes, so this "
             "result wasn't saved. Start again with /slack-export."
         )
+    try:
+        team_optouts.require_saved(config, "this result wasn't saved")
+    except (team_optouts.ListError, ConfigError) as e:
+        return fail(f"{e} Stop the export.")
     try:
         hook = json.loads(payload.decode("utf-8"))
         tool = hook["tool_name"].rsplit("__", 1)[-1]

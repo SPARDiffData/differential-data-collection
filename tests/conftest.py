@@ -1,7 +1,7 @@
 """Shared test helpers. Synthetic data only."""
 
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -21,6 +21,58 @@ def no_real_config(tmp_path_factory, monkeypatch):
         "diffdata.common.config.user_config_file", lambda: home / ".diffdata" / "config.toml"
     )
     return home / ".diffdata" / "config.toml"
+
+
+class FakeTeamLists:
+    """The team folders' opt-out lists, as the store would serve them to an export's start
+    (discover/team_optouts.py), so no test reaches Google. By default every team has an empty
+    list written long after any test's notice. Tests change `lists`, `written` or `error`."""
+
+    WRITTEN = datetime(2030, 1, 1, tzinfo=UTC)
+
+    def __init__(self):
+        self.lists: dict[str, bytes] | None = None  # object name -> bytes; None: the default
+        self.written = self.WRITTEN
+        self.error: Exception | None = None
+        self.asked: list[tuple[str, str]] = []  # (bucket, object name)
+
+    @staticmethod
+    def body(team: str, ids: list[str]) -> bytes:
+        data = {"format": "diffdata-opted-out", "version": 1, "team": team, "slack_opted_out": ids}
+        return json.dumps(data).encode("utf-8")
+
+    def __call__(self, bucket: str, key: dict, name: str):
+        self.asked.append((bucket, name))
+        if self.error is not None:
+            raise self.error
+        if self.lists is None:
+            return self.body(name.split("/")[0], []), self.written
+        return (self.lists[name], self.written) if name in self.lists else None
+
+
+def team_store(tmp_path: Path) -> dict:
+    """Config settings for a made-up team folder, with a made-up key next to config.toml, so
+    an export's start fetches the team's opt-out list (from FakeTeamLists)."""
+    home = tmp_path / "fake-diffdata"
+    home.mkdir(parents=True, exist_ok=True)
+    key = {
+        "type": "service_account",
+        "client_email": "fake-uploader@fake-project.iam.gserviceaccount.com",
+        "private_key": "FAKE-NOT-A-KEY",
+    }
+    (home / "store-key.json").write_text(json.dumps(key), encoding="utf-8")
+    return {
+        "store_bucket": "fake-bucket",
+        "store_folder": "fake-team",
+        "path": home / "config.toml",
+    }
+
+
+@pytest.fixture(autouse=True)
+def team_lists(monkeypatch):
+    fake = FakeTeamLists()
+    monkeypatch.setattr("diffdata.discover.team_optouts.gcs_fetch", fake)
+    return fake
 
 
 @pytest.fixture

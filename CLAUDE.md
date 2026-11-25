@@ -73,7 +73,8 @@ src/diffdata/
   collect/google_doc.py, gdocs_changelog.py   the reader: what any fetch saved, in the shared format, with the changelog replayed
   scrub/            `diffdata scrub` (SCR-1, SCR-2): scrubbed copies in <data>/scrubbed/, built all or nothing (run.py), with the people list in <data>/private/ (people.py), the replacements and last check in text.py, and secrets, meeting links and phone numbers found by secrets.py from gitleaks' pinned rules in scrub/rules/
   store/            `diffdata push` (STO-1 to STO-3, STO-9, STO-11): sends the passed scrubbed copies, create-only, through one `Store` interface (backend.py); the Google Cloud Storage version is gcs.py
-  store/admin.py    `diffdata admin add-team`, for the project team (#132): a team's managed folder, upload account and key, and its team file, through `gcloud`
+  store/admin.py    `diffdata admin add-team` and `optouts`, for the project team (#132): a team's managed folder, upload account and key, and its team file; on day 7, its opted-out list in <folder>/_config/; through `gcloud`
+  discover/team_optouts.py   at each export's start (#132): refuses inside a channel's 7-day window, fetches the team's opted-out list, and keeps it in the data folder; config.py adds it to slack_opted_out
   common/           shared pieces; paths.py holds the data folder guards, config.py reads config.toml
   common/documents.py   the shared document format (ORG-2): raw, versions, event log, clean copies
   common/check.py   `diffdata check` (#136): Git, uv, Claude Code (the command or the desktop app's), the repo folder, config.toml and the store key's place and mode; it only reads, and setup lists its gaps at the end

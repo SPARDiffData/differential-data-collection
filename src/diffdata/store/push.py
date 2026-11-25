@@ -50,6 +50,7 @@ from pathlib import Path
 from diffdata import __version__
 from diffdata.common.config import Config
 from diffdata.common.paths import find_git_root, synced_by
+from diffdata.discover import team_optouts
 from diffdata.discover.slack_inbox import applied_stamp
 from diffdata.scrub.people import PEOPLE_FILE, PeopleError, nfc, read_people
 from diffdata.scrub.run import (
@@ -541,6 +542,11 @@ def push(config: Config, opener: Callable[[str, dict], Store] | None = None) -> 
     """Send every passed copy, create-only, then the push record. Returns the report."""
     found = settings(config)
     check_environment()
+    try:
+        # The copies were built with the team's opt-out list (#132, item 11).
+        team_optouts.require_saved(config, "nothing was sent")
+    except team_optouts.ListError as e:
+        raise PushError(str(e)) from None
     with holding_lock(config.data_dir):
         try:
             expected = saved_left_out(config)[2]
