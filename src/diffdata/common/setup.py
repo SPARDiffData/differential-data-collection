@@ -75,6 +75,13 @@ Each channel's notice link (revision 6, approved on 2026-11-25), after the chann
       link's own parts
   24  to write a notice entry the producer hasn't seen: each channel's notice line is on the
       summary screen before the yes
+
+send_not_approved (#150, item 5, approved on 2026-11-26), asked on every run that writes:
+  25  to write "yes" without a typed y: Enter alone, or any other answer, asks again; the
+      answer is on the summary screen before the write
+  26  to keep or change an existing value without a typed answer: a re-run shows it and still
+      asks for y or n; nothing else changes with it
+  27  to write anything but "yes" or "no"
 """
 
 import json
@@ -129,6 +136,13 @@ NEXT_STEP = "Next: open Claude Code in the repo folder and run /slack-export."
 NOTICE_HELP = "Notice link for {channel}: paste the pinned notice's link (its menu, Copy link),"
 NOTICE_QUESTION = "type none if everyone in it agreed directly, or press Enter to {enter}: "
 NOT_ADDED = "not added yet"
+NOT_APPROVED_HELP = (
+    "Copies not approved for release: every scrubbed copy is marked not approved for now, "
+    "because names of people who aren't in the people list aren't checked yet. With y, push "
+    "sends them to the not-approved part of your team's folder, which is never given to "
+    "consumers. With n, push sends none of them, so it sends nothing for now."
+)
+NOT_APPROVED_QUESTION = "Send copies not approved for release?"
 NONE_SHOWN = "none (everyone agreed directly)"
 TEAM_FORMAT = "diffdata-team"
 TEAM_VERSION = 1
@@ -632,7 +646,8 @@ def config_step(
         f"Producer handle [Enter for {handle_default}]: ",
         lambda t: check_handle(t if t.strip() else handle_default),
     )
-    return with_answers(raw, channels, space, folder, values, handle, notices), team
+    send = not_approved_step(prompter, store)
+    return with_answers(raw, channels, space, folder, values, handle, notices, send), team
 
 
 def notice_table(sources: dict) -> dict:
@@ -857,6 +872,7 @@ def with_answers(
     values: dict[str, str],
     handle: str,
     notices: dict,
+    send_not_approved: str,
 ) -> dict:
     """`raw` with only setup's keys changed (must-refuse 3)."""
     new = deepcopy(raw)
@@ -870,8 +886,17 @@ def with_answers(
     new_store["backend"] = "gcs"
     new_store.update(values)
     new_store["producer"] = handle
-    new_store.setdefault("send_not_approved", "no")
+    new_store["send_not_approved"] = send_not_approved
     return new
+
+
+def not_approved_step(prompter: Prompter, store: dict) -> str:
+    """send_not_approved, asked with an explicit y or n (#150, item 5; must-refuse 25 to 27).
+    Enter alone asks again, on a re-run too: the current value is shown, never kept by itself."""
+    prompter.say(NOT_APPROVED_HELP)
+    if "send_not_approved" in store:
+        prompter.say(f"Your config.toml says: {printable(str(store['send_not_approved']))}.")
+    return "yes" if prompter.yes(NOT_APPROVED_QUESTION) else "no"
 
 
 def quick_step(
@@ -894,8 +919,9 @@ def quick_step(
         folder = folder_step(prompter, picker, DEFAULT_DATA_DIR)
     channels, space = channels_and_workspace(prompter, "", "", always_ask=False)
     notices = notices_step(prompter, channels, space, {})
+    send = not_approved_step(prompter, {})
     handle = new_handle(team.values["project"], choose)
-    return with_answers({}, channels, space, folder, team.values, handle, notices), team
+    return with_answers({}, channels, space, folder, team.values, handle, notices, send), team
 
 
 def key_step(prompter: Prompter, folder: Path) -> None:
@@ -1037,8 +1063,8 @@ def show_summary(
     prompter.say(f"  Workspace:        {new['sources']['slack_workspace_url']}")
     prompter.say(f"  Data folder:      {data_dir(new['local']['data_dir'])}")
     prompter.say(
-        f"  Team values:      bucket {store['bucket']}, folder {store['folder']}, "
-        f"project {store['project']}"
+        f"  Team values:      bucket {store['bucket']}, folder {store['folder']} (the project "
+        f"code), project {store['project']}"
     )
     if team is not None:
         parts = "a store key" + (" and a Google client file" if team.google_client else "")
@@ -1047,6 +1073,12 @@ def show_summary(
             f"which also holds {parts})"
         )
     prompter.say(f"  Producer handle:  {store['producer']} (a pseudonym)")
+    sent = (
+        "yes: sent to the not-approved part of your team's folder, never given to consumers"
+        if store.get("send_not_approved") == "yes"
+        else "no: push sends none of them"
+    )
+    prompter.say(f"  Not approved:     {sent}")
 
 
 def setup(

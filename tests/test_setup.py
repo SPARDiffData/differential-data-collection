@@ -20,6 +20,7 @@ from diffdata import cli
 from diffdata.common import config as config_module
 from diffdata.common import setup
 from diffdata.common.setup import PSEUDONYM, Prompter, SetupError
+from diffdata.store import push
 
 LINK = "https://example.slack.com/archives/C00000002"
 MARKER = "MADE-UP-KEY-MARKER"
@@ -35,15 +36,21 @@ POSIX = pytest.mark.skipif(os.name == "nt", reason="file modes are for macOS and
 
 
 class Script(Prompter):
-    """Answers in order, and everything setup said and asked."""
+    """Answers in order, and everything setup said and asked. The send_not_approved question
+    (#150, item 5) takes its answers from `not_approved`, kept apart so the other answers stay
+    in the order they were before it was added."""
 
-    def __init__(self, *answers: str):
+    def __init__(self, *answers: str, not_approved: tuple[str, ...] = ("n",)):
         self.answers = list(answers)
+        self.not_approved = list(not_approved)
         self.shown: list[str] = []
         super().__init__(ask=self._ask, say=self.shown.append)
 
     def _ask(self, question: str) -> str:
         self.shown.append(question)
+        if question.startswith(setup.NOT_APPROVED_QUESTION):
+            assert self.not_approved, f"setup asked more than the test answered: {question!r}"
+            return self.not_approved.pop(0)
         assert self.answers, f"setup asked more than the test answered: {question!r}"
         return self.answers.pop(0)
 
@@ -121,7 +128,7 @@ def fresh_answers(channels: str = f"example-channel, {LINK}") -> list[str]:
 
 
 def run(
-    home, *answers, team="default", picker=no_picker, choose=None, steps=None
+    home, *answers, team="default", picker=no_picker, choose=None, steps=None, not_approved=None
 ) -> tuple[int, Script]:
     """Run setup with these answers. On a first setup with a team file given, `steps` (the
     default) answers the summary screen with c first, so `answers` go through each question
@@ -132,7 +139,7 @@ def run(
         steps = team is not None and not settings(home).exists()
     if steps:
         answers = (*TO_STEPS, *answers)
-    script = Script(*answers)
+    script = Script(*answers, not_approved=not_approved or ("n",) * 3)
     code = setup.setup(team_file=team, prompter=script, picker=picker, choose=choose or fixed())
     return code, script
 
@@ -296,7 +303,7 @@ def test_must_refuse_2_and_3_a_change_keeps_a_backup_and_every_other_setting(hom
     path = existing(home)
     before = path.read_bytes()
     old = tomllib.loads(before.decode("utf-8"))
-    code, _ = run(home, *CHANGE, team=None)
+    code, _ = run(home, *CHANGE, team=None, not_approved=("y",))  # the old "yes", typed again
     assert code == 0
     assert (path.parent / setup.BACKUP_NAME).read_bytes() == before
     new = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -841,8 +848,9 @@ def test_must_refuse_19_the_screen_shows_every_chosen_value_before_the_yes(home)
         "example-channel, C00000002 (a channel ID)",
         "https://example.slack.com",
         str(home / "diffdata-data"),
-        "bucket example-bucket, folder team-a, project example-project",
+        "bucket example-bucket, folder team-a (the project code), project example-project",
         f"from the team file {path}",
+        "Not approved:     no: push sends none of them",
         "a store key and a Google client file",
         "example-project-kkkk (a pseudonym)",
         PSEUDONYM,
@@ -1548,3 +1556,92 @@ def test_after_c_a_notice_for_a_channel_taken_off_isnt_written(home):
     code, script = run(home, *answers, steps=False)
     assert code == 0
     assert notices(home) == {"beta-channel": "none"}
+
+
+# --- send_not_approved (#150, item 5; must refuse 25 to 27) ---------------------------------
+
+
+def written_send(home) -> str:
+    return tomllib.loads(settings(home).read_text(encoding="utf-8"))["store"]["send_not_approved"]
+
+
+def test_must_refuse_25_enter_or_another_answer_asks_again_on_a_first_run(home):
+    code, script = run(
+        home, *quick_answers(), team=team_file(home), steps=False,
+        not_approved=("", "maybe", "y"),
+    )  # fmt: skip
+    assert code == 0
+    assert written_send(home) == "yes"
+    assert script.text.count(setup.NOT_APPROVED_QUESTION) == 3
+    assert script.text.count("Please type y or n.") >= 2
+    assert setup.NOT_APPROVED_HELP in script.text
+    assert "never given to consumers" in setup.NOT_APPROVED_HELP
+
+
+def test_must_refuse_25_the_answer_is_on_the_screen_before_the_write(home):
+    _, script = run(home, *quick_answers(), team=team_file(home), steps=False, not_approved=("y",))
+    question = next(i for i, line in enumerate(script.shown) if line.startswith("Write this?"))
+    before = "\n".join(script.shown[:question])
+    assert "Not approved:     yes: sent to the not-approved part of your team's folder" in before
+
+
+def test_must_refuse_25_n_writes_no(home):
+    run(home, *quick_answers(), team=team_file(home), steps=False, not_approved=("n",))
+    assert written_send(home) == "no"
+
+
+def test_must_refuse_26_a_rerun_shows_the_value_and_still_needs_y_or_n(home):
+    path = existing(home)  # send_not_approved = "yes"
+    old = tomllib.loads(path.read_text(encoding="utf-8"))
+    code, script = run(home, *CHANGE, team=None, not_approved=("", "", "y"))
+    assert code == 0
+    assert "Your config.toml says: yes." in script.text
+    assert script.text.count(setup.NOT_APPROVED_QUESTION) == 3
+    new = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert new["store"]["send_not_approved"] == "yes"
+    for table in ("local",):
+        assert new[table] == old[table]
+    assert {k: v for k, v in new["sources"].items() if k != "slack_channels"} == {
+        k: v for k, v in old["sources"].items() if k != "slack_channels"
+    }
+
+
+def test_must_refuse_26_a_rerun_n_changes_only_that_key(home):
+    path = existing(home)
+    old = tomllib.loads(path.read_text(encoding="utf-8"))
+    run(home, *CHANGE, team=None, not_approved=("n",))
+    new = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert new["store"].pop("send_not_approved") == "no"
+    assert old["store"].pop("send_not_approved") == "yes"
+    # CHANGE also answers a new channel list; everything else must be as it was.
+    assert new["sources"].pop("slack_channels") == ["new-channel"]
+    old["sources"].pop("slack_channels")
+    assert new == old
+
+
+def test_must_refuse_26_change_it_no_leaves_the_value_alone(home):
+    path = existing(home)
+    before = path.read_bytes()
+    code, script = run(home, "n", team=None, not_approved=())
+    assert code == 0
+    assert path.read_bytes() == before
+    assert setup.NOT_APPROVED_QUESTION not in script.text
+
+
+@pytest.mark.parametrize("answer, written", [("y", "yes"), ("n", "no")])
+def test_must_refuse_27_only_yes_or_no_is_written_and_push_takes_it(home, answer, written):
+    run(home, *quick_answers(), team=team_file(home), steps=False, not_approved=(answer,))
+    assert written_send(home) == written
+    push.settings(config_module.load_config(settings(home)))  # raises if push refuses it
+
+
+def test_must_refuse_27_push_still_refuses_a_hand_typed_value(home):
+    path = existing(home)
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            'send_not_approved = "yes"', 'send_not_approved = "Yes "'
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(push.PushError, match="send_not_approved"):
+        push.settings(config_module.load_config(path))

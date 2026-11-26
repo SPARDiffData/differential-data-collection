@@ -1,8 +1,9 @@
 """The `diffdata` command.
 
-`setup` (ENG-1, CON-1, STO-1), `check` (ENG-1), `admin add-team` and `optouts` (STO-1, CON-4,
-for the project team), `discover slack` (DIS-1), `consent` (CON-1, CON-3), `collect
-google-docs` (COL-4, COL-5), `scrub` (SCR-1, SCR-2) and `push` (STO-1, STO-2, STO-3) are built.
+`setup` (ENG-1, CON-1, STO-1), `check` (ENG-1), `clean-history` (CON-5, #150), `admin
+add-team` and `optouts` (STO-1, CON-4, for the project team), `discover slack` (DIS-1),
+`consent` (CON-1, CON-3), `collect google-docs` (COL-4, COL-5), `scrub` (SCR-1, SCR-2) and
+`push` (STO-1, STO-2, STO-3) are built.
 Any other subcommand added before it's built is a stub that names the requirement IDs
 (docs/requirements.md) its feature Issue will build.
 """
@@ -14,8 +15,9 @@ from pathlib import Path
 from diffdata import __version__
 from diffdata.collect import google_fetch, google_signin
 from diffdata.common import check as producer_check
+from diffdata.common import history
 from diffdata.common import setup as producer_setup
-from diffdata.common.config import ConfigError, load_config
+from diffdata.common.config import ConfigError, load_config, user_config_file
 from diffdata.common.paths import UnsafeDataDirError
 from diffdata.consent import review
 from diffdata.discover import slack_export, slack_inbox
@@ -58,6 +60,11 @@ COMMANDS = {
     "push": (
         "Send the scrubbed copies the last scrub passed to your team's folder in the store.",
         "STO-1, STO-2, STO-3",
+    ),
+    "clean-history": (
+        "Delete this repo's Claude Code session history, after collecting, in your own terminal "
+        "with Claude Code closed. It shows what it will delete and asks first.",
+        "CON-5",
     ),
 }
 STUBS: tuple[str, ...] = ()
@@ -199,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_scrub()
     if args.command == "push":
         return run_push()
+    if args.command == "clean-history":
+        return run_clean_history()
 
     _, requirement_ids = COMMANDS[args.command]
     print(
@@ -365,7 +374,8 @@ def run_scrub() -> int:
 
 def run_push() -> int:
     try:
-        report = store_push.push(load_config())
+        config = load_config()
+        report = store_push.push(config)
     except (ConfigError, UnsafeDataDirError, store_push.PushError, StoreError) as e:
         print(f"diffdata push: {e}", file=sys.stderr)
         return 1
@@ -374,4 +384,62 @@ def run_push() -> int:
         print(f"diffdata push: stopped on an unexpected {type(e).__name__}.", file=sys.stderr)
         return 1
     print(report)
+    if getattr(report, "complete", False):
+        offer_clean_history(config.data_dir)
+    else:
+        print(history.LATER)
     return 0
+
+
+def by_a_person() -> bool:
+    """A terminal a person types in, and not a Claude Code shell (#150, must-refuse 4 and 9)."""
+    return review.in_terminal(sys.stdin, sys.stdout) and not history.run_by_claude()
+
+
+def history_data_dir() -> Path | None:
+    """The data folder, so clean-history can protect it. None with no config.toml (then only
+    ~/.diffdata is protected). A config.toml that's there but doesn't load stops it: the data
+    folder isn't known (#150, must-refuse 7)."""
+    if not user_config_file().exists():
+        return None
+    try:
+        return load_config().data_dir
+    except Exception as e:
+        raise history.HistoryError(
+            f"Your config.toml doesn't load ({type(e).__name__}), so your data folder isn't known "
+            "and clean-history won't run. Fix it (`uv run diffdata check` says what's wrong), "
+            "then run clean-history again."
+        ) from None
+
+
+def offer_clean_history(data: Path) -> None:
+    """After a push that sent everything (#150, D8): offer clean-history to a person, never to
+    Claude. Otherwise, one line says how to run it later."""
+    if not by_a_person():
+        print(history.LATER)
+        return
+    try:
+        history.offer(input, print, data=data)
+    except (KeyboardInterrupt, EOFError):
+        print(f"\nStopped. Some of the history may be deleted already. {history.LATER}")
+    except OSError as e:
+        print(f"diffdata clean-history: stopped: {type(e).__name__}. {history.LATER}")
+
+
+def run_clean_history() -> int:
+    if not by_a_person():
+        print(f"diffdata clean-history: {history.NOT_A_TERMINAL}", file=sys.stderr)
+        return 1
+    try:
+        return history.clean(input, print, data=history_data_dir())
+    except history.HistoryError as e:
+        print(f"diffdata clean-history: {e}", file=sys.stderr)
+        return 1
+    except (KeyboardInterrupt, EOFError):
+        print(
+            "\ndiffdata clean-history: stopped. Some folders may be deleted already: run it again."
+        )
+        return 130
+    except OSError as e:
+        print(f"diffdata clean-history: stopped: {type(e).__name__}.", file=sys.stderr)
+        return 1
