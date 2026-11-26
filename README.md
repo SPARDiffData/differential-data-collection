@@ -161,7 +161,7 @@ A last check reads each copy again. A copy with anything left is held back: no f
 While `/slack-export` runs, Claude reads whole channels, including messages from people who opted out, and Claude Code keeps those reads in its session history on your computer. When you've finished collecting and pushing, clear it:
 
 1. Close Claude Code (the terminal app and the desktop app).
-2. In your own Terminal or PowerShell, in the repo folder, run `uv run diffdata clean-history`.
+2. In your own Terminal or PowerShell, in the repo folder where you ran `/slack-export`, run `uv run diffdata clean-history`.
 3. It lists each folder of this repo's history it will delete, with its number of sessions. Type `yes` to delete them, or `no` to keep them. Anything else asks again.
 
 `uv run diffdata push` offers this at the end of a push that sent everything: type `yes` to see the list, or press Enter to skip.

@@ -15,8 +15,9 @@ working folder (`cwd`) inside this repo.
 
 What it refuses (#150's must-refuse list, approved on 2026-11-26):
   4  to run unless its input and output are a terminal a person types in, or when CLAUDECODE
-     is set (Claude Code sets it in the shells it runs). .claude/settings.json also denies it
-     to Claude's shell tools
+     is set (Claude Code sets it in the shells it runs). clean() checks this itself, so no
+     route to the deletion skips it. .claude/settings.json also denies it to Claude's shell
+     tools
   5  to delete anything before showing each folder it will delete, with its number of
      sessions, and getting the typed word yes (y, Enter or anything else asks again; no stops)
   6  to touch another project's sessions: a folder whose name matches but which holds a
@@ -29,8 +30,11 @@ What it refuses (#150's must-refuse list, approved on 2026-11-26):
      config.toml is there but doesn't load (the data folder isn't known). A matched folder that
      is a link, resolves outside projects/, overlaps a protected folder, or holds anywhere
      inside a link, a junction, a mount point, a file with other hard links, or a folder it
-     can't read, is left alone. Just before deleting, each folder must still be the same
-     folder (same identity) with the same sessions as on the list, or it's left alone
+     can't read, is left alone (Linux bind mounts too, from /proc/self/mountinfo). Just
+     before deleting, each folder must still be the same folder with the same transcripts
+     (identity, size and time of each) as on the list; it's then renamed to a name nobody can
+     guess and checked once more, or put back and left alone. Names are shown with control
+     characters as "?"
   8  to delete anything when nothing matches: it says so, and exits 0
 
 `diffdata push` ends by offering it (cli.py), only after a push that sent every passed copy,
@@ -44,7 +48,10 @@ such as its memory/ notes for this repo.
 import json
 import os
 import re
+import secrets
 import shutil
+import sys
+import unicodedata
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
@@ -80,6 +87,19 @@ def run_by_claude() -> bool:
     return CLAUDE_MARK in os.environ
 
 
+def is_terminal(stream) -> bool:
+    try:
+        return stream.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def by_a_person() -> bool:
+    """A terminal a person types in, and not a Claude Code shell. clean() checks this itself,
+    so no route to the deletion skips it (must-refuse 4)."""
+    return is_terminal(sys.stdin) and is_terminal(sys.stdout) and not run_by_claude()
+
+
 def claude_folder() -> Path:
     configured = os.environ.get("CLAUDE_CONFIG_DIR")
     return Path(configured).expanduser() if configured else Path.home() / ".claude"
@@ -88,6 +108,12 @@ def claude_folder() -> Path:
 def encode(path: PurePath | str) -> str:
     """A folder's path as Claude Code names its project folder."""
     return re.sub(r"[^A-Za-z0-9]", "-", str(path))
+
+
+def shown(text: object) -> str:
+    """A name to show: control characters become "?", so a folder's name can't change what the
+    list on screen says (must-refuse 5)."""
+    return "".join("?" if unicodedata.category(c).startswith("C") else c for c in str(text))
 
 
 def is_link(path: Path) -> bool:
@@ -109,25 +135,39 @@ def lexically_inside(path: str, roots: Iterable[str]) -> bool:
     return False
 
 
+def within(path: Path, folder: Path) -> bool:
+    """Whether `path` (which exists) is `folder` or inside it, by file identity: no link,
+    letter case or other spelling can fool it."""
+    real = path.resolve()
+    return any(p.exists() and os.path.samefile(p, folder) for p in (real, *real.parents))
+
+
 def inside_repo(cwd: str, repo: Path, roots: Iterable[str]) -> bool:
-    """Whether a session's recorded folder is the repo or inside it. A folder that exists is
-    compared by file identity (no link or letter case can fool it); one that's gone, such as
-    a removed worktree, by its path."""
+    """Whether a session's recorded folder is the repo or inside it. The deepest part of it
+    that still exists must be inside the repo by identity; only the rest (such as a removed
+    worktree) is compared by its path."""
     try:
         path = Path(cwd)
-        if not path.is_absolute():
+        if not path.is_absolute() or ".." in path.parts:
             return False
-        if path.exists():
-            real = path.resolve()
-            return any(os.path.samefile(p, repo) for p in (real, *real.parents) if p.exists())
+        existing = path
+        while not existing.exists():
+            if existing.parent == existing:
+                return False
+            existing = existing.parent
+        if existing == path:
+            return within(path, repo)
+        return within(existing, repo) and lexically_inside(cwd, roots)
     except (OSError, ValueError):
         return False
-    return lexically_inside(cwd, roots)
 
 
 def overlap(one: Path, other: Path) -> bool:
-    """Whether one folder is the other or inside it, either way, after resolving links."""
+    """Whether one folder is the other or inside it, either way, by file identity where they
+    exist (case-insensitive volumes, links), and by resolved path otherwise."""
     try:
+        if one.exists() and other.exists():
+            return within(one, other) or within(other, one)
         a, b = one.resolve(), other.resolve()
     except OSError:
         return True
@@ -152,26 +192,48 @@ def session_cwd(path: Path) -> str | None:
     return None
 
 
+def mount_points() -> list[Path]:
+    """Every mount point Linux knows of, bind mounts included. Empty elsewhere."""
+    try:
+        text = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+    except OSError:
+        return []
+    found = []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) > 4:
+            # Spaces and other characters are written as octal escapes, such as \040.
+            found.append(Path(re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), fields[4])))
+    return found
+
+
 def unsafe_inside(folder: Path) -> str | None:
-    """Why deleting `folder` could reach outside it, or None: a link, a junction, a mount
-    point, a file with other hard links, or a folder that can't be read."""
+    """Why deleting `folder` could reach outside it, or None: a mount point (the folder itself
+    included), a link, a junction, a file with other hard links, or a folder it can't read."""
+    if os.path.ismount(folder):
+        return "it's a mount point"
+    real = folder.resolve()
+    if any(m == real or real in m.parents for m in mount_points()):
+        return "it holds a mount point"
+    device = folder.lstat().st_dev
     errors: list[OSError] = []
     for dirpath, dirnames, filenames in os.walk(folder, onerror=errors.append, followlinks=False):
         for name in dirnames:
             entry = Path(dirpath) / name
             if is_link(entry):
                 return "it holds a link"
-            if os.path.ismount(entry):
+            if os.path.ismount(entry) or entry.lstat().st_dev != device:
                 return "it holds a mount point"
         for name in filenames:
             entry = Path(dirpath) / name
             if is_link(entry):
                 return "it holds a link"
             try:
-                if entry.lstat().st_nlink > 1:
-                    return "it holds a file with other hard links"
+                info = entry.lstat()
             except OSError:
                 return "it holds a file it can't read"
+            if info.st_nlink > 1:
+                return "it holds a file with other hard links"
     if errors:
         return "it holds a folder it can't read"
     return None
@@ -179,7 +241,7 @@ def unsafe_inside(folder: Path) -> str | None:
 
 def transcripts(folder: Path) -> list[Path]:
     """Every transcript in a project folder, at any depth: sessions, subagents' and the
-    .jsonl.superseded-* copies."""
+    .jsonl.superseded-* copies. Plain files only."""
     return sorted(p for p in folder.rglob("*.jsonl*") if p.is_file() and not p.is_symlink())
 
 
@@ -189,17 +251,28 @@ class Found:
     repo: Path
     roots: tuple[str, ...]
     keep: list[Path]
-    matched: dict[Path, tuple[int, tuple]] = field(default_factory=dict)  # folder -> count, id
+    matched: dict[Path, tuple] = field(default_factory=dict)  # folder -> what was checked
     left: dict[Path, str] = field(default_factory=dict)  # folder -> why it was left alone
 
 
-def identity(folder: Path) -> tuple:
+def fingerprint(folder: Path, found_transcripts: list[Path]) -> tuple:
+    """The folder's identity and every transcript's: what the list showed, to compare just
+    before deleting (must-refuse 7)."""
     info = folder.stat(follow_symlinks=False)
-    return (info.st_dev, info.st_ino)
+    files = []
+    for path in found_transcripts:
+        meta = path.stat(follow_symlinks=False)
+        files.append((str(path.relative_to(folder)), meta.st_ino, meta.st_size, meta.st_mtime_ns))
+    return (info.st_dev, info.st_ino, tuple(files))
 
 
-def check(folder: Path, found: Found) -> tuple[int, tuple] | str:
-    """A matched folder's number of sessions and identity, or why it's left alone."""
+def sessions_in(checked: tuple) -> int:
+    return sum(1 for name, *_ in checked[2] if "/" not in name and "\\" not in name
+               and name.endswith(".jsonl"))  # fmt: skip
+
+
+def check(folder: Path, found: Found) -> tuple | str:
+    """What a matched folder holds (its fingerprint), or why it's left alone."""
     if is_link(folder):
         return "it's a link"
     if not folder.is_dir():
@@ -211,16 +284,17 @@ def check(folder: Path, found: Found) -> tuple[int, tuple] | str:
     why = unsafe_inside(folder)
     if why:
         return why
-    sessions = sorted(folder.glob("*.jsonl"))
+    found_transcripts = transcripts(folder)
+    sessions = [p for p in found_transcripts if p.parent == folder and p.suffix == ".jsonl"]
     if not sessions:
         return "no session files to check"
-    for transcript in transcripts(folder):
+    for transcript in found_transcripts:
         cwd = session_cwd(transcript)
         if cwd is None:
             return "a session with no recorded folder"
         if not inside_repo(cwd, found.repo, found.roots):
             return "a session from another folder"
-    return len(sessions), identity(folder)
+    return fingerprint(folder, found_transcripts)
 
 
 def find(repo: Path | None = None, data: Path | None = None, projects: Path | None = None) -> Found:
@@ -230,12 +304,12 @@ def find(repo: Path | None = None, data: Path | None = None, projects: Path | No
     keep = [Path.home() / ".diffdata", *([data] if data is not None else [])]
     for part in (projects.parent, projects):
         if is_link(part):
-            raise HistoryError(f"{part} is a link, so clean-history won't delete under it.")
-    for other in keep:
-        if overlap(projects, other):
-            raise HistoryError(
-                f"Claude's projects folder overlaps {other}, so clean-history won't delete there."
-            )
+            raise HistoryError(f"{shown(part)} is a link, so clean-history won't delete under it.")
+        for other in keep:
+            if overlap(part, other):
+                raise HistoryError(
+                    f"{shown(part)} overlaps {shown(other)}, so clean-history won't delete there."
+                )
     # The path as typed and as resolved: Claude Code records whichever the shell gave it.
     roots = tuple(dict.fromkeys([str(repo), str(repo.resolve())]))
     found = Found(projects.resolve() if projects.is_dir() else projects, repo, roots, keep)
@@ -254,6 +328,21 @@ def find(repo: Path | None = None, data: Path | None = None, projects: Path | No
     return found
 
 
+def delete(folder: Path, checked: tuple, found: Found) -> str | None:
+    """Delete one checked folder, or say why not. It's first renamed to a name nobody can
+    guess, inside projects/, and must be the very folder that was checked (must-refuse 7)."""
+    if check(folder, found) != checked:
+        return "it changed while you read the list"
+    hidden = found.projects / f".diffdata-deleting-{secrets.token_hex(8)}"
+    os.rename(folder, hidden)
+    moved = hidden.stat(follow_symlinks=False)
+    if (moved.st_dev, moved.st_ino) != checked[:2] or is_link(hidden):
+        os.rename(hidden, folder)
+        return "it changed while you read the list"
+    shutil.rmtree(hidden)
+    return None
+
+
 def clean(
     ask: Callable[[str], str],
     say: Callable[[str], None] = print,
@@ -261,20 +350,29 @@ def clean(
     data: Path | None = None,
     projects: Path | None = None,
 ) -> int:
-    """Show this repo's project folders, ask for the typed word yes, then delete them."""
+    """Show this repo's project folders, ask for the typed word yes, then delete them. Refused
+    unless a person in a terminal runs it, and never under Claude Code (must-refuse 4)."""
+    if not by_a_person():
+        say(f"diffdata clean-history: {NOT_A_TERMINAL} {NOTHING_DELETED}")
+        return 1
     try:
         found = find(repo, data, projects)
     except HistoryError as e:
         say(f"{e} {NOTHING_DELETED}")
         return 1
     for folder, why in found.left.items():
-        say(f"Left alone: {folder.name} ({why}).")
+        say(f"Left alone: {shown(folder.name)} ({why}).")
     if not found.matched:
-        say(f"No Claude Code session history for this repo in {found.projects}. {NOTHING_DELETED}")
+        say(
+            f"No Claude Code session history for this repo in {shown(found.projects)}. "
+            f"{NOTHING_DELETED}"
+        )
         return 0
-    say(f"Claude Code keeps this repo's session history in {found.projects}. It will delete:")
-    for folder, (count, _) in found.matched.items():
-        say(f"  {folder.name}: {count} session(s)")
+    say(
+        f"Claude Code keeps this repo's session history in {shown(found.projects)}. It will delete:"
+    )
+    for folder, checked in found.matched.items():
+        say(f"  {shown(folder.name)}: {sessions_in(checked)} session(s)")
     say(
         "That includes what Claude Code keeps with them for this repo, such as its memory notes. "
         "Nothing else is touched: not other projects, Claude's settings or history.jsonl, your "
@@ -289,15 +387,15 @@ def clean(
             return 0
         say("Please type yes or no.")
     deleted = 0
-    for folder, shown in found.matched.items():
-        # Again, just before: the same folder, with the same sessions, still safe to delete.
-        if check(folder, found) != shown:
-            say(f"Left alone: {folder.name} (it changed while you read the list).")
-            continue
+    for folder, checked in found.matched.items():
         try:
-            shutil.rmtree(folder)
+            why = delete(folder, checked, found)
         except OSError as e:
-            say(f"Couldn't delete all of {folder.name}: {type(e).__name__}. Close Claude Code.")
+            name = shown(folder.name)
+            say(f"Couldn't delete all of {name}: {type(e).__name__}. Close Claude Code.")
+            continue
+        if why:
+            say(f"Left alone: {shown(folder.name)} ({why}).")
             continue
         deleted += 1
     say(f"Deleted {deleted} of {len(found.matched)} folder(s) of this repo's session history.")

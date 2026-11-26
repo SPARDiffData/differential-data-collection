@@ -76,7 +76,8 @@ Each channel's notice link (revision 6, approved on 2026-11-25), after the chann
   24  to write a notice entry the producer hasn't seen: each channel's notice line is on the
       summary screen before the yes
 
-send_not_approved (#150, item 5, approved on 2026-11-26), asked on every run that writes:
+send_not_approved (#150, item 5, approved on 2026-11-26), asked on every run that writes.
+25 to 27 here are #150's must-refuse 1 to 3:
   25  to write "yes" without a typed y: Enter alone, or any other answer, asks again; the
       answer is on the summary screen before the write
   26  to keep or change an existing value without a typed answer: a re-run shows it and still

@@ -392,7 +392,8 @@ def run_push() -> int:
 
 
 def by_a_person() -> bool:
-    """A terminal a person types in, and not a Claude Code shell (#150, must-refuse 4 and 9)."""
+    """A terminal a person types in, and not a Claude Code shell (#150, must-refuse 4 and 9).
+    history.clean() checks the same again itself."""
     return review.in_terminal(sys.stdin, sys.stdout) and not history.run_by_claude()
 
 
@@ -400,7 +401,8 @@ def history_data_dir() -> Path | None:
     """The data folder, so clean-history can protect it. None with no config.toml (then only
     ~/.diffdata is protected). A config.toml that's there but doesn't load stops it: the data
     folder isn't known (#150, must-refuse 7)."""
-    if not user_config_file().exists():
+    # The same places load_config() looks: ~/.diffdata/, then the current folder.
+    if not user_config_file().exists() and not (Path.cwd() / "config.toml").exists():
         return None
     try:
         return load_config().data_dir

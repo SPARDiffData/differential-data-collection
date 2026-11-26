@@ -289,6 +289,13 @@ def test_a_canvas_copy_with_no_date_is_left_out_and_counted(tmp_path):
     report = push(config(tmp_path), opener)
     assert not any("slack-canvas" in k for k in opener.store.objects)
     assert "1 canvas copy(ies) had no last_changed date" in report
+    assert report.complete is False  # a passed copy wasn't sent: no clean-history offer (#150)
+
+
+def test_a_push_that_sends_every_passed_copy_is_complete(tmp_path):
+    make_scrub(tmp_path, {DAY: DAY_TEXT, CANVAS: CANVAS_TEXT})
+    report = push(config(tmp_path), Opener())
+    assert report.complete is True
 
 
 # [store] settings

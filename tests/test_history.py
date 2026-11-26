@@ -15,6 +15,15 @@ import pytest
 from diffdata import cli
 from diffdata.common import history
 
+REAL_BY_A_PERSON = history.by_a_person  # before the autouse fixture stands in for it
+
+
+@pytest.fixture(autouse=True)
+def a_person(monkeypatch):
+    """clean() itself refuses unless a person in a terminal runs it, and pytest has no
+    terminal: tests stand in for the person. The tests of that refusal undo this."""
+    monkeypatch.setattr(history, "by_a_person", lambda: True)
+
 
 @pytest.fixture
 def fake(tmp_path, monkeypatch):
@@ -421,13 +430,6 @@ def test_must_refuse_9_a_push_that_left_a_passed_copy_unsent_offers_nothing(
     assert history.LATER in out and history.OFFER not in out
 
 
-def test_the_push_report_is_complete_only_with_no_undated_canvas():
-    import inspect
-
-    source = inspect.getsource(cli.store_push.push)
-    assert "done.complete = not undated" in source
-
-
 @pytest.mark.parametrize("value", ["", "1"])
 def test_must_refuse_4_and_9_claudecode_set_to_anything_counts(monkeypatch, value):
     monkeypatch.setenv(history.CLAUDE_MARK, value)
@@ -549,3 +551,144 @@ def test_claude_codes_folder_names_written_out():
         "-Users-pat-code-differential-data-collection"
     )
     assert history.encode("/home/pat/My Repo.v2") == "-home-pat-My-Repo-v2"
+
+
+# --- Codex review 2 (#152) -------------------------------------------------------------------
+
+
+def test_must_refuse_4_clean_itself_refuses_without_a_person(fake, layout, monkeypatch):
+    monkeypatch.setattr(history, "by_a_person", REAL_BY_A_PERSON)
+    monkeypatch.delenv(history.CLAUDE_MARK, raising=False)
+    # Under pytest stdin isn't a terminal, so the real check refuses.
+    before = snapshot(fake["home"])
+    script = Answers("yes")
+    code = history.clean(script.ask, script.say, repo=fake["repo"], data=fake["data"])
+    assert code == 1
+    assert script.asked == []
+    assert snapshot(fake["home"]) == before
+
+
+def test_must_refuse_4_clean_refuses_under_claude_even_in_a_terminal(fake, layout, monkeypatch):
+    monkeypatch.setattr(history, "by_a_person", REAL_BY_A_PERSON)
+    monkeypatch.setattr(history, "is_terminal", lambda stream: True)
+    monkeypatch.setenv(history.CLAUDE_MARK, "1")
+    script = Answers("yes")
+    assert history.clean(script.ask, script.say, repo=fake["repo"], data=fake["data"]) == 1
+    assert layout["ours"].exists()
+
+
+def test_must_refuse_7_a_mount_point_inside_keeps_the_folder(fake, layout, monkeypatch):
+    inner = layout["ours"] / "a"
+    monkeypatch.setattr(history, "mount_points", lambda: [inner.resolve()])
+    _, script = clean(fake, "yes")
+    assert layout["ours"].exists()
+    assert "mount point" in script.text
+
+
+def test_mount_points_reads_escaped_paths(monkeypatch, tmp_path):
+    info = tmp_path / "mountinfo"
+    info.write_text(
+        "36 35 98:0 /mnt1 /home/pat/my\\040disk rw - ext3 /dev/x rw\n", encoding="utf-8"
+    )
+    real_path = Path
+
+    def fake_path(text, *rest):
+        return info if text == "/proc/self/mountinfo" else real_path(text, *rest)
+
+    monkeypatch.setattr(history, "Path", fake_path)
+    assert history.mount_points() == [real_path("/home/pat/my disk")]
+
+
+def test_must_refuse_7_a_replaced_session_after_the_list_keeps_the_folder(fake, layout):
+    script = Answers()
+
+    def ask_then_replace(question):
+        script.events.append(f"ASK {question}")
+        (layout["ours"] / "a.jsonl").unlink()
+        session(layout["ours"], str(fake["repo"]), "z")  # same count, another session
+        return "yes"
+
+    history.clean(ask_then_replace, script.say, repo=fake["repo"], data=fake["data"])
+    assert layout["ours"].exists()
+
+
+def test_must_refuse_7_a_nested_transcript_added_after_the_list_keeps_the_folder(fake, layout):
+    script = Answers()
+
+    def ask_then_add(question):
+        script.events.append(f"ASK {question}")
+        session(layout["ours"] / "a" / "subagents", str(fake["repo"]), "agent-2")
+        return "yes"
+
+    history.clean(ask_then_add, script.say, repo=fake["repo"], data=fake["data"])
+    assert layout["ours"].exists()
+
+
+def test_must_refuse_7_a_folder_swapped_during_the_delete_is_put_back(fake, layout, monkeypatch):
+    real_rename = os.rename
+    swapped = {}
+
+    def swap_then_rename(src, dst):
+        if not swapped and Path(src) == layout["ours"]:
+            swapped["done"] = True
+            real_rename(src, fake["home"] / "moved-away")
+            Path(src).mkdir()  # another folder appears at the checked name
+            session(Path(src), str(fake["repo"]), "a")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(history.os, "rename", swap_then_rename)
+    _, script = clean(fake, "yes")
+    assert (fake["home"] / "moved-away" / "a.jsonl").exists()
+    assert layout["ours"].exists()  # the stand-in was put back, not deleted
+    assert "it changed while you read the list" in script.text
+
+
+def test_must_refuse_6_a_folder_named_like_a_transcript_isnt_one(fake):
+    folder = project(fake, fake["repo"])
+    (folder / "notes.jsonl").mkdir(parents=True)
+    _, script = clean(fake)
+    assert folder.exists()
+    assert "no session files to check" in script.text
+
+
+def test_must_refuse_6_a_removed_folder_behind_a_link_leading_out_isnt_inside(fake):
+    repo = fake["repo"]
+    elsewhere = fake["home"] / "elsewhere"
+    elsewhere.mkdir()
+    try:
+        (repo / "linked").symlink_to(elsewhere, target_is_directory=True)
+    except OSError:
+        pytest.skip("this system won't make links")
+    folder = project(fake, repo)
+    session(folder, str(repo / "linked" / "gone"))  # doesn't exist; its parent leads out
+    clean(fake)
+    assert folder.exists()
+
+
+def test_a_removed_worktree_inside_the_repo_still_counts(fake):
+    repo = fake["repo"]
+    folder = project(fake, repo / ".claude" / "worktrees" / "old")
+    session(folder, str(repo / ".claude" / "worktrees" / "old"))  # removed since
+    clean(fake, "yes")
+    assert not folder.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows folder names can't hold control characters")
+def test_must_refuse_5_control_characters_in_a_name_are_shown_as_question_marks(fake):
+    folder = fake["projects"] / (history.encode(fake["repo"]) + "-\x1b[2Jx")
+    session(folder, str(fake["home"] / "elsewhere"))
+    _, script = clean(fake)
+    assert "\x1b" not in script.text
+    assert "-?[2Jx" in script.text
+
+
+def test_a_config_in_the_current_folder_gives_the_data_folder(fake, monkeypatch, tmp_path):
+    here = tmp_path / "here"
+    here.mkdir()
+    monkeypatch.chdir(here)
+    (fake["home"] / ".diffdata" / "config.toml").unlink()
+    (here / "config.toml").write_text("not = [valid", encoding="utf-8")
+    with pytest.raises(history.HistoryError, match="data folder isn't known"):
+        cli.history_data_dir()
+    (here / "config.toml").unlink()
+    assert cli.history_data_dir() is None
