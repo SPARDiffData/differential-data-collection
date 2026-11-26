@@ -22,7 +22,7 @@ from diffdata.scrub.run import ScrubError, scrub
 from diffdata.scrub.text import CHECKS
 from diffdata.store import push as push_module
 from diffdata.store.backend import FakeStore, SignInError, StoreError
-from diffdata.store.push import PushError, push
+from diffdata.store.push import PushError, manifest_digest, push
 
 PREFIX = "fake-team/not-approved/fake-producer/fake-project"
 DAY = "slack/export/CFAKE0001/2026-01-05.md"
@@ -292,6 +292,23 @@ def test_a_canvas_copy_with_no_date_is_left_out_and_counted(tmp_path):
     assert not any("slack-canvas" in k for k in opener.store.objects)
     assert "1 canvas or doc copy(ies) had no last_changed date" in report
     assert report.complete is False  # a passed copy wasn't sent: no clean-history offer (#150)
+
+
+def test_a_push_typed_for_this_scrub_sends(data):
+    # #128, must-refuse 3: diffdata export passes the manifest the producer typed push for.
+    opener = Opener()
+    push(config(data), opener, answered=manifest_digest(data))
+    assert opener.store.objects
+
+
+def test_a_push_typed_for_another_scrub_sends_nothing(data):
+    answered = manifest_digest(data)
+    make_scrub(data, {DAY: DAY_TEXT})  # a new scrub after the answer
+    opener = Opener()
+    with pytest.raises(PushError) as e:
+        push(config(data), opener, answered=answered)
+    assert "changed after you typed push" in str(e.value) and "Nothing was sent." in str(e.value)
+    assert opener.opened == 0 and opener.store.objects == {}
 
 
 def test_a_push_that_sends_every_passed_copy_is_complete(tmp_path):

@@ -669,8 +669,23 @@ class Report(str):
     complete: bool = False
 
 
-def push(config: Config, opener: Callable[[str, dict], Store] | None = None) -> Report:
-    """Send every passed copy, create-only, then the push record. Returns the report."""
+def manifest_digest(data: Path) -> str | None:
+    """The scrub's manifest, as a hash: it names this scrub, with each copy's hash in it. None
+    if there's no manifest."""
+    try:
+        return hashlib.sha256((data / SCRUBBED / MANIFEST).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def push(
+    config: Config,
+    opener: Callable[[str, dict], Store] | None = None,
+    answered: str | None = None,
+) -> Report:
+    """Send every passed copy, create-only, then the push record. Returns the report.
+    `answered` is the manifest_digest() the producer typed push for in `diffdata export`
+    (#128, must-refuse 3): copies from any other scrub aren't sent."""
     found = settings(config)
     check_environment()
     try:
@@ -684,6 +699,11 @@ def push(config: Config, opener: Callable[[str, dict], Store] | None = None) -> 
         except ScrubError as e:
             raise PushError(f"{e} {NOTHING_SENT}") from e
         manifest, uploads, undated = plan(config, found, expected, opted_in(config))
+        if answered is not None and manifest_digest(config.data_dir) != answered:
+            raise PushError(
+                "The scrubbed copies changed after you typed push, so they need your OK again. "
+                f"Run uv run diffdata export again. {NOTHING_SENT}"
+            )
         if not manifest["approved_for_release"] and config.store_send_not_approved != "yes":
             raise PushError(
                 "These copies are marked not approved for release: names of people who aren't "

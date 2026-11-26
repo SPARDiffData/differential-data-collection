@@ -29,13 +29,13 @@ If a change would break one of these, or you aren't sure, stop and ask the user.
 - Write PR descriptions a non-coder can follow, using the PR template.
 - Don't change `docs/requirements.md` unless the Issue asks. Requirement IDs never change once used.
 - Several sessions can work at once, each in its own folder (a git worktree) on its own branch. Only one session pushes to a branch. Only one `/slack-export` runs at a time, because every session on the machine shares the data folder.
-- Never run `diffdata consent review` or `withdraw`, or `diffdata setup`, or `diffdata admin`, or `diffdata clean-history`: a person types those in their own terminal. Never change `approvals.jsonl` or `config.toml` in `~/.diffdata/` either, by any route: what they hold is the user's opt-in. `.claude/settings.json` refuses Claude's file tools on those two files, and any shell command whose text names the consent commands or imports `consent.review` or `consent.approvals`, so pass a commit message, PR text or comment that mentions them from a file (`git commit -F`, `gh pr comment --body-file`).
+- Never run `diffdata consent review` or `withdraw`, or `diffdata setup`, or `diffdata admin`, or `diffdata clean-history`, or `diffdata export`: a person types those in their own terminal. Never change `approvals.jsonl` or `config.toml` in `~/.diffdata/` either, by any route: what they hold is the user's opt-in. `.claude/settings.json` refuses Claude's file tools on those two files, and any shell command whose text names the consent commands or imports `consent.review` or `consent.approvals`, so pass a commit message, PR text or comment that mentions them from a file (`git commit -F`, `gh pr comment --body-file`).
 
 ## Real data in a session
 
 These rules keep real data out of the repo and out of other companies' AI tools.
 
-- **A session that has seen real data keeps it in its transcript.** That's any session that ran `/slack-export`, read Slack or Google live, or opened files in the data folder. Never hand its transcript to another AI tool: no `/codex:transfer` from it, and no `--source` pointing at it.
+- **A session that has seen real data keeps it in its transcript.** That's any session that ran `/slack-export` (including the ones `diffdata export` opens), read Slack or Google live, or opened files in the data folder. Never hand its transcript to another AI tool: no `/codex:transfer` from it, and no `--source` pointing at it.
 - **Codex, or any AI tool outside Claude, never gets the data folder, `config.toml`, `.env` or `store-key.json`.** It sends what it reads to its company.
 - **Never read, open, copy or print `~/.diffdata/store-key.json`, by any route.** It's the team's key for adding files to the bucket. `.claude/settings.json` refuses Claude's file tools on it, and any shell command that names it. If a push says the key is missing or wrong, tell the user to fix it themselves.
 - **Never read, open, copy or print a team file (`*.diffdata-team.json`), by any route.** It holds the team's store key. `.claude/settings.json` refuses Claude's tools on it. Only the producer gives it to `diffdata setup`, in their own terminal.
@@ -61,7 +61,7 @@ These rules keep real data out of the repo and out of other companies' AI tools.
 
 ```
 src/diffdata/
-  cli.py            the `diffdata` command; `setup`, `check`, `clean-history`, `admin add-team`, `discover slack`, `consent`, `collect google-docs`, `scrub` and `push` are built
+  cli.py            the `diffdata` command; `setup`, `check`, `clean-history`, `admin add-team`, `discover slack`, `consent`, `collect google-docs`, `scrub`, `push` and `export` are built
   consent/ discover/ collect/ organize/ scrub/ store/    one package per stage
   consent/approvals.py   the approvals file next to config.toml (CON-1, CON-3): approved, skipped or withdrawn, per canvas or Google file; it only grows
   consent/review.py   `diffdata consent review` and `withdraw`: a person approves new items from the reference log, typed in a terminal; they refuse to run anywhere else, as in Claude's tools
@@ -79,6 +79,7 @@ src/diffdata/
   common/documents.py   the shared document format (ORG-2): raw, versions, event log, clean copies
   common/check.py   `diffdata check` (#136): Git, uv, Claude Code (the command or the desktop app's), the repo folder, config.toml and the store key's place and mode; it only reads, and setup lists its gaps at the end
   common/history.py `diffdata clean-history` (#150): deletes this repo's Claude Code session history folders, after showing them and a typed yes; push offers it; only in a terminal a person types in, never under CLAUDECODE
+  common/export.py  `diffdata export` (#128): after day 7, the checks, `/slack-export test` and `/slack-export` in an interactive Claude Code, the review, more rounds, scrub, a typed `push` for this scrub, then clean-history; resumes from the runs and push records; only in a terminal a person types in, never under CLAUDECODE
   common/setup.py   `diffdata setup` (#130): reads the team file, asks for the channels, shows every value on one screen before writing config.toml, and puts the store key in place; it refuses to run anywhere but a terminal a person types in
 tests/              pytest; fixtures/ holds synthetic data only
 docs/requirements.md
