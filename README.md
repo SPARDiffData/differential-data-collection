@@ -83,7 +83,7 @@ uv run diffdata export
 It does every step below in order, and says what happens next at each one:
 
 1. **Checks** that setup is done, that the 7 days are over, and that your team's opt-out list is in your team's folder. Nothing is read before these pass.
-2. **The test run, then the export.** Claude Code opens with `/slack-export test`. When it has finished, type `/exit`. If the test worked, it asks `Export now? [y/n]`, and on `y` Claude Code opens again with `/slack-export`: type `/exit` when it's done. If Claude Code opens with the command typed but not started, press Enter.
+2. **The test run, then the export.** Claude Code opens with `/slack-export test`. When it has finished, type `/exit`. If the test worked, it asks `Export now? [y/n]`, and on `y` Claude Code opens again with `/slack-export`: type `/exit` when it's done. Claude Code may ask you to sign in the first time: use the same Claude account as your Claude app, since your Slack connector is on that account.
 3. **The review starts by itself**, as `uv run diffdata consent review` (see "Approve new canvases and Google files" below).
 4. **More rounds.** If you approved canvases, Claude Code opens once more to read them. If Google Docs are listed or approved, Google's sign-in opens in your browser the first time, and the docs are fetched. Then the review again. Press Enter to go on, or type `stop`. It stops after 3 rounds.
 5. **Scrub.** It shows the counts, and where the copies and `private/flags.md` are.

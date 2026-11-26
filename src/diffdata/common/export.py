@@ -204,8 +204,10 @@ def slack(claude: Claude, command: list[str], test: bool, data: Path, say: Say) 
     started = slack_inbox.utc_iso(datetime.now(UTC))
     preflight(lambda _: None)  # again: config.toml may have changed while a question waited
     say(
-        f"\nClaude Code opens now and runs {prompt}. If it waits with {prompt} typed, press "
-        "Enter. When it has finished, type /exit to come back here."
+        f"\nClaude Code opens now and runs {prompt}. When it has finished, type /exit to come "
+        "back here.\n"
+        "Claude Code may ask you to sign in the first time. Use the same Claude account as your "
+        "Claude app: your Slack connector is on that account."
     )
     claude([*command, prompt])  # waited for: Claude has ended when this returns (item 6)
     if not built_since(data, started, test):

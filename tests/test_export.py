@@ -187,6 +187,8 @@ def test_one_command_runs_every_step_in_order(world):
         "clean-history",
     ]
     assert [argv[-1] for argv in w.claude_argv] == ["/slack-export test", "/slack-export"]
+    # Before each start: how to come back, and which account to sign in with.
+    assert sum("type /exit" in s and "same Claude account" in s for s in w.said) == 2
 
 
 def test_the_review_starts_by_itself_with_no_question_first(world):
