@@ -29,6 +29,12 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
       - run: uv sync --locked
       - run: uv run pytest
+      # The runner is elevated, so install.ps1 stops at its administrator refusal above. As a
+      # throwaway non-admin user, it reaches must-refuse 12 to 14 (#150, Lachlan's choice (b)).
+      - name: install.ps1 refusals, as a non-admin user
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .github/scripts/test-as-non-admin.ps1
 
   # One check to require in branch protection, so it doesn't need updating when jobs change.
   ci-passed:

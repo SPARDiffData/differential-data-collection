@@ -9,7 +9,7 @@ The steps run in this order, each on the text the one before left:
   3. phone numbers and tel: links become [phone], but not digits inside other links
   4. emails become [email]
   5. Slack user IDs become that person's [Person N], or [name?] if the people list
-     doesn't have them
+     doesn't have them; a Google person ID (perm:..., gaia:...) becomes [name?]
   6. @mentions are read whole, handle and all: a known name becomes its [Person N], and
      anything else becomes @[name?], so a handle like @alex.newperson, or a display name
      like @Alex Newperson that only starts with a known name, can't half survive
@@ -38,8 +38,8 @@ one-letter name in a script without capitals, like 李, is.
 
 `leftovers()` is the separate last check. It scans a whole scrubbed text again for any
 secret (gitleaks' rules or the randomness check), meeting link, phone number, email,
-Slack-ID-shaped word, and any name or Slack ID in the people list. A copy with
-anything left isn't written.
+Slack-ID-shaped word, Google person ID (perm:... or gaia:...), and any name or Slack ID in
+the people list. A copy with anything left isn't written.
 """
 
 import re
@@ -86,8 +86,16 @@ SHARED = "shared name"
 MAYBE_SECRET = "possible secret"
 UNKNOWN_ID = "unknown Slack ID"
 UNKNOWN_MENTION = "unknown mention"
+UNKNOWN_GOOGLE = "unknown Google ID"
+# A Google person ID, as the shared format writes an actor: perm: from Drive, gaia: from the
+# Docs changelog, in any case, with the colon written or %3A, then any ID (Drive can give an
+# opaque one with no digits).
+# Never in a copy (#147): the Slack ID step replaces one with [name?], and the last check
+# holds back a copy with one left.
+GOOGLE_PERSON = re.compile(r"(?<![A-Za-z0-9])(?:perm|gaia)(?::|%3a)[\w-]+", re.IGNORECASE)
 # The placeholders the steps put in. Nothing is matched inside one.
-KEPT = r"\[(?:Person [1-9][0-9]*|name\??|email|secret\??|phone|meeting link)\]"
+# [mention] is how a Google Doc comment shows an @-mention (collect/google_doc.py).
+KEPT = r"\[(?:Person [1-9][0-9]*|name\??|email|secret\??|phone|meeting link|mention)\]"
 # A name starts and ends at a letter's edge: "Alex's" and "alex_2" hold Alex; "Alexa" doesn't.
 BEFORE, AFTER = r"(?<![^\W\d_])", r"(?![^\W\d_])"
 # The Latin letters folded text can hold. A Latin name's edge is any character but these.
@@ -270,7 +278,12 @@ class Scrubber:
             flags.append(Flag(UNKNOWN_ID, match[0]))
             return "[name?]"
 
-        return self.slack_id.sub(replace, text)
+        def google(match: re.Match) -> str:
+            flags.append(Flag(UNKNOWN_GOOGLE, match[0]))
+            return "[name?]"
+
+        # A Google person ID (#147) is an ID too, of someone the list can't tell.
+        return GOOGLE_PERSON.sub(google, self.slack_id.sub(replace, text))
 
     def mentions(self, text: str, flags: list[Flag]) -> str:
         def replace(match: re.Match) -> str:
@@ -331,6 +344,8 @@ class Scrubber:
             found.append("an email")
         if self.slack_id.search(text):
             found.append("a Slack ID")
+        if GOOGLE_PERSON.search(text):
+            found.append("a Google person ID")
         if any(not match["kept"] for match in self.names.finditer(folded(text)[0])):
             found.append("a name")
         return found

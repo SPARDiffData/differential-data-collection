@@ -4,7 +4,7 @@
 
 ## Status
 
-**v0.0.1: repo skeleton.** The `diffdata` command and its stages exist. Slack export (DIS-1) works through Claude Code; the other stages are stubs. Next come the reference log, canvas and Google Doc current versions, and uploading to central storage on Google Cloud Storage. See [CHANGELOG.md](CHANGELOG.md).
+**Pilot-ready, still at version 0.0.1.** These work today: setup from a team file, the Slack export through Claude Code (with opt-outs and late joiners left out), Slack canvases, Google Docs, the consent review, the scrub, and the push to your team's folder on Google Cloud Storage. Per-use opt-outs and consumer access aren't built yet. The version number hasn't moved since the first skeleton: see [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick start
 
@@ -21,6 +21,31 @@
 
 Once the tool is installed (below), `uv run diffdata check` checks the first three, that you're in the repo folder, and that setup is done. It changes nothing. Setup runs the same checks first, and lists anything missing at the end. A terminal can't see Claude's connectors, so the Slack connector and the Google account aren't checked.
 
+### Install with one line
+
+On a Mac or Linux, in Terminal (put your team file's path at the end, or leave it off and setup asks for it):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SPARDiffData/differential-data-collection/main/install.sh | bash -s -- ~/Downloads/DD-7KQ4.diffdata-team.json
+```
+
+On Windows, in PowerShell (not as administrator):
+
+```powershell
+$env:DIFFDATA_TEAM_FILE = "$HOME\Downloads\DD-7KQ4.diffdata-team.json"; irm https://raw.githubusercontent.com/SPARDiffData/differential-data-collection/main/install.ps1 | iex
+```
+
+It first checks the folder it will use, `differential-data-collection` in your home folder (set `DIFFDATA_REPO` for another): if something is there that isn't a clean clone of this repo on `main` (no changes or files of yours), it stops with nothing changed. Then:
+
+- **Git:** on a Mac, if Git is missing, it starts Apple's installer and stops: run the line again when that's done. On Linux it stops and asks you to install Git. On Windows it installs Git with winget, which may ask you to allow it.
+- **uv:** if it's missing, it installs it from Astral, which also adds uv to your PATH so `uv run` works in new windows.
+- **The repo:** it clones it, or fast-forwards your clean clone, then runs `uv sync` (Python packages from PyPI, as locked).
+- **Setup:** it starts `diffdata setup` with your team file. It never opens the team file: it only passes its path. If it isn't in a terminal you type in, or Claude Code runs it, it prints the setup line for you to run instead. Setup itself checks the rest (`diffdata check`) before it asks anything.
+
+It never runs as root or administrator and never uses `sudo`.
+
+### Or install by hand
+
 ```
 git clone https://github.com/SPARDiffData/differential-data-collection
 cd differential-data-collection
@@ -29,17 +54,21 @@ uv run diffdata --help
 uv run pytest
 ```
 
-To configure it, the project team sends you a **team file** (`<team>.diffdata-team.json`). Run setup with it, in your own Terminal or PowerShell, in the repo folder:
+The project team sends you your team's **project code** (like `DD-7KQ4`), the **channel notice** and the **mentor message**, and a **team file** (`<code>.diffdata-team.json`). Do these in this order:
+
+1. **Post the notice in each channel you'll collect, and pin it.** Replace each `[close date]` with the date 7 days after the day you post. The 7 days start when it's posted.
+2. **Send the mentor message** to your mentor, in Slack.
+3. **Run setup once,** with the team file, in your own Terminal or PowerShell, in the repo folder. Have each pinned notice's link ready (the notice's menu, Copy link): setup asks for it.
 
 ```
-uv run diffdata setup ~/Downloads/team-a.diffdata-team.json
+uv run diffdata setup ~/Downloads/DD-7KQ4.diffdata-team.json
 ```
 
 Setup asks for the Slack channels to collect (type a name, or paste the channel's link), and for your workspace's address if no link gives it. Then it asks for each channel's notice link: paste the link of the notice pinned in that channel (its menu, Copy link), type `none` if everyone in it agreed directly, or press Enter to add it later. A link must be a Slack message link from that channel and workspace, or setup asks again; it checks this from the link itself, without going online. Until a channel has a notice link or `none`, `/slack-export` stops at it, and `uv run diffdata check` lists it: when the notice is posted, run setup again, answer `y` to Change it, and paste the link. It asks whether to send copies not approved for release (see "Decide about copies not approved for release" below): type `y` or `n`, since Enter alone asks again, on every run that writes your settings. It chooses the rest: your data folder, a made-up producer handle, and the team values in the file (bucket, folder, project). It shows everything on one screen, with each channel's notice as its date and time, "none" or "not added yet": type `y` to write it, `n` to stop, or `c` to go through each answer in turn. Then it makes your data folder, and writes `config.toml` in a `.diffdata` folder in your home folder (`C:\Users\<you>\.diffdata\` on Windows, `~/.diffdata/` on a Mac). It puts the team's store key and Google client file there too, readable only by you, and never shows them. It deletes the team file only if you say yes. Direct messages and group DMs can't be listed: the other people in them never agreed. Run it again to change your answers: it asks before it changes anything, keeps every other setting, and keeps the old file as `config.toml.bak`. At each notice question, Enter keeps the channel's notice as it is, and a channel you take off the list keeps its entry. Setup only runs in a terminal you type in, and this repo's settings stop Claude from running it, because the channel list is your opt-in.
 
 **Your producer handle is a pseudonym.** It labels your copies in the shared store instead of your name, so it's never your real name. Setup offers a made-up one, such as `example-project-k4r7`; press Enter to take it.
 
-**For the project team:** the team file is JSON: `{"format": "diffdata-team", "version": 1, "bucket": "…", "folder": "…", "project": "…", "store_key": {…the team's service account key…}, "google_client": {…the Desktop app client…}}`. `google_client` may be left out; any other key is refused. `diffdata admin add-team` writes it: see "For the project team" in [CONTRIBUTING.md](CONTRIBUTING.md#for-the-project-team). It holds the team's key, so send it privately, never in the repo, an Issue, a PR or a shared channel. Claude's tools may not read files named `*.diffdata-team.json`.
+**For the project team:** the team file is JSON: `{"format": "diffdata-team", "version": 1, "bucket": "…", "folder": "…", "project": "…", "store_key": {…the team's service account key…}, "google_client": {…the Desktop app client…}}`. `google_client` may be left out; any other key is refused. Its `folder` is the team's project code. `diffdata admin add-team` makes the code, writes the file, and prints the channel notice and the mentor message: see "For the project team" in [CONTRIBUTING.md](CONTRIBUTING.md#for-the-project-team). It holds the team's key, so send it privately, never in the repo, an Issue, a PR or a shared channel. Claude's tools may not read files named `*.diffdata-team.json`.
 
 You can still copy `config.example.toml` to `~/.diffdata/config.toml` and fill it in by hand. Also copy `.env.example` to `.env` there. Both stay on your computer. Keeping them outside the repo means tools working in the repo, such as Codex, can't read them.
 
@@ -128,12 +157,14 @@ Your decisions go in `approvals.jsonl`, next to `config.toml` in `~/.diffdata/`:
 
 ## Scrub your copies (SCR-1, SCR-2)
 
-Run `uv run diffdata scrub` after an export. It makes a scrubbed copy of each opted-in Slack day file and canvas in `scrubbed/` in your data folder. Your originals are only read. Each copy has:
+Run `uv run diffdata scrub` after an export. It makes a scrubbed copy of each opted-in Slack day file, canvas and Google Doc in `scrubbed/` in your data folder. A canvas or Google Doc is opted in if it's listed in `config.toml` or approved at review now: a skipped or withdrawn one gets no copy, and its earlier copy is gone after the scrub. If the approvals file can't be read, only the listed ones get a copy, and the scrub says so. Your originals are only read. Each copy has:
 
 - **secrets** replaced: API keys, tokens, passwords and private keys become `[secret]`, using the rules of gitleaks v8.30.1, run in Python. A password written after its name (`password=…`, `the db password: …`, `my password is …`, `Password is …`) goes however plain it is, and if it has 6 or more characters with a letter and a digit, it goes everywhere it appears in the copy. Text that only looks random, like a key with no known shape, becomes `[secret?]` and is listed in `private/flags.md` by copy, never by its value. Google links keep their document IDs, so they still work, and inside other links a site's name stays readable;
 - **meeting links** (Zoom, Google Meet, Teams, Webex, Whereby, Jitsi, Calendly, GoTo) replaced whole, passcode and all, by `[meeting link]`;
 - **phone numbers** and `tel:` links replaced by `[phone]`, but not digits inside other links;
 - **emails, Slack IDs, mentions and the names in your people list** replaced by `[email]` and `[Person N]`.
+
+**Google Docs** get two copies each: the current version, `documents/current/google-doc_<id>.md`, and its comments, `documents/comments/google-doc_<id>.md` (only if it has comments). The title is scrubbed with the text, and file names hold the ID only. Each comment's author is matched to your people list by their whole Google name: someone in Slack keeps their `[Person N]`, someone new is added to the list with that name and no Slack ID (so their name is then replaced everywhere), and a name two people have becomes `[name]`, flagged. An author with no name shows as `[no name]`, and no Google ID or email is kept. Comments and replies by people in `slack_opted_out` are left out, matched by their whole name; the copy says how many, never whose. Text they typed in the doc itself stays. A doc's versions and suggestions aren't scrubbed or sent yet.
 
 A last check reads each copy again. A copy with anything left is held back: no file is written, and `scrubbed/manifest.json` says what kind of thing was found, never the value. Copies are still marked "not approved for release": names of people who aren't in the people list, and links that open an original (a doc shared with anyone who has the link), aren't checked yet. So read your copies before you share them.
 
@@ -148,7 +179,7 @@ A last check reads each copy again. A copy with anything left is held back: no f
 
 **Before you push, read your copies.** They're plain text files in `scrubbed/` in your data folder. Look for anything that shouldn't leave your team: a name the scrub missed, a phone number, a password or key, a private meeting link. The scrub replaces phone numbers, keys and meeting links, but no check catches everything, and names of people who aren't in the people list aren't checked yet. You can use an AI tool to help, but it sends what it reads to the company that runs it, so pick one you'd trust with this text. If something is wrong, don't push; tell the project team. Pushing is your OK to store these copies, and you can't remove them from the bucket yourself.
 
-**What it sends, and what it never sends.** Only the copies listed as passed in `scrubbed/manifest.json`. Nothing else in your data folder is sent: not the raw Slack data, not `private/` (the people list and the flags), not `slack/left_out.json`, and not a copy the scrub held back. It stops before sending anything if a scrub is running or was cut short, if a copy changed after the scrub, if the manifest lists anything a scrub doesn't make, or if `scrubbed/` holds a link or a hard-linked file. It also scrubs every copy again, using your people list, and stops if that would change anything, such as a name, a Slack ID, an email, a mention, a secret, a meeting link or a phone number left in it. If it stops for any of these, run the scrub again and push again. It also stops if `slack_opted_out` changed since the copies were made: run the build, then the scrub, then push. While it runs it holds the scrub's lock, so a scrub can't start until it's done. It refuses to run if `STORAGE_EMULATOR_HOST` or `GOOGLE_CLOUD_UNIVERSE_DOMAIN` is set, since either would send the copies somewhere other than Google.
+**What it sends, and what it never sends.** Only the copies listed as passed in `scrubbed/manifest.json`. Nothing else in your data folder is sent: not the raw Slack data, not `private/` (the people list and the flags), not `slack/left_out.json`, and not a copy the scrub held back. It stops before sending anything if a scrub is running or was cut short, if a copy changed after the scrub, if the manifest lists anything a scrub doesn't make, or if `scrubbed/` holds a link or a hard-linked file. It also scrubs every copy again, using your people list, and stops if that would change anything, such as a name, a Slack ID, an email, a mention, a secret, a meeting link or a phone number left in it. If it stops for any of these, run the scrub again and push again. It also stops if `slack_opted_out` changed since the copies were made: run the build, then the scrub, then push. And it stops if a copy is of a canvas or Google Doc that isn't listed or approved now, for example one you withdrew after the scrub, or if the approvals file can't be read and the copy's canvas or doc isn't listed: run the scrub again, then push. A copy already in the bucket stays there: ask the project team to remove it. A Google Doc's copies must also be exactly what a scrub makes from the doc now, so if the doc, its comments, your people list or `slack_opted_out` changed since the scrub, it stops: run the scrub again. It checks each canvas or doc again just before sending it, so one withdrawn while a push runs isn't sent. While it runs it holds the scrub's lock, so a scrub can't start until it's done. It refuses to run if `STORAGE_EMULATOR_HOST` or `GOOGLE_CLOUD_UNIVERSE_DOMAIN` is set, since either would send the copies somewhere other than Google.
 
 **It never overwrites.** Each copy goes to `<folder>/<part>/<producer>/<project>/<source type>/<date>/<ID>.<hash>.md`, where `<part>` is `not-approved` (or, once copies can be approved, `approved`) and the hash comes from its content. The same content is skipped, and a changed copy (a day with new messages, say) is added beside the old one. The team's key can only add files, so nothing in the bucket can be replaced or deleted from here.
 

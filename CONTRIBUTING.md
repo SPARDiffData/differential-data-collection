@@ -130,28 +130,30 @@ The PR says it got this review by ticking the template's box for it. The daily u
 **Setting up a pilot team** (#132). You need the Google Cloud CLI (`gcloud`): `curl https://sdk.cloud.google.com | bash`, then open a new terminal (see [Google's install page](https://cloud.google.com/sdk/docs/install) for other ways). Producers never need it. Run this yourself, in your own terminal on macOS or Linux, signed in to `gcloud` as the Cloud project's owner account (`gcloud auth login`). Claude's tools may not run it.
 
 ```bash
-uv run diffdata admin add-team team-a --bucket example-bucket --project example-project --gcp-project example-gcp-project --producer producer@example.com --google-client ~/Downloads/client.json --optout-form "https://…/viewform?usp=pp_url&entry.123="
+uv run diffdata admin add-team --bucket example-bucket --project example-project --gcp-project example-gcp-project --producer producer@example.com --google-client ~/Downloads/client.json --optout-form "https://…/viewform?usp=pp_url&entry.123="
 ```
 
-- `team-a` is the team's folder name: letters, digits, `-` and `_`. Repeat `--producer` for each producer's Google account.
-- It looks first and changes nothing until you type y. It shows what it will make: an upload account for the team, the managed folder `team-a/` with `approved/`, `not-approved/` and `_config/` inside it, and these grants only:
+- Leave out the team name and it makes the team's **project code**, like `DD-7KQ4`: `DD-` and 4 capitals or digits, with no 0, O, 1, I or L. It never uses a code whose folder or upload account is there already. The code is the team's folder name, the team file's `folder`, and the code in the notice. To finish a run that stopped, give the code it made (`add-team DD-7KQ4 …`); a given code must be exactly in that form. Repeat `--producer` for each producer's Google account.
+- It looks first and changes nothing until you type y. It shows what it will make: an upload account for the team, the managed folder `DD-7KQ4/` with `approved/`, `not-approved/` and `_config/` inside it, and these grants only:
   - the upload account: *Storage Object Creator* on `approved/` and `not-approved/`, and *Storage Object Viewer* on `_config/`;
-  - each producer: *Storage Object Viewer* on `team-a/`.
+  - each producer: *Storage Object Viewer* on `DD-7KQ4/`.
 - It never changes the project's or the bucket's own access. It stops if the folder, or a folder inside it, already has someone it wouldn't add, if the team's folder holds any other managed folder, or if the upload account already has a key. It looks again after your y.
-- It writes `~/diffdata-teams/team-a.diffdata-team.json` (choose another place with `--out`, outside any repository or synced folder), readable only by you, and never replaces one. It never prints the key. Send the file to the producer privately: never in the repo, an Issue, a PR or a channel. Delete your copy once they've run `diffdata setup`.
-- `--optout-form` is the shared opt-out form's pre-filled link, cut just after the team field's `=`. It prints the team's own link, and the channel notice with the link in it, for the producer to post. The notice wording is a placeholder until it's agreed.
-- If it stops partway, it lists what it changed. Run it again with the same values to finish: it skips what's there. If the team file can't be written, it deletes the key it just made, so a second run can finish.
+- It writes `~/diffdata-teams/DD-7KQ4.diffdata-team.json` (choose another place with `--out`, outside any repository or synced folder), readable only by you, and never replaces one. It never prints the key. Send the file to the producer privately: never in the repo, an Issue, a PR or a channel. Delete your copy once they've run `diffdata setup`.
+- `--optout-form` is the shared opt-out form's pre-filled link, cut just after the team field's `=`. It prints the team's own link, which fills in the project code; then the producer's steps in order (post and pin the notice, send the mentor message, then run setup once with the notice's link); then the agreed channel notice and mentor message, with the code and link filled in. The producer fills in `[close date]` (7 days after they post), and `[mentor]` and `#[channel]` in the mentor message. Send the code and both texts with the team file.
+- If it stops partway, it lists what it changed. Run it again with the same values, and the project code it made, to finish: it skips what's there. If the team file can't be written, it deletes the key it just made, so a second run can finish.
 
-**The opt-out list on day 7** (#132, decision 6). The producer's export won't start until 7 days after a channel's notice, and then only once the team's list is in its folder. When the 7 days are over, look at the form's answers for the team, find each person's Slack user ID (`U…`), and run, in your own terminal:
+**The opt-out list on day 7** (#132, decision 6). The producer's export won't start until 7 days after a channel's notice, and then only once the team's list is in its folder. When the 7 days are over, look at the form's answers for the team's project code, find each person's Slack user ID (`U…`), and run, in your own terminal:
 
 ```bash
-uv run diffdata admin optouts team-a --bucket example-bucket
+uv run diffdata admin optouts DD-7KQ4 --bucket example-bucket
 ```
 
-- Paste the IDs when it asks, one per line, then an empty line. Type `none` if nobody opted out. IDs never go on the command line, so they stay out of your shell's history.
-- It shows the team, how many are on the list already, and each ID it will add, and writes nothing until you type y. It writes `team-a/_config/opted-out.json`, which the team's upload key, its producers and the project's admins can read (the producers' read access to the team's folder covers `_config/` too).
+- Paste the IDs of the people who opted out of everything when it asks, one per line, then an empty line. Type `none` if nobody opted out. IDs never go on the command line, so they stay out of your shell's history.
+- It shows the team, how many are on the list already, and each ID it will add, and writes nothing until you type y. It writes `DD-7KQ4/_config/opted-out.json`, which the team's upload key, its producers and the project's admins can read (the producers' read access to the team's folder covers `_config/` too).
 - A list that's there already is only added to, never shortened. If someone opts out late, run it again with their ID. If the list changed while you typed, it stops: run it again.
 - Write it only after every channel's 7 days are over: the producer's export refuses a list written before then, since the last answers may be missing from it.
+- **Then tell the producer they can run the export.** That's the whole message: don't send them the IDs, since the export fetches the list itself.
+- **Per-use opt-outs** (people who left their data out of particular uses, not everything) don't go on this list. Record each one in the private log, outside the repo: who (Slack ID), which uses, and when. Don't drop them: they're needed when consumers get access.
 
 ## Getting help
 

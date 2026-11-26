@@ -22,12 +22,12 @@ from diffdata.store.admin import AdminError, Team
 # Google's role names, written out here so a change to admin.py's own constants fails a test.
 CREATOR = "roles/storage.objectCreator"
 VIEWER = "roles/storage.objectViewer"
-OURS = "diffdata upload: example-bucket/team-a"
+OURS = "diffdata upload: example-bucket/DD-7KQ4"
 MARKER = "MADE-UP-ADMIN-KEY-MARKER"
 GCP = "example-gcp-project"
-EMAIL = f"dd-team-a@{GCP}.iam.gserviceaccount.com"
+EMAIL = f"dd-dd-7kq4@{GCP}.iam.gserviceaccount.com"
 UPLOAD = f"serviceAccount:{EMAIL}"
-ROOT = "gs://example-bucket/team-a/"
+ROOT = "gs://example-bucket/DD-7KQ4/"
 FORM = "https://forms.example.com/d/e/FAKE-FORM/viewform?usp=pp_url&entry.100="
 CLIENT = {"installed": {"client_id": f"{MARKER}.apps.example", "client_secret": MARKER}}
 POSIX = pytest.mark.skipif(os.name == "nt", reason="file modes are for macOS and Linux")
@@ -52,6 +52,7 @@ class FakeGcloud:
         self.keys: dict[str, int] = {}
         self.folders: dict[str, list[dict]] = {}  # url -> bindings
         self.fail: dict[str, str] = {}  # a command word -> stderr to fail with
+        self.objects: list[str] = []  # gs:// addresses of files in the bucket
 
     def __call__(self, args: list[str]) -> subprocess.CompletedProcess:
         self.calls.append(args)
@@ -65,6 +66,14 @@ class FakeGcloud:
             return self.accounts_command(words[2:], flags)
         if words[:2] == ["storage", "managed-folders"]:
             return self.folders_command(words[2], words[3], flags)
+        if words[:2] == ["storage", "ls"]:
+            prefix = words[2].removesuffix("**")
+            found = [o for o in self.objects if o.startswith(prefix)]
+            if not found:
+                return self.answer(
+                    1, err="ERROR: (gcloud.storage.ls) One or more URLs matched no objects."
+                )
+            return self.answer(out="\n".join(found))
         raise AssertionError(f"add-team ran a command the fake doesn't know: {args}")
 
     @staticmethod
@@ -130,7 +139,8 @@ class FakeGcloud:
 
     def changes(self):
         """Every command that changed something: anything but describe, list and get."""
-        return [c for c in self.calls if not ({"describe", "list", "get-iam-policy"} & set(c))]
+        looks = {"describe", "list", "get-iam-policy", "ls"}
+        return [c for c in self.calls if not (looks & set(c))]
 
 
 @pytest.fixture(autouse=True)
@@ -147,7 +157,7 @@ def out(tmp_path):
 
 def team(out: Path, **changes) -> Team:
     values = dict(
-        name="team-a",
+        name="DD-7KQ4",
         bucket="example-bucket",
         project="example-project",
         gcp_project=GCP,
@@ -173,7 +183,7 @@ def run(chosen: Team, fake=None, yes=True) -> tuple[int, FakeGcloud, list[str], 
 
 
 EXPECTED_CHANGES = [
-    ["iam", "service-accounts", "create", "dd-team-a", f"--project={GCP}",
+    ["iam", "service-accounts", "create", "dd-dd-7kq4", f"--project={GCP}",
      f"--display-name={OURS}", "--quiet"],
     ["storage", "managed-folders", "create", ROOT, "--quiet"],
     ["storage", "managed-folders", "create", f"{ROOT}approved/", "--quiet"],
@@ -210,35 +220,343 @@ def test_a_run_makes_exactly_these_changes_then_the_key(out):
 
 def test_the_team_file_is_one_setup_reads(out):
     run(team(out))
-    read = producer_setup.read_team_file(out / "team-a.diffdata-team.json")
+    read = producer_setup.read_team_file(out / "DD-7KQ4.diffdata-team.json")
     assert read.values == {
         "bucket": "example-bucket",
-        "folder": "team-a",
+        "folder": "DD-7KQ4",
         "project": "example-project",
     }
     assert json.loads(read.store_key)["client_email"] == EMAIL
     assert json.loads(read.google_client) == CLIENT
-    assert sorted(p.name for p in out.iterdir()) == ["team-a.diffdata-team.json"]
+    assert sorted(p.name for p in out.iterdir()) == ["DD-7KQ4.diffdata-team.json"]
 
 
 def test_the_google_client_may_be_left_out(out):
     run(team(out, google_client=None))
-    data = json.loads((out / "team-a.diffdata-team.json").read_text(encoding="utf-8"))
+    data = json.loads((out / "DD-7KQ4.diffdata-team.json").read_text(encoding="utf-8"))
     assert set(data) == {"format", "version", "bucket", "folder", "project", "store_key"}
 
 
-def test_it_prints_the_teams_opt_out_link_and_the_notice(out):
-    _, _, _, said = run(team(out, name="team_b"))
+# --- the texts (#150, items 1, 3, 4 and 6; must refuse 19 to 21) -----------------------------
+
+# The agreed texts, copied here from the sign-up procedure doc ("Message texts"), with the one
+# line #150's D15 changed, so a change to admin.py's own copy fails a test (must refuse 20).
+AGREED_NOTICE = (
+    "**Heads up: I've signed this channel up for the SPAR project *Differential Data for "
+    "Automated AI Safety Research*. Project code: [code]**\n"
+    "\n"
+    "The project collects the messages and docs where research decisions actually get made, the "
+    "part final papers leave out, to help AI safety research. About the project: "
+    "https://docs.google.com/document/d/1ggbdAYohoFG06BrUmxuWczUXqiHAqD3CBWN2z3ShW54/edit\n"
+    "\n"
+    "- **On [close date] I'll run their tool on this channel.** It leaves out anyone who opted "
+    "out, pseudonymises names (replacing them with codes like [Person 3]) and removes contact "
+    "details and secrets, and I review everything before it's uploaded.\n"
+    "- **The scrubbed data goes to the project's storage** and is shared only with approved "
+    "research groups, each for one use: control evaluations and conceptual reasoning at Redwood "
+    "Research, and SPAR's study of how research programs run. Some people think conceptual "
+    "reasoning work speeds up AI capabilities, so you can leave your data out of that use "
+    "alone.\n"
+    "- **By [close date], use the opt-out form ([opt-out link]) with project code [code]** to "
+    "opt out of everything, or of particular uses. You don't need to give your name or a "
+    "reason. After the 7 days, the project team gives my copy of the tool the list of who to "
+    "leave out.\n"
+    "- **You can change your choices or object any time after that,** with the same form, and "
+    "they'll act on it within 14 days.\n"
+    "\n"
+    "Please keep sensitive or private personal details out of this channel. Questions: ask me, "
+    "or spardiffdata＠gmail.com. Privacy notice: "
+    "https://docs.google.com/document/d/10lLqAHVoNYXux-fWmzYfOuZj-ywjsMOZwfbTZs-Rvkc/edit"
+)
+AGREED_MENTOR = (
+    "Hi [mentor], a heads-up: I've signed our project channel #[channel] up for the SPAR project "
+    "*Differential Data for Automated AI Safety Research*. It collects research discussions, "
+    "scrubbed and reviewed by me first, for AI safety research. Nothing is collected before "
+    "[close date]. If you'd like your messages and edits left out, or kept out of particular "
+    "uses such as conceptual reasoning, use the opt-out form ([opt-out link]) with project code "
+    "[code], or just tell me. [If you'd rather the channel weren't included at all, tell me and "
+    "I'll withdraw it.] More: About the project "
+    "https://docs.google.com/document/d/1ggbdAYohoFG06BrUmxuWczUXqiHAqD3CBWN2z3ShW54/edit, "
+    "Privacy notice "
+    "https://docs.google.com/document/d/10lLqAHVoNYXux-fWmzYfOuZj-ywjsMOZwfbTZs-Rvkc/edit"
+)
+LINK = f"{FORM}DD-7KQ4"
+
+
+def printed(said: list[str], heading: str) -> str:
+    """The text printed two lines after the line that starts with `heading`."""
+    start = next(i for i, line in enumerate(said) if line.startswith(heading)) + 2
+    return said[start]
+
+
+def test_must_refuse_20_the_notice_is_the_agreed_text_word_for_word(out):
+    _, _, _, said = run(team(out))
+    notice = printed(said, "Channel notice")
+    assert notice.replace(LINK, "[opt-out link]").replace("DD-7KQ4", "[code]") == AGREED_NOTICE
+    assert notice.count("DD-7KQ4") == 3  # twice as the code, once at the end of the link
+    assert "The project team tells me who to leave out" not in notice  # D15
+    assert "＠" in notice and "spardiffdata@" not in notice  # the full-width at, as given
+
+
+def test_must_refuse_20_the_mentor_message_is_the_agreed_text_word_for_word(out):
+    _, _, _, said = run(team(out))
+    mentor = printed(said, "Mentor message")
+    assert mentor.replace(LINK, "[opt-out link]").replace("DD-7KQ4", "[code]") == AGREED_MENTOR
+    # The open point stays in its brackets (D3).
+    assert "[If you'd rather the channel weren't included at all" in mentor
+
+
+def test_must_refuse_21_the_producers_placeholders_stay(out):
+    _, _, _, said = run(team(out))
+    notice, mentor = printed(said, "Channel notice"), printed(said, "Mentor message")
+    assert notice.count("[close date]") == 2
+    assert "[mentor]" in mentor and "#[channel]" in mentor and "[close date]" in mentor
     text = "\n".join(said)
-    assert f"Opt-out link for team_b: {FORM}team_b" in text
-    assert text.count(f"{FORM}team_b") == 2  # the line, and inside the notice
-    assert "Placeholder wording" in text
+    assert "replace each [close date] with the date 7 days after the day the notice" in text
+    assert "Also replace [mentor] and #[channel]" in text
 
 
-def test_without_a_form_the_notice_has_a_gap_to_fill(out):
+def test_it_prints_the_teams_opt_out_link_and_project_code(out):
+    _, _, _, said = run(team(out))
+    text = "\n".join(said)
+    assert f"Opt-out link for DD-7KQ4: {LINK}" in text
+    assert "Project code: DD-7KQ4" in said
+    assert text.count(LINK) == 3  # the line, the notice and the mentor message
+
+
+def test_the_producers_steps_come_in_order_post_and_pin_then_setup(out):
+    _, _, _, said = run(team(out))
+    text = "\n".join(said)
+    post = text.index("1. Post the channel notice in each channel, and pin it.")
+    mentor = text.index("2. Send the mentor message")
+    setup = text.index("3. Run setup once")
+    assert post < mentor < setup
+    assert "uv run diffdata setup ~/Downloads/DD-7KQ4.diffdata-team.json" in text
+
+
+def test_day_7_is_optouts_then_tell_the_producer_with_no_ids_sent(out):
+    _, _, _, said = run(team(out))
+    text = "\n".join(said)
+    command = text.index("optouts DD-7KQ4 --bucket example-bucket")
+    tell = text.index("Then tell the producer they can run the export")
+    assert command < tell
+    assert "Don't send them the IDs" in text
+    assert "Record each per-use answer (ID, uses, date) in the private log" in text  # item 3
+    assert "enter only the people who opted out of everything" in text
+
+
+def test_without_a_form_the_texts_keep_the_link_placeholder(out):
     _, _, _, said = run(team(out, optout_form=None))
     text = "\n".join(said)
-    assert "<the team's opt-out link>" in text and "No --optout-form given" in text
+    assert "No --optout-form given" in text
+    assert "[opt-out link]" in printed(said, "Channel notice")
+    assert "[opt-out link]" in printed(said, "Mentor message")
+
+
+def test_must_refuse_19_the_new_lines_hold_nothing_from_the_key(out):
+    _, _, _, said = run(team(out))
+    assert MARKER not in "\n".join(said)
+
+
+# --- project codes (must refuse 16 to 18) ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["dd-7kq4", "DD-7KQ0", "DD-7KQO", "DD-1ABC", "DD-ABCI", "DD-ABCL", "DD-ABCDE", "DD-ABC",
+     "XX-7KQ4", "DD7KQ4", "team-a", " DD-7KQ4", "DD-7KQ4\n"],
+)  # fmt: skip
+def test_must_refuse_16_a_given_code_not_in_the_exact_form(out, name):
+    fake = FakeGcloud()
+    with pytest.raises(AdminError, match="project code"):
+        run(team(out, name=name), fake=fake)
+    assert fake.calls == []
+
+
+def test_a_code_in_the_form_is_taken_as_given(out):
+    code, _, _, said = run(team(out, name="DD-Z9W2"))
+    assert code == 0
+    assert (out / "DD-Z9W2.diffdata-team.json").exists()
+    assert not any(line.startswith("Made the project code") for line in said)
+
+
+def chooser(*codes: str):
+    """A stand-in for secrets.choice that spells out the given codes' 4 characters in turn."""
+    letters = iter("".join(c.removeprefix("DD-") for c in codes))
+    return lambda chars: next(letters)
+
+
+def make_run(chosen: Team, choose, fake=None):
+    fake = fake or FakeGcloud()
+    said = []
+    code = admin.add_team(
+        chosen, ask_yes=lambda q: True, say=said.append, gcloud=fake, sleep=lambda s: 0,
+        make_code=True, choose=choose,
+    )  # fmt: skip
+    return code, fake, said
+
+
+def test_with_no_code_add_team_makes_one_and_uses_it_everywhere(out):
+    code, fake, said = make_run(team(out, name=""), chooser("DD-H3XT"))
+    assert code == 0
+    assert said[0] == "Made the project code DD-H3XT."
+    assert said[1].startswith("Team DD-H3XT, bucket")
+    data = json.loads((out / "DD-H3XT.diffdata-team.json").read_text(encoding="utf-8"))
+    assert data["folder"] == "DD-H3XT"
+    assert "Project code: DD-H3XT" in said
+    made = ["storage", "managed-folders", "create", "gs://example-bucket/DD-H3XT/", "--quiet"]
+    assert made in fake.changes()
+
+
+def test_must_refuse_17_a_made_code_in_use_is_never_used(out):
+    fake = FakeGcloud()
+    fake.folders["gs://example-bucket/DD-AAAA/"] = []  # another team's, with no grants
+    fake.accounts[f"dd-dd-bbbb@{GCP}.iam.gserviceaccount.com"] = "someone's"
+    fake.folders["gs://example-bucket/DD-CCCC/approved/"] = []  # a folder inside it only
+    code, fake, said = make_run(
+        team(out, name=""), chooser("DD-AAAA", "DD-BBBB", "DD-CCCC", "DD-DDDD"),
+        fake=fake,
+    )  # fmt: skip
+    assert code == 0
+    assert said[0] == "Made the project code DD-DDDD."
+    for used in ("DD-AAAA", "DD-BBBB", "DD-CCCC"):
+        assert not any(used in " ".join(c) for c in fake.changes())
+
+
+def test_must_refuse_17_it_stops_after_5_codes_in_use(out):
+    fake = FakeGcloud()
+    codes = ["DD-AAAA", "DD-BBBB", "DD-CCCC", "DD-DDDD", "DD-EEEE"]
+    for c in codes:
+        fake.folders[f"gs://example-bucket/{c}/"] = []
+    with pytest.raises(AdminError, match="5 new project codes"):
+        make_run(team(out, name=""), chooser(*codes), fake=fake)
+    assert fake.changes() == []
+    assert not out.exists()
+
+
+def test_must_refuse_17_a_failed_look_stops_rather_than_guessing(out):
+    fake = FakeGcloud()
+    fake.fail["list"] = "ERROR: 403 Permission denied"
+    with pytest.raises(AdminError, match="Couldn't check the upload account"):
+        make_run(team(out, name=""), chooser("DD-AAAA"), fake=fake)
+    assert fake.changes() == []
+
+
+def test_with_no_code_the_other_values_are_checked_before_gcloud(out):
+    fake = FakeGcloud()
+    with pytest.raises(AdminError, match="--producer"):
+        make_run(team(out, name="", producers=()), chooser("DD-AAAA"), fake=fake)
+    assert fake.calls == []
+
+
+def test_must_refuse_18_a_normal_run_draws_from_secrets(out, monkeypatch):
+    drawn = []
+
+    def recording(chars):
+        drawn.append(chars)
+        return "Q"
+
+    monkeypatch.setattr(admin.secrets, "choice", recording)
+    code = admin.add_team(
+        team(out, name=""), ask_yes=lambda q: True, say=lambda line: None, gcloud=FakeGcloud(),
+        sleep=lambda s: 0, make_code=True,
+    )  # fmt: skip
+    assert code == 0
+    assert drawn == [admin.CODE_CHARS] * 4
+    assert (out / "DD-QQQQ.diffdata-team.json").exists()
+
+
+def test_must_refuse_18_codes_are_in_the_form():
+    for _ in range(200):
+        assert admin.CODE.fullmatch(admin.new_code())
+    assert not set("0O1IL") & set(admin.CODE_CHARS)
+
+
+def test_must_refuse_17_files_already_under_a_made_code_rule_it_out(out):
+    fake = FakeGcloud()
+    fake.objects.append("gs://example-bucket/DD-AAAA/old.md")  # no managed folder, just a file
+    code, fake, said = make_run(team(out, name=""), chooser("DD-AAAA", "DD-BBBB"), fake=fake)
+    assert code == 0
+    assert said[0] == "Made the project code DD-BBBB."
+    assert not any("DD-AAAA" in " ".join(c) for c in fake.changes())
+
+
+def test_must_refuse_17_a_denied_answer_never_passes_for_not_found(out):
+    fake = FakeGcloud()
+    real = fake.folders_command
+
+    def denied(verb, url, flags):
+        if verb == "describe":
+            return fake.answer(1, err="ERROR: 403 caller lacks permission on example-404")
+        return real(verb, url, flags)
+
+    fake.folders_command = denied
+    with pytest.raises(AdminError, match="Couldn't check"):
+        make_run(team(out, name=""), chooser("DD-AAAA"), fake=fake)
+    assert fake.changes() == []
+
+
+def test_must_refuse_17_a_made_code_that_comes_into_use_meanwhile_stops(out, monkeypatch):
+    fake = FakeGcloud()
+    real_taken = admin.AddTeam.taken
+
+    def then_someone_makes_it(self):
+        free = real_taken(self)
+        fake.folders[self.team.folder()] = []  # another run makes the folder, with no grants
+        return free
+
+    monkeypatch.setattr(admin.AddTeam, "taken", then_someone_makes_it)
+    with pytest.raises(AdminError, match="came into use"):
+        make_run(team(out, name=""), chooser("DD-AAAA"), fake=fake)
+    assert fake.changes() == []
+
+
+def test_a_local_team_file_under_a_made_code_rules_it_out(out):
+    out.mkdir()
+    (out / "DD-AAAA.diffdata-team.json").write_text("an older one", encoding="utf-8")
+    code, _, said = make_run(team(out, name=""), chooser("DD-AAAA", "DD-BBBB"))
+    assert code == 0
+    assert said[0] == "Made the project code DD-BBBB."
+    assert (out / "DD-AAAA.diffdata-team.json").read_text(encoding="utf-8") == "an older one"
+
+
+def test_must_refuse_19_nothing_from_the_key_on_stdout_or_stderr(out, capsys):
+    code = admin.add_team(
+        team(out), ask_yes=lambda q: True, gcloud=FakeGcloud(), sleep=lambda s: 0
+    )  # say is print
+    assert code == 0
+    printed_out = capsys.readouterr()
+    assert MARKER not in printed_out.out + printed_out.err
+    assert "Channel notice" in printed_out.out
+
+
+def cli_args(*code: str, out: Path) -> list[str]:
+    return [
+        "admin", "add-team", *code, "--bucket", "example-bucket", "--project", "example-project",
+        "--gcp-project", GCP, "--producer", "producer-one@example.com", "--out", str(out),
+    ]  # fmt: skip
+
+
+def test_must_refuse_16_an_empty_code_on_the_command_line_is_refused(monkeypatch, capsys, out):
+    monkeypatch.setattr(cli.review, "in_terminal", lambda *streams: True)
+    monkeypatch.setattr(admin, "run_gcloud", lambda args: pytest.fail("gcloud ran"))
+    assert cli.main(cli_args("", out=out)) == 1
+    assert "project code" in capsys.readouterr().err
+
+
+def test_a_left_out_code_on_the_command_line_makes_one(monkeypatch):
+    monkeypatch.setattr(cli.review, "in_terminal", lambda *streams: True)
+    seen = {}
+
+    def fake_add_team(team, ask_yes, make_code=False, **kw):
+        seen.update(name=team.name, make_code=make_code)
+        return 0
+
+    monkeypatch.setattr(admin, "add_team", fake_add_team)
+    assert cli.main(cli_args(out=Path("/nonexistent"))) == 0
+    assert seen == {"name": "", "make_code": True}
+    assert cli.main(cli_args("DD-7KQ4", out=Path("/nonexistent"))) == 0
+    assert seen == {"name": "DD-7KQ4", "make_code": False}
 
 
 def test_a_no_changes_nothing(out):
@@ -379,13 +697,13 @@ def test_must_refuse_3_the_key_is_never_printed(out, capsys):
     text = "\n".join(said) + capsys.readouterr().out
     assert MARKER not in text and "FAKE-KEY-ID" not in text and "PRIVATE KEY" not in text
     assert any(line.startswith("Done: 1 account made, 4 folders made, 5 grants") for line in said)
-    assert f"Team file: {out / 'team-a.diffdata-team.json'}" in said
+    assert f"Team file: {out / 'DD-7KQ4.diffdata-team.json'}" in said
 
 
 def test_must_refuse_4_a_folder_where_the_team_file_goes_stops_before_any_change(out):
     fake = FakeGcloud()
     out.mkdir()
-    (out / "team-a.diffdata-team.json").mkdir()  # in the way before the run starts
+    (out / "DD-7KQ4.diffdata-team.json").mkdir()  # in the way before the run starts
     with pytest.raises(AdminError, match="never replaces one") as stopped:
         run(team(out), fake=fake)
     assert MARKER not in str(stopped.value)
@@ -399,7 +717,7 @@ def test_must_refuse_3_a_team_file_that_appears_while_gcloud_runs_isnt_replaced(
     def appear(words, flags):
         if words[:2] == ["keys", "create"]:
             out.mkdir(exist_ok=True)
-            (out / "team-a.diffdata-team.json").write_text("someone's file", encoding="utf-8")
+            (out / "DD-7KQ4.diffdata-team.json").write_text("someone's file", encoding="utf-8")
         return real(words, flags)
 
     fake.accounts_command = appear
@@ -408,8 +726,8 @@ def test_must_refuse_3_a_team_file_that_appears_while_gcloud_runs_isnt_replaced(
     assert MARKER not in str(stopped.value)
     assert "deleted the new key again" in str(stopped.value)
     assert fake.keys[EMAIL] == 0  # the key no team file holds is gone, so a rerun can finish
-    assert (out / "team-a.diffdata-team.json").read_text(encoding="utf-8") == "someone's file"
-    assert [p.name for p in out.iterdir()] == ["team-a.diffdata-team.json"]
+    assert (out / "DD-7KQ4.diffdata-team.json").read_text(encoding="utf-8") == "someone's file"
+    assert [p.name for p in out.iterdir()] == ["DD-7KQ4.diffdata-team.json"]
 
 
 def test_must_refuse_3_a_key_that_isnt_a_key_stops_without_showing_it(out):
@@ -461,18 +779,18 @@ def test_must_refuse_4_not_through_a_link_into_a_repository(tmp_path):
 
 def test_must_refuse_4_never_replaces_a_team_file(out):
     out.mkdir()
-    (out / "team-a.diffdata-team.json").write_text("an older one", encoding="utf-8")
+    (out / "DD-7KQ4.diffdata-team.json").write_text("an older one", encoding="utf-8")
     fake = FakeGcloud()
     with pytest.raises(AdminError, match="never replaces one"):
         run(team(out), fake=fake)
     assert fake.calls == []
-    assert (out / "team-a.diffdata-team.json").read_text(encoding="utf-8") == "an older one"
+    assert (out / "DD-7KQ4.diffdata-team.json").read_text(encoding="utf-8") == "an older one"
 
 
 @POSIX
 def test_must_refuse_4_the_team_file_is_readable_only_by_you(out):
     run(team(out))
-    mode = stat.S_IMODE((out / "team-a.diffdata-team.json").stat().st_mode)
+    mode = stat.S_IMODE((out / "DD-7KQ4.diffdata-team.json").stat().st_mode)
     assert mode == 0o600
     assert stat.S_IMODE(out.stat().st_mode) == 0o700
 
@@ -485,8 +803,7 @@ def test_must_refuse_4_the_team_file_is_readable_only_by_you(out):
     [
         ({"name": "team/a"}, "team name"),
         ({"name": "team a"}, "team name"),
-        ({"name": "../team-a"}, "team name"),
-        ({"name": ""}, "team name"),
+        ({"name": "../DD-7KQ4"}, "team name"),
         ({"project": "example/project"}, "project"),
         ({"project": "example project"}, "project"),
         ({"bucket": "Example_Bucket"}, "bucket"),
@@ -503,9 +820,6 @@ def test_must_refuse_5_names_push_would_refuse(out, changes, words):
 @pytest.mark.parametrize(
     "changes, words",
     [
-        ({"name": "a"}, "account name"),  # too short for Google's account names
-        ({"name": "team-a-with-a-very-long-name-x"}, "account name"),
-        ({"name": "team-"}, "account name"),
         ({"gcp_project": "Example"}, "gcp-project"),
         ({"producers": ()}, "--producer"),
         ({"producers": ("not an email",)}, "--producer"),
@@ -529,7 +843,7 @@ def test_the_command_refuses_outside_a_terminal(monkeypatch, capsys):
     monkeypatch.setattr(cli.review, "in_terminal", lambda *streams: False)
     monkeypatch.setattr(admin, "run_gcloud", lambda args: pytest.fail("gcloud ran"))
     code = cli.main(
-        ["admin", "add-team", "team-a", "--bucket", "example-bucket", "--project",
+        ["admin", "add-team", "DD-7KQ4", "--bucket", "example-bucket", "--project",
          "example-project", "--gcp-project", GCP, "--producer", "producer-one@example.com"]
     )  # fmt: skip
     assert code == 1
@@ -562,7 +876,7 @@ def test_an_account_check_that_fails_stops_everything(out):
 
 def test_must_refuse_2_an_account_made_for_another_bucket_stops(out):
     fake = FakeGcloud()
-    fake.accounts[EMAIL] = "diffdata upload: other-bucket/team-a"
+    fake.accounts[EMAIL] = "diffdata upload: other-bucket/DD-7KQ4"
     with pytest.raises(AdminError, match="Choose another team name"):
         run(team(out), fake=fake)
     assert fake.changes() == []
@@ -704,7 +1018,7 @@ def test_ctrl_c_after_the_team_file_is_written_keeps_its_key(out, monkeypatch):
     with pytest.raises(admin.Cancelled, match="after the team file was written"):
         run(team(out), fake=fake)
     assert fake.keys[EMAIL] == 1
-    assert [p.name for p in out.iterdir()] == ["team-a.diffdata-team.json"]
+    assert [p.name for p in out.iterdir()] == ["DD-7KQ4.diffdata-team.json"]
 
 
 def test_ctrl_c_while_gcloud_makes_the_key_says_to_check(out):
@@ -727,12 +1041,12 @@ def test_ctrl_c_while_gcloud_makes_the_key_says_to_check(out):
 def test_the_command_returns_130_on_ctrl_c(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(cli.review, "in_terminal", lambda *streams: True)
 
-    def cancelled(team, ask_yes):
+    def cancelled(team, ask_yes, make_code=False):
         raise admin.Cancelled("Stopped by Ctrl-C. Nothing was changed.")
 
     monkeypatch.setattr(admin, "add_team", cancelled)
     code = cli.main(
-        ["admin", "add-team", "team-a", "--bucket", "example-bucket", "--project",
+        ["admin", "add-team", "DD-7KQ4", "--bucket", "example-bucket", "--project",
          "example-project", "--gcp-project", GCP, "--producer", "producer-one@example.com",
          "--out", str(tmp_path / "teams")]
     )  # fmt: skip

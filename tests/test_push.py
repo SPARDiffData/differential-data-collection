@@ -134,6 +134,8 @@ def config(data: Path, key: dict | None = KEY, **store) -> Config:
         # make_scrub's made-up inbox and store folders are read as channels, so each needs an
         # entry (#118).
         slack_notices=(("run", "none"), ("CFAKE0001", "none")),
+        # The canvas is listed, so push may send its copy (#147, CON-3).
+        slack_canvases=("FFAKE0001",),
         path=home / "config.toml",
         **{f"store_{k}": v for k, v in settings.items()},
     )
@@ -288,7 +290,7 @@ def test_a_canvas_copy_with_no_date_is_left_out_and_counted(tmp_path):
     opener = Opener()
     report = push(config(tmp_path), opener)
     assert not any("slack-canvas" in k for k in opener.store.objects)
-    assert "1 canvas copy(ies) had no last_changed date" in report
+    assert "1 canvas or doc copy(ies) had no last_changed date" in report
     assert report.complete is False  # a passed copy wasn't sent: no clean-history offer (#150)
 
 
@@ -630,7 +632,8 @@ def test_diffdata_push_reports_a_refusal_and_fails(tmp_path, monkeypatch, capsys
 def test_diffdata_push_sends_through_the_store(data, tmp_path, monkeypatch, capsys):
     (tmp_path / "config.toml").write_text(
         f'[local]\ndata_dir = "{data.as_posix()}"\n\n'
-        '[sources]\nslack_notices = { "run" = "none", CFAKE0001 = "none" }\n\n'
+        '[sources]\nslack_notices = { "run" = "none", CFAKE0001 = "none" }\n'
+        'slack_canvases = ["FFAKE0001"]\n\n'
         '[store]\nbackend = "gcs"\n'
         'bucket = "fake-pilot-bucket"\nfolder = "fake-team"\nproducer = "fake-producer"\n'
         'project = "fake-project"\nsend_not_approved = "yes"\n',
@@ -678,7 +681,9 @@ def test_a_real_scrub_is_pushed_and_nothing_from_outside_scrubbed_goes(
     scrub(cfg)
     manifest = json.loads((cfg.data_dir / "scrubbed" / "manifest.json").read_text("utf-8"))
     store = FakeStore()
-    push(replace(config(cfg.data_dir), slack_notices=cfg.slack_notices), Opener(store))
+    settings = config(cfg.data_dir)
+    settings = replace(settings, slack_notices=cfg.slack_notices, slack_canvases=cfg.slack_canvases)
+    push(settings, Opener(store))
     copies = {k: v for k, v in store.objects.items() if "/pushes/" not in k}
     assert len(copies) == len(manifest["copies"]) > 1
     scrubbed = {(cfg.data_dir / "scrubbed" / c["path"]).read_bytes() for c in manifest["copies"]}
