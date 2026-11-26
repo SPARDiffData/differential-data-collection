@@ -3,11 +3,12 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/SPARDiffData/differential-data-collection/main/install.sh | bash
 #
-# or, to hand setup your team file straight away:
+# It finds your team file (DD-XXXX.diffdata-team.json) in Downloads (#128). If it's kept
+# somewhere else, give its path at the end:
 #
-#   curl -fsSL https://raw.githubusercontent.com/SPARDiffData/differential-data-collection/main/install.sh | bash -s -- ~/Downloads/DD-7KQ4.diffdata-team.json
+#   curl -fsSL https://raw.githubusercontent.com/SPARDiffData/differential-data-collection/main/install.sh | bash -s -- ~/keys/DD-7KQ4.diffdata-team.json
 #
-# It checks the folder first, then for Git (and starts its install on macOS), installs uv from
+# It checks the folder first, then finds the team file, then checks for Git (and starts its install on macOS), installs uv from
 # Astral if it's missing, clones this repo to ~/differential-data-collection (or $DIFFDATA_REPO)
 # or fast-forwards a clean clone, runs `uv sync`, then hands over to `diffdata setup`.
 #
@@ -25,6 +26,11 @@
 #       installer, with its download overrides cleared). uv's installer adds uv to your PATH,
 #       as it always does, so `uv run` works in new windows. `uv sync` then installs the
 #       locked Python packages from PyPI.
+#
+# And from #128's must-refuse list (approved on 2026-11-26):
+#   7   to take a team file it isn't sure of: only DD-XXXX.diffdata-team.json at the top of
+#       Downloads, never one in a subfolder, a link or a folder; with two or more, it asks for
+#       the project code (and stops without a terminal); with none, it stops
 
 set -euo pipefail
 
@@ -90,6 +96,76 @@ if [ -e "$DEST" ] || [ -L "$DEST" ]; then
     stop "$DEST is there, but isn't a clone of diffdata. Move it away, or set DIFFDATA_REPO to another folder. Nothing was changed."
   fi
   update=yes
+fi
+
+# The team file (#128, must-refuse 7): the path given, or else the one in Downloads. Only a
+# file named DD-XXXX.diffdata-team.json (a project code, as `diffdata admin add-team` makes
+# them) at the top of Downloads counts: not one in a subfolder, a link or a folder. It's only
+# looked at by name, never opened.
+if [ -z "$TEAM_FILE" ]; then
+  downloads="$HOME/Downloads"
+  if command -v xdg-user-dir >/dev/null 2>&1; then # Linux, where Downloads may be renamed
+    # The x keeps every line break it prints; only the one that ends its line is taken off.
+    named="$(xdg-user-dir DOWNLOAD 2>/dev/null && printf x)" || named=""
+    named="${named%x}"
+    named="${named%$'\n'}"
+    case "$named" in "" | "$HOME" | "$HOME/") ;; *) downloads="$named" ;; esac
+  fi
+  c='[ABCDEFGHJKMNPQRSTUVWXYZ23456789]'
+  shopt -u nocasematch nocaseglob failglob # letter case counts; no match is our own message
+  case "$downloads" in
+    *$'\n'*) stop "Your Downloads folder's path has a line break in it. Run the install line again with the team file's path after 'bash -s --'. Nothing was changed." ;;
+  esac
+  found=""
+  count=0
+  for candidate in "$downloads"/DD-*.diffdata-team.json; do
+    case "${candidate##*/}" in
+      DD-$c$c$c$c.diffdata-team.json) ;;
+      *) continue ;;
+    esac
+    # A file, not a link (a hard link has more than one name: setup refuses it too).
+    if [ -f "$candidate" ] && [ ! -L "$candidate" ] &&
+      [ -n "$(find "$candidate" -prune -links 1 2>/dev/null)" ]; then
+      found="$found$candidate"$'\n'
+      count=$((count + 1))
+    fi
+  done
+  if [ "$count" -eq 0 ]; then
+    hint=""
+    for candidate in "$downloads"/*diffdata-team*; do
+      if [ -e "$candidate" ] || [ -L "$candidate" ]; then
+        hint=" ${candidate##*/} doesn't count: the name must be exactly DD- and the code, then .diffdata-team.json, as a file, not a link or folder."
+        break
+      fi
+    done
+    if [ -z "$hint" ] && [ "$(uname -s)" = "Darwin" ]; then
+      hint=" If your Mac asked whether Terminal may open Downloads and you said no, allow it in System Settings > Privacy & Security > Files and Folders."
+    fi
+    stop "No team file in $downloads. Download it from the project team's message (it's named like DD-7KQ4.diffdata-team.json), then run the install line again.$hint Nothing was changed."
+  elif [ "$count" -eq 1 ]; then
+    TEAM_FILE="${found%$'\n'}"
+  else
+    codes="$(printf '%s' "$found" | while IFS= read -r f; do n="${f##*/}"; printf ' %s' "${n%%.*}"; done)"
+    if [ -n "${CLAUDECODE+x}" ] || ! { exec 3<>/dev/tty; } 2>/dev/null; then
+      stop "There are $count team files in $downloads:$codes. Run the install line again with the right one's path after 'bash -s --'. Nothing was changed."
+    fi
+    # Asked on the terminal itself, so it shows even when the output goes to a file.
+    printf 'There are %s team files in Downloads:%s.\n' "$count" "$codes" >&3
+    printf 'Which is your project code? (It is in the project team'"'"'s message.) ' >&3
+    answer=""
+    IFS= read -r answer <&3 || true
+    exec 3<&-
+    answer="$(printf '%s' "$answer" | tr -d ' \t\r' | tr '[:lower:]' '[:upper:]')"
+    answer="DD-${answer#DD-}"
+    TEAM_FILE=""
+    while IFS= read -r f; do
+      if [ "$f" = "$downloads/$answer.diffdata-team.json" ]; then TEAM_FILE="$f"; fi
+    done <<EOF
+$found
+EOF
+    [ -n "$TEAM_FILE" ] || stop "That isn't one of them. Run the install line again and type one of:$codes. Nothing was changed."
+  fi
+  say "Your team file: $TEAM_FILE"
 fi
 
 # Git. macOS ships a git command that only offers Apple's installer, so check it runs.
@@ -167,10 +243,7 @@ if ! command -v claude >/dev/null 2>&1 && [ ! -d "/Applications/Claude.app" ]; t
 fi
 
 # 14: hand over to setup only in a terminal a person types in, never under Claude Code.
-setup_line="cd $(quoted "$DEST") && $(quoted "$UV") run diffdata setup"
-if [ -n "$TEAM_FILE" ]; then
-  setup_line="$setup_line $(quoted "$TEAM_FILE")"
-fi
+setup_line="cd $(quoted "$DEST") && $(quoted "$UV") run diffdata setup $(quoted "$TEAM_FILE")"
 if [ -n "${CLAUDECODE+x}" ] || [ ! -t 1 ] || ! { exec 3</dev/tty; } 2>/dev/null; then
   say "Installed. Now run setup yourself, in your own Terminal:"
   say "  $setup_line"
@@ -178,7 +251,4 @@ if [ -n "${CLAUDECODE+x}" ] || [ ! -t 1 ] || ! { exec 3</dev/tty; } 2>/dev/null;
 fi
 exec 3<&-
 say "Installed. Starting setup..."
-if [ -n "$TEAM_FILE" ]; then
-  exec "$UV" run diffdata setup "$TEAM_FILE" </dev/tty
-fi
-exec "$UV" run diffdata setup </dev/tty
+exec "$UV" run diffdata setup "$TEAM_FILE" </dev/tty

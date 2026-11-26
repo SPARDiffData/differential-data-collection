@@ -2,11 +2,12 @@
 #
 #   irm https://raw.githubusercontent.com/SPARDiffData/differential-data-collection/main/install.ps1 | iex
 #
-# or, to hand setup your team file straight away:
+# It finds your team file (DD-XXXX.diffdata-team.json) in Downloads (#128), wherever Windows
+# keeps that folder (it may be moved, for example into OneDrive). If it's kept somewhere else:
 #
-#   $env:DIFFDATA_TEAM_FILE = "$HOME\Downloads\DD-7KQ4.diffdata-team.json"; irm https://raw.githubusercontent.com/SPARDiffData/differential-data-collection/main/install.ps1 | iex
+#   $env:DIFFDATA_TEAM_FILE = "$HOME\keys\DD-7KQ4.diffdata-team.json"; irm https://raw.githubusercontent.com/SPARDiffData/differential-data-collection/main/install.ps1 | iex
 #
-# It checks the folder first, then for Git (and installs it with winget if it can), installs
+# It checks the folder first, then finds the team file, then checks for Git (and installs it with winget if it can), installs
 # uv from Astral if it's missing, clones this repo to %USERPROFILE%\differential-data-collection
 # (or $env:DIFFDATA_REPO) or fast-forwards a clean clone, runs `uv sync`, then hands over to
 # `diffdata setup`.
@@ -24,6 +25,11 @@
 #       with your own Git settings' URL rewrites ignored), Astral (uv's installer, with its
 #       download overrides cleared) and winget (Git). uv's installer adds uv to your PATH, as
 #       it always does. `uv sync` then installs the locked Python packages from PyPI.
+#
+# And from #128's must-refuse list (approved on 2026-11-26):
+#   7   to take a team file it isn't sure of: only DD-XXXX.diffdata-team.json at the top of
+#       Downloads, never one in a subfolder, a link or a folder; with two or more, it asks for
+#       the project code (and stops without a window a person types in); with none, it stops
 #
 # Everything runs inside one script block, and stops with `return`, never by ending the
 # session: under `irm | iex`, that would close the person's PowerShell window.
@@ -103,6 +109,102 @@
                 return
             }
             $update = $true
+        }
+
+        # The team file (#128, must-refuse 7): DIFFDATA_TEAM_FILE, or else the one in Downloads.
+        # Only a file named DD-XXXX.diffdata-team.json (a project code, as `diffdata admin
+        # add-team` makes them) at the top of Downloads counts: not one in a subfolder, a link
+        # or a folder. It's only looked at by name, never opened.
+        if (-not $TeamFile) {
+            # The Downloads folder Windows reports: its known folder, recorded here even when it
+            # has been moved (into OneDrive, say). Otherwise the usual one in your home folder.
+            $downloadsId = '{374DE290-123F-4565-9164-39C4925E467B}'
+            $shellFolders = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
+            $known = Get-ItemProperty -LiteralPath $shellFolders -Name $downloadsId -ErrorAction SilentlyContinue
+            $downloads = if ($known -and $known.$downloadsId) {
+                [Environment]::ExpandEnvironmentVariables([string]$known.$downloadsId)
+            }
+            else { Join-Path $env:USERPROFILE 'Downloads' }
+            # A link is a "reparse point". So is every file in a OneDrive folder, so those are
+            # told apart by the reparse point's tag, which Windows lists with the folder: the
+            # file is never opened (PowerShell 5.1's LinkType opens it). OneDrive's tags are
+            # 0x9000?01A. Anything else is a link of some kind, and is skipped. If the tag can't
+            # be read, every reparse point is skipped. (A hard link can't be seen without
+            # opening the file: setup refuses one.)
+            function Plain([IO.FileInfo]$File) {
+                if (-not ($File.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return $true }
+                try {
+                    if (-not ('DiffdataReparseTag' -as [type])) {
+                        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class DiffdataReparseTag {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct FindData {
+        public uint Attributes; public uint C1, C2, A1, A2, W1, W2;
+        public uint SizeHigh, SizeLow, Reserved0, Reserved1;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string Name;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 14)] public string ShortName;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern IntPtr FindFirstFileW(string path, out FindData data);
+    [DllImport("kernel32.dll")]
+    static extern bool FindClose(IntPtr handle);
+    public static long Of(string path) {
+        FindData data;
+        IntPtr handle = FindFirstFileW(path, out data);
+        if (handle == new IntPtr(-1)) { return -1; }
+        FindClose(handle);
+        return (data.Attributes & 0x400) != 0 ? (long)data.Reserved0 : 0;
+    }
+}
+'@
+                    }
+                    $tag = [DiffdataReparseTag]::Of($File.FullName)
+                    # 0xFFFF0FFF and 0x9000001A, in decimal: PowerShell 5.1 reads those hex
+                    # numbers as negative.
+                    return ($tag -ge 0) -and (($tag -band 4294905855) -eq 2415919130)
+                }
+                catch { return $false }
+            }
+            $found = @()
+            if (Test-Path -LiteralPath $downloads -PathType Container) {
+                $found = @(Get-ChildItem -LiteralPath $downloads -File -Force | Where-Object {
+                        $_.Name -cmatch '^DD-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}\.diffdata-team\.json$' -and (Plain $_)
+                    } | Sort-Object Name)
+            }
+            $codes = ($found | ForEach-Object { $_.Name.Split('.')[0] }) -join ', '
+            if ($found.Count -eq 0) {
+                $hint = ''
+                if (Test-Path -LiteralPath $downloads -PathType Container) {
+                    $near = @(Get-ChildItem -LiteralPath $downloads -Force -Filter '*diffdata-team*' | Select-Object -First 1)
+                    if ($near.Count -eq 1) {
+                        $hint = " $($near[0].Name) doesn't count: the name must be exactly DD- and the code, then .diffdata-team.json, as a file, not a link or folder. If it's right, set DIFFDATA_TEAM_FILE to its path before the install line."
+                    }
+                }
+                Fail "No team file in $downloads. Download it from the project team's message (it's named like DD-7KQ4.diffdata-team.json), then run the install line again.$hint Nothing was changed."
+                return
+            }
+            elseif ($found.Count -eq 1) {
+                $TeamFile = $found[0].FullName
+            }
+            else {
+                $askable = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
+                if ((Test-Path Env:CLAUDECODE) -or -not $askable) {
+                    Fail "There are $($found.Count) team files in ${downloads}: $codes. Set DIFFDATA_TEAM_FILE to the right one's path and run the install line again. Nothing was changed."
+                    return
+                }
+                # The choices are in the question itself, so they show wherever the question does.
+                $answer = ([string](Read-Host "There are $($found.Count) team files in Downloads: $codes. Which is your project code? (It is in the project team's message.)")).Trim().ToUpperInvariant()
+                if (-not $answer.StartsWith('DD-')) { $answer = "DD-$answer" }
+                $match = @($found | Where-Object { $_.Name -ceq "$answer.diffdata-team.json" })
+                if ($match.Count -ne 1) {
+                    Fail "That isn't one of them. Run the install line again and type one of: $codes. Nothing was changed."
+                    return
+                }
+                $TeamFile = $match[0].FullName
+            }
+            Say "Your team file: $TeamFile"
         }
 
         # Git.
@@ -199,8 +301,7 @@
             }
 
             # 14: hand over to setup only in a window a person types in, never under Claude Code.
-            $line = "Set-Location -LiteralPath $(Quote $Dest) -ErrorAction Stop; & $(Quote $Uv) run diffdata setup"
-            if ($TeamFile) { $line = "$line $(Quote $TeamFile)" }
+            $line = "Set-Location -LiteralPath $(Quote $Dest) -ErrorAction Stop; & $(Quote $Uv) run diffdata setup $(Quote $TeamFile)"
             $byPerson = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
             if ((Test-Path Env:CLAUDECODE) -or -not $byPerson) {
                 Say 'Installed. Now run setup yourself, in your own PowerShell:'
@@ -208,7 +309,7 @@
                 return
             }
             Say 'Installed. Starting setup...'
-            if ($TeamFile) { & $Uv run diffdata setup $TeamFile } else { & $Uv run diffdata setup }
+            & $Uv run diffdata setup $TeamFile
         }
         finally {
             Pop-Location

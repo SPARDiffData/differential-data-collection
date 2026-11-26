@@ -1,7 +1,7 @@
 # Runs install.ps1's tests as a throwaway non-admin Windows user (#150, PR C; Lachlan's choice
 # (b), 2026-11-26). GitHub's Windows runners are elevated, so install.ps1 stops at its
 # administrator refusal there; as this user, it reaches the folder, team-file and setup checks
-# (must-refuse 12 to 14).
+# (must-refuse 12 to 14), and finding the team file in Downloads (#128, must-refuse 7).
 #
 # The user's password is random for each run and never printed. The user, its scheduled task
 # and its profile are deleted at the end, even when the tests fail.
