@@ -201,12 +201,12 @@ def yes(ask: Ask, say: Say, question: str) -> bool:
 def slack(claude: Claude, command: list[str], test: bool, data: Path, say: Say) -> None:
     """One /slack-export in Claude Code. Stops unless its run was built."""
     prompt = "/slack-export test" if test else "/slack-export"
+    started = slack_inbox.utc_iso(datetime.now(UTC))
+    preflight(lambda _: None)  # again: config.toml may have changed while a question waited
     say(
         f"\nClaude Code opens now and runs {prompt}. If it waits with {prompt} typed, press "
         "Enter. When it has finished, type /exit to come back here."
     )
-    started = slack_inbox.utc_iso(datetime.now(UTC))
-    preflight(lambda _: None)  # again: config.toml may have changed while a question waited
     claude([*command, prompt])  # waited for: Claude has ended when this returns (item 6)
     if not built_since(data, started, test):
         what = "The test run" if test else "The export"
@@ -273,7 +273,7 @@ def preflight(say: Say):
     if gaps:
         raise Stop("\n".join(["Setup isn't done. Fix these, then run again:", *check.lines(gaps)]))
     shown = {
-        (f"Channel {n}, listed by its ID," if channel_id(key) else f"#{key}"): notice
+        (f"The channel in slack_notices entry {n}" if channel_id(key) else f"#{key}"): notice
         for n, (key, notice) in enumerate(config.slack_notices, start=1)
     }
     closes = team_optouts.check_windows(shown, datetime.now(UTC))
