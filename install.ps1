@@ -179,7 +179,7 @@ public static class DiffdataReparseTag {
                 if (Test-Path -LiteralPath $downloads -PathType Container) {
                     $near = @(Get-ChildItem -LiteralPath $downloads -Force -Filter '*diffdata-team*' | Select-Object -First 1)
                     if ($near.Count -eq 1) {
-                        $hint = " $($near[0].Name) doesn't count: the name must be exactly DD- and the code, then .diffdata-team.json, as a file, not a link or folder."
+                        $hint = " $($near[0].Name) doesn't count: the name must be exactly DD- and the code, then .diffdata-team.json, as a file, not a link or folder. If it's right, set DIFFDATA_TEAM_FILE to its path before the install line."
                     }
                 }
                 Fail "No team file in $downloads. Download it from the project team's message (it's named like DD-7KQ4.diffdata-team.json), then run the install line again.$hint Nothing was changed."

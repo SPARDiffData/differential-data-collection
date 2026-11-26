@@ -112,7 +112,7 @@ if [ -z "$TEAM_FILE" ]; then
     case "$named" in "" | "$HOME" | "$HOME/") ;; *) downloads="$named" ;; esac
   fi
   c='[ABCDEFGHJKMNPQRSTUVWXYZ23456789]'
-  shopt -u nocasematch nocaseglob # the name's letter case counts, whatever bash was given
+  shopt -u nocasematch nocaseglob failglob # letter case counts; no match is our own message
   case "$downloads" in
     *$'\n'*) stop "Your Downloads folder's path has a line break in it. Run the install line again with the team file's path after 'bash -s --'. Nothing was changed." ;;
   esac
