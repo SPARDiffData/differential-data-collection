@@ -3,7 +3,7 @@
 `setup` (ENG-1, CON-1, STO-1), `check` (ENG-1), `clean-history` (CON-5, #150), `admin
 add-team` and `optouts` (STO-1, CON-4, for the project team), `discover slack` (DIS-1),
 `consent` (CON-1, CON-3), `collect google-docs` (COL-4, COL-5), `scrub` (SCR-1, SCR-2) and
-`push` (STO-1, STO-2, STO-3) are built.
+`push` (STO-1, STO-2, STO-3) and `export` (#128: all of these in one run) are built.
 Any other subcommand added before it's built is a stub that names the requirement IDs
 (docs/requirements.md) its feature Issue will build.
 """
@@ -15,6 +15,7 @@ from pathlib import Path
 from diffdata import __version__
 from diffdata.collect import google_fetch, google_signin
 from diffdata.common import check as producer_check
+from diffdata.common import export as producer_export
 from diffdata.common import history
 from diffdata.common import setup as producer_setup
 from diffdata.common.config import ConfigError, load_config, user_config_file
@@ -60,6 +61,11 @@ COMMANDS = {
     "push": (
         "Send the scrubbed copies the last scrub passed to your team's folder in the store.",
         "STO-1, STO-2, STO-3",
+    ),
+    "export": (
+        "After day 7: export, review, scrub and push, asking you along the way. In your own "
+        "terminal, with Claude Code closed.",
+        "ENG-1, DIS-1, CON-1, CON-3, CON-5, SCR-1, STO-1, STO-3",
     ),
     "clean-history": (
         "Delete this repo's Claude Code session history, after collecting, in your own terminal "
@@ -189,6 +195,8 @@ def add_discover_sources(discover: argparse.ArgumentParser) -> None:
             step.add_argument("channels", nargs="+", metavar="NAME=ID|ID")
             full_help = "Read every channel from the start, and every listed canvas."
             step.add_argument("--full", action="store_true", help=full_help)
+            test_help = "A test run (/slack-export test), so diffdata export can tell it apart."
+            step.add_argument("--test", action="store_true", help=test_help)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -215,6 +223,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_push()
     if args.command == "clean-history":
         return run_clean_history()
+    if args.command == "export":
+        return producer_export.run()
 
     _, requirement_ids = COMMANDS[args.command]
     print(
@@ -332,7 +342,7 @@ def run_slack_step(args: argparse.Namespace) -> int:
                 raise ConfigError(f"No channels are listed under slack_channels in {config.path}.")
             report = "\n".join([f"Opted-in channels, from {config.path}:", *channels])
         elif args.step == "begin":
-            report = slack_inbox.begin(config, args.channels, full=args.full)
+            report = slack_inbox.begin(config, args.channels, full=args.full, test=args.test)
         elif args.step == "abort":
             report = slack_inbox.abort(config)
         elif args.step == "canvases-due":

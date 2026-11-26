@@ -103,6 +103,12 @@ def run_version(tool: str) -> str | None:
 def desktop_claude_code() -> tuple[int, int, int] | None:
     """The newest Claude Code the Claude desktop app keeps, from its folder names only. The
     app runs /slack-export too, with no `claude` command on PATH."""
+    found = desktop_versions()
+    return max(found) if found else None
+
+
+def desktop_versions() -> dict[tuple[int, int, int], Path]:
+    """Each Claude Code version the Claude desktop app keeps, and its folder."""
     places: list[Path] = []
     if sys.platform == "darwin":
         places.append(Path.home() / "Library" / "Application Support" / "Claude" / "claude-code")
@@ -124,7 +130,7 @@ def desktop_claude_code() -> tuple[int, int, int] | None:
                 ]
             except OSError:
                 pass
-    found: list[tuple[int, int, int]] = []
+    found: dict[tuple[int, int, int], Path] = {}
     for place in places:
         try:
             for entry in place.iterdir():
@@ -132,10 +138,10 @@ def desktop_claude_code() -> tuple[int, int, int] | None:
                 if VERSION.fullmatch(entry.name) and entry.is_dir() and any(entry.iterdir()):
                     version = parse_version(entry.name)
                     if version:
-                        found.append(version)
+                        found[version] = entry
         except OSError:
             continue
-    return max(found) if found else None
+    return found
 
 
 def parse_version(text: str) -> tuple[int, int, int] | None:

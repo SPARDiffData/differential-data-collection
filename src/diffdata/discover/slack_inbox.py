@@ -149,6 +149,8 @@ class Run:
     canvases: list[str] = field(default_factory=list)
     # The canvases `canvases-due` said to read, or None if it hasn't run.
     due: list[str] | None = None
+    # A test run (/slack-export test), which `diffdata export` tells apart from an export.
+    test: bool = False
 
 
 def utc_iso(when: datetime) -> str:
@@ -372,6 +374,7 @@ def begin(
     now: datetime | None = None,
     full: bool = False,
     fetch: team_optouts.Fetcher | None = None,
+    test: bool = False,
 ) -> str:
     """Open an export run for `pairs` like "example-channel=C00000001", or a bare ID for a
     channel config.toml lists by ID. Returns a report, which says where each channel's read
@@ -459,6 +462,7 @@ def begin(
         channels=channels,
         canvases=canvases,
         full=full,
+        test=test,
     )
     write_json(run_path(config.data_dir), asdict(run))
     notes.append(

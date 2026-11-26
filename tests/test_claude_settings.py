@@ -503,3 +503,33 @@ def test_claudes_tools_cant_run_clean_history(command):
 @pytest.mark.parametrize("command", CLEAN_HISTORY_DEVELOPMENT_RUNS)
 def test_working_on_the_clean_history_code_isnt_blocked(command):
     assert not denied(command)
+
+
+# `diffdata export` (#128, must-refuse 1): it starts the review and asks for the typed push, so
+# Claude's tools may not run it or import it.
+EXPORT_RUNS = [
+    "Bash(uv run diffdata export)",
+    "Bash(echo y | script -q /dev/null uv run diffdata export)",
+    "Bash(.venv/bin/diffdata export)",
+    "Bash(uv run python -m diffdata export)",
+    'Bash(uv run python -c "from diffdata.common import export")',
+    'Bash(uv run python -c "import diffdata.common.export")',
+    "PowerShell(uv run diffdata export)",
+    "PowerShell(.venv\\Scripts\\diffdata.exe export)",
+    'PowerShell(uv run python -c "from diffdata.common import export")',
+]
+EXPORT_DEVELOPMENT_RUNS = [
+    "Bash(uv run pytest tests/test_export.py)",
+    "Bash(git add src/diffdata/common/export.py)",
+    "Bash(uv run diffdata discover slack build)",
+]
+
+
+@pytest.mark.parametrize("command", EXPORT_RUNS)
+def test_claudes_tools_cant_run_export(command):
+    assert denied(command)
+
+
+@pytest.mark.parametrize("command", EXPORT_DEVELOPMENT_RUNS)
+def test_working_on_the_export_code_isnt_blocked(command):
+    assert not denied(command)

@@ -72,6 +72,28 @@ Setup asks for the Slack channels to collect (type a name, or paste the channel'
 
 You can still copy `config.example.toml` to `~/.diffdata/config.toml` and fill it in by hand. Also copy `.env.example` to `.env` there. Both stay on your computer. Keeping them outside the repo means tools working in the repo, such as Codex, can't read them.
 
+## After day 7: one command
+
+When every channel's 7 days are over, close Claude Code and type this in your own Terminal or PowerShell, in the repo folder:
+
+```
+uv run diffdata export
+```
+
+It does every step below in order, and says what happens next at each one:
+
+1. **Checks** that setup is done, that the 7 days are over, and that your team's opt-out list is in your team's folder. Nothing is read before these pass.
+2. **The test run, then the export.** Claude Code opens with `/slack-export test`. When it has finished, type `/exit`. If the test worked, it asks `Export now? [y/n]`, and on `y` Claude Code opens again with `/slack-export`: type `/exit` when it's done. Claude Code may ask you to sign in the first time: use the same Claude account as your Claude app, since your Slack connector is on that account.
+3. **The review starts by itself**, as `uv run diffdata consent review` (see "Approve new canvases and Google files" below).
+4. **More rounds.** If you approved canvases, Claude Code opens once more to read them. If Google Docs are listed or approved, Google's sign-in opens in your browser the first time, and the docs are fetched. Then the review again. Press Enter to go on, or type `stop`. It stops after 3 rounds.
+5. **Scrub.** It shows the counts, and where the copies and `private/flags.md` are.
+6. **Push.** Read the copies, then type `push` to upload them. Anything else sends nothing.
+7. **Clear Claude's history.** It runs `diffdata clean-history`, which shows what it would delete and asks for `yes`.
+
+**If you stop partway** (`n`, `stop`, Ctrl+C or closing the window), your review answers so far are kept, and nothing more is sent. Run `uv run diffdata export` again: if the export is done since your last push, it starts at the review. The push question is always asked again. It prints counts only. It runs only in a terminal you type in, never with Claude Code's shell, and this repo's settings stop Claude from running it. Claude Code gets only the slash command, with this repo's rules.
+
+The sections below are the same steps one at a time, which still work.
+
 ## Export a Slack channel (DIS-1)
 
 For the pilot there's no Slack app: Claude Code reads Slack for you through its Slack connector, as you. Nothing writes to Slack. This repo's `.claude/settings.json` removes every Slack write tool from Claude while it works in this folder. During `/slack-export`, a hook also stops any read of a channel or canvas that the export run doesn't name, any search other than a files or message search of one of the run's channels, and any Slack read the export never makes, such as a file download, before it runs. The run takes its channels from `config.toml`, and its canvases from `config.toml` and your approvals. If that check can't run, the read is stopped too. The check stays on for the rest of that Claude session, so start a new session for each export, and for any other Slack work afterwards. This needs Claude Code 2.1.295 or later (`claude --version`).

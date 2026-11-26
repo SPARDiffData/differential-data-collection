@@ -35,7 +35,7 @@ After each read or search, the hook adds a note that starts "diffdata saved this
 
 Arguments: $ARGUMENTS
 
-If the arguments say `test`, this is a **test run**: use only the first channel, read one page of 5 messages in step 3, skip steps 4 and 5, search only the first page in step 6, and read only the first canvas in step 8. Since it skips pages, the search and the threads, a test run leaves each channel's start point where it was.
+If the arguments say `test`, this is a **test run**: add `--test` to `begin` in step 2, use only the first channel, read one page of 5 messages in step 3, skip steps 4 and 5, search only the first page in step 6, and read only the first canvas in step 8. Since it skips pages, the search and the threads, a test run leaves each channel's start point where it was.
 
 If the arguments say `full`, this is a **full run**: add `--full` to `begin` in step 2. It then starts every channel from the start, and `canvases-due` lists every canvas. Use it to pick up edits to older posts, which an incremental run doesn't see.
 
