@@ -618,6 +618,7 @@ def config_step(
     raw: dict,
     picker: Callable[[str], Path | None],
     choose: Callable[[str], str],
+    written: bool = True,
 ) -> tuple[dict, TeamFile | None]:
     """Ask, and return the new settings (`raw` with only setup's keys changed) and the team
     file used, if any."""
@@ -647,7 +648,7 @@ def config_step(
         f"Producer handle [Enter for {handle_default}]: ",
         lambda t: check_handle(t if t.strip() else handle_default),
     )
-    send = not_approved_step(prompter, store)
+    send = not_approved_step(prompter, store, written)
     return with_answers(raw, channels, space, folder, values, handle, notices, send), team
 
 
@@ -891,12 +892,13 @@ def with_answers(
     return new
 
 
-def not_approved_step(prompter: Prompter, store: dict) -> str:
+def not_approved_step(prompter: Prompter, store: dict, written: bool = True) -> str:
     """send_not_approved, asked with an explicit y or n (#150, item 5; must-refuse 25 to 27).
     Enter alone asks again, on a re-run too: the current value is shown, never kept by itself."""
     prompter.say(NOT_APPROVED_HELP)
     if "send_not_approved" in store:
-        prompter.say(f"Your config.toml says: {printable(str(store['send_not_approved']))}.")
+        where = "Your config.toml says" if written else "You answered"
+        prompter.say(f"{where}: {printable(str(store['send_not_approved']))}.")
     return "yes" if prompter.yes(NOT_APPROVED_QUESTION) else "no"
 
 
@@ -1166,7 +1168,7 @@ def setup(
             prompter.say(NOTHING_WRITTEN)
             return 0
         # c: each question in turn, with the shown values as the defaults; then the screen again.
-        new, team = config_step(prompter, team, new, picker, choose)
+        new, team = config_step(prompter, team, new, picker, choose, written=False)
         # A first run has no earlier notices: one for a channel taken off the list after c
         # would be written without being on the screen (must-refuse 24).
         table = new["sources"].get(NOTICES_KEY, {})

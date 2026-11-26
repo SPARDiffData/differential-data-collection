@@ -1645,3 +1645,12 @@ def test_must_refuse_27_push_still_refuses_a_hand_typed_value(home):
     )
     with pytest.raises(push.PushError, match="send_not_approved"):
         push.settings(config_module.load_config(path))
+
+
+def test_after_c_on_a_first_run_the_question_shows_the_answer_not_a_config(home):
+    path = team_file(home)
+    code, script = run(home, *fresh_answers(), team=path, not_approved=("y", "n"))
+    assert code == 0
+    assert "You answered: yes." in script.text
+    assert "Your config.toml says" not in script.text
+    assert written_send(home) == "no"
