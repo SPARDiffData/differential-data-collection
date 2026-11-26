@@ -4,7 +4,7 @@
 
 ## Status
 
-**v0.0.1: repo skeleton.** The `diffdata` command and its stages exist. Slack export (DIS-1) works through Claude Code; the other stages are stubs. Next come the reference log, canvas and Google Doc current versions, and uploading to central storage on Google Cloud Storage. See [CHANGELOG.md](CHANGELOG.md).
+**Pilot-ready, still at version 0.0.1.** These work today: setup from a team file, the Slack export through Claude Code (with opt-outs and late joiners left out), Slack canvases, Google Docs, the consent review, the scrub, and the push to your team's folder on Google Cloud Storage. Per-use opt-outs and consumer access aren't built yet. The version number hasn't moved since the first skeleton: see [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick start
 
@@ -29,17 +29,21 @@ uv run diffdata --help
 uv run pytest
 ```
 
-To configure it, the project team sends you a **team file** (`<team>.diffdata-team.json`). Run setup with it, in your own Terminal or PowerShell, in the repo folder:
+The project team sends you your team's **project code** (like `DD-7KQ4`), the **channel notice** and the **mentor message**, and a **team file** (`<code>.diffdata-team.json`). Do these in this order:
+
+1. **Post the notice in each channel you'll collect, and pin it.** Replace each `[close date]` with the date 7 days after the day you post. The 7 days start when it's posted.
+2. **Send the mentor message** to your mentor, in Slack.
+3. **Run setup once,** with the team file, in your own Terminal or PowerShell, in the repo folder. Have each pinned notice's link ready (the notice's menu, Copy link): setup asks for it.
 
 ```
-uv run diffdata setup ~/Downloads/team-a.diffdata-team.json
+uv run diffdata setup ~/Downloads/DD-7KQ4.diffdata-team.json
 ```
 
 Setup asks for the Slack channels to collect (type a name, or paste the channel's link), and for your workspace's address if no link gives it. Then it asks for each channel's notice link: paste the link of the notice pinned in that channel (its menu, Copy link), type `none` if everyone in it agreed directly, or press Enter to add it later. A link must be a Slack message link from that channel and workspace, or setup asks again; it checks this from the link itself, without going online. Until a channel has a notice link or `none`, `/slack-export` stops at it, and `uv run diffdata check` lists it: when the notice is posted, run setup again, answer `y` to Change it, and paste the link. It chooses the rest: your data folder, a made-up producer handle, and the team values in the file (bucket, folder, project). It shows everything on one screen, with each channel's notice as its date and time, "none" or "not added yet": type `y` to write it, `n` to stop, or `c` to go through each answer in turn. Then it makes your data folder, and writes `config.toml` in a `.diffdata` folder in your home folder (`C:\Users\<you>\.diffdata\` on Windows, `~/.diffdata/` on a Mac). It puts the team's store key and Google client file there too, readable only by you, and never shows them. It deletes the team file only if you say yes. Direct messages and group DMs can't be listed: the other people in them never agreed. Run it again to change your answers: it asks before it changes anything, keeps every other setting, and keeps the old file as `config.toml.bak`. At each notice question, Enter keeps the channel's notice as it is, and a channel you take off the list keeps its entry. Setup only runs in a terminal you type in, and this repo's settings stop Claude from running it, because the channel list is your opt-in.
 
 **Your producer handle is a pseudonym.** It labels your copies in the shared store instead of your name, so it's never your real name. Setup offers a made-up one, such as `example-project-k4r7`; press Enter to take it.
 
-**For the project team:** the team file is JSON: `{"format": "diffdata-team", "version": 1, "bucket": "…", "folder": "…", "project": "…", "store_key": {…the team's service account key…}, "google_client": {…the Desktop app client…}}`. `google_client` may be left out; any other key is refused. `diffdata admin add-team` writes it: see "For the project team" in [CONTRIBUTING.md](CONTRIBUTING.md#for-the-project-team). It holds the team's key, so send it privately, never in the repo, an Issue, a PR or a shared channel. Claude's tools may not read files named `*.diffdata-team.json`.
+**For the project team:** the team file is JSON: `{"format": "diffdata-team", "version": 1, "bucket": "…", "folder": "…", "project": "…", "store_key": {…the team's service account key…}, "google_client": {…the Desktop app client…}}`. `google_client` may be left out; any other key is refused. Its `folder` is the team's project code. `diffdata admin add-team` makes the code, writes the file, and prints the channel notice and the mentor message: see "For the project team" in [CONTRIBUTING.md](CONTRIBUTING.md#for-the-project-team). It holds the team's key, so send it privately, never in the repo, an Issue, a PR or a shared channel. Claude's tools may not read files named `*.diffdata-team.json`.
 
 You can still copy `config.example.toml` to `~/.diffdata/config.toml` and fill it in by hand. Also copy `.env.example` to `.env` there. Both stay on your computer. Keeping them outside the repo means tools working in the repo, such as Codex, can't read them.
 

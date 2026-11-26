@@ -14,7 +14,11 @@ as the Cloud project's owner. It does what was done by hand for the first test f
   4. makes the account's key, and writes one team file, <team>.diffdata-team.json, that
      `diffdata setup` reads (#131).
 
-Then it prints the team's pre-filled opt-out link and the channel notice (decision 5).
+Then it prints the producer's steps in order, day 7's steps, the team's pre-filled opt-out link,
+and the agreed channel notice and mentor message (decision 5; #150 items 1, 3, 4 and 6).
+
+The team name is its project code (#150, item 2): DD- and 4 capitals or digits with no 0, O, 1,
+I or L. Left out, add-team makes one.
 
 Why Creator on approved/ and not-approved/, not on the whole folder: a grant on a managed
 folder also covers every folder inside it. Creator on the whole folder would let the team's
@@ -41,6 +45,19 @@ What it refuses (#132's must-refuse list for add-team, approved 2026-11-25):
      deletes the key it just made
   5  a folder (the team name), project or bucket that `push` would refuse
 
+Project codes and the texts (#150, approved 2026-11-26):
+  16 a given code not exactly in the form: refused, never changed to fit (a lowercase code too)
+  17 to make a code that's in use: one whose upload account, folder, any folder inside it, any
+     file under it in the bucket, or local team file is there already is never used; it tries
+     another, up to 5 times, then stops. A "not found" that also says access was denied stops
+     the run. A made code must still be unused when add-team looks again, or it stops. A given
+     code keeps items 1 to 5 (a re-run finishes a partial run; another team's folder stops it)
+  18 to make a code from anything but a secure random source (`secrets`)
+  19 to print anything from the key: the texts and steps hold the code, links and paths only
+  20 to print the notice or the mentor message in any wording but the agreed text (with
+     #150's D15 line)
+  21 to fill in [close date], [mentor] or #[channel]: they're the producer's
+
 `diffdata admin optouts <team> --bucket <bucket>` runs on day 7, after the project team has
 looked at the form's answers and found each person's Slack user ID. It writes the team's
 opted-out list to <team>/_config/opted-out.json, which the producer's export fetches
@@ -60,7 +77,7 @@ import tempfile
 import time
 import urllib.parse
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from diffdata.common import setup as producer_setup
@@ -80,6 +97,8 @@ ACCOUNT_ID = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]")
 GCP_PROJECT = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]")
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 NOT_FOUND = re.compile(r"\b404\b|not[ _]?found|does not exist", re.IGNORECASE)
+DENIED = re.compile(r"\b40[13]\b|denied|forbidden|permission|unauthori[sz]ed", re.IGNORECASE)
+NO_FILES = re.compile(r"matched no objects", re.IGNORECASE)
 NOTHING_CHANGED = "Nothing was changed."
 WINDOWS = os.name == "nt"
 # gcloud's own logs could hold the key-making answer, which holds the key: keep them off.
@@ -88,15 +107,32 @@ QUIET_GCLOUD = {
     "CLOUDSDK_CORE_DISABLE_FILE_LOGGING": "true",
     "CLOUDSDK_CORE_VERBOSITY": "error",
 }
+# A project code (#150, item 2): DD- and 4 letters or digits that can't be confused (no 0, O,
+# 1, I or L). It's the team's folder name, the team file's `folder`, and the notice's code.
+CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+CODE = re.compile(rf"DD-[{CODE_CHARS}]{{4}}")
+CODE_TRIES = 5
+CODE_HELP = (
+    "A project code is DD- and 4 capital letters or digits, with no 0, O, 1, I or L, like DD-7KQ4"
+)
+# The agreed texts, from the sign-up procedure doc ("Message texts"), word for word, with one
+# line changed as approved on #150 (D15). add-team fills in [code] and [opt-out link] only:
+# [close date], [mentor] and [channel] are the producer's to fill in (D1, D3).
+CODE_FIELD = "[code]"
+LINK_FIELD = "[opt-out link]"
 NOTICE = """\
-Placeholder wording, until the notice text is agreed:
+**Heads up: I've signed this channel up for the SPAR project *Differential Data for Automated AI Safety Research*. Project code: [code]**
 
-  Hi all. I've signed this channel up for the Differential Data research project (SPAR).
-  The project collects the working messages behind research. My copies are scrubbed of
-  names, secrets and links before they leave my computer.
-  If you don't want your messages included, fill in this form within 7 days of this post:
-  {link}
-  Messages from people who opt out are left out of everything the project keeps."""
+The project collects the messages and docs where research decisions actually get made, the part final papers leave out, to help AI safety research. About the project: https://docs.google.com/document/d/1ggbdAYohoFG06BrUmxuWczUXqiHAqD3CBWN2z3ShW54/edit
+
+- **On [close date] I'll run their tool on this channel.** It leaves out anyone who opted out, pseudonymises names (replacing them with codes like [Person 3]) and removes contact details and secrets, and I review everything before it's uploaded.
+- **The scrubbed data goes to the project's storage** and is shared only with approved research groups, each for one use: control evaluations and conceptual reasoning at Redwood Research, and SPAR's study of how research programs run. Some people think conceptual reasoning work speeds up AI capabilities, so you can leave your data out of that use alone.
+- **By [close date], use the opt-out form ([opt-out link]) with project code [code]** to opt out of everything, or of particular uses. You don't need to give your name or a reason. After the 7 days, the project team gives my copy of the tool the list of who to leave out.
+- **You can change your choices or object any time after that,** with the same form, and they'll act on it within 14 days.
+
+Please keep sensitive or private personal details out of this channel. Questions: ask me, or spardiffdata＠gmail.com. Privacy notice: https://docs.google.com/document/d/10lLqAHVoNYXux-fWmzYfOuZj-ywjsMOZwfbTZs-Rvkc/edit"""  # noqa: E501
+MENTOR = """\
+Hi [mentor], a heads-up: I've signed our project channel #[channel] up for the SPAR project *Differential Data for Automated AI Safety Research*. It collects research discussions, scrubbed and reviewed by me first, for AI safety research. Nothing is collected before [close date]. If you'd like your messages and edits left out, or kept out of particular uses such as conceptual reasoning, use the opt-out form ([opt-out link]) with project code [code], or just tell me. [If you'd rather the channel weren't included at all, tell me and I'll withdraw it.] More: About the project https://docs.google.com/document/d/1ggbdAYohoFG06BrUmxuWczUXqiHAqD3CBWN2z3ShW54/edit, Privacy notice https://docs.google.com/document/d/10lLqAHVoNYXux-fWmzYfOuZj-ywjsMOZwfbTZs-Rvkc/edit"""  # noqa: E501
 
 
 class AdminError(Exception):
@@ -173,6 +209,12 @@ def check_team(team: Team) -> Team:
     if WINDOWS:
         # A file mode doesn't keep a team file private on Windows (item 4).
         raise AdminError(f"Run add-team on macOS or Linux. {NOTHING_CHANGED}")
+    if not CODE.fullmatch(team.name):
+        # Refused, never changed to fit: a code typed in lowercase is shown, not guessed (D4).
+        raise AdminError(
+            f"The team name must be its project code. {CODE_HELP}. Leave it out and add-team "
+            f"makes one. {NOTHING_CHANGED}"
+        )
     try:
         producer_setup.check_team(
             {"bucket": team.bucket, "folder": team.name, "project": team.project}
@@ -289,6 +331,52 @@ class AddTeam:
         return found
 
     # --- looking first: nothing below changes anything ---------------------------------------
+
+    def strict(self, args: list[str], what: str) -> object | None:
+        """A command's JSON, or None only for a plain "not found". For a new code, a refusal
+        must never pass for "nothing there", so an answer that also says the access was
+        denied stops the run (must-refuse 17)."""
+        result = self.gcloud([*args, "--format=json", "--quiet"])
+        stderr = result.stderr or ""
+        if result.returncode != 0:
+            if NOT_FOUND.search(stderr) and not DENIED.search(stderr):
+                return None
+            raise AdminError(self.stopped(f"Couldn't check {what}: {last_line(stderr)}"))
+        try:
+            return json.loads(result.stdout or "null")
+        except ValueError:
+            raise AdminError(self.stopped(f"gcloud's answer about {what} isn't JSON")) from None
+
+    def taken(self) -> bool:
+        """Whether a new code is in use already: its upload account, its folder, any folder
+        inside it, or any file under its name in the bucket (a new managed folder's access
+        would cover files already there). Must-refuse 17. Any other failure stops the run."""
+        team = self.team
+        root = team.folder()
+        accounts = self.strict(
+            ["iam", "service-accounts", "list", f"--project={team.gcp_project}",
+             f"--filter=email={team.account_email}"],
+            "the upload account",
+        )  # fmt: skip
+        if not isinstance(accounts, list):
+            raise AdminError(self.stopped("gcloud's answer about the upload account isn't a list"))
+        if any(isinstance(a, dict) and a.get("email") == team.account_email for a in accounts):
+            return True
+        if self.strict(["storage", "managed-folders", "describe", root], root) is not None:
+            return True
+        if self.strict(["storage", "managed-folders", "list", root], f"the folders in {root}"):
+            return True
+        return self.has_files(root)
+
+    def has_files(self, root: str) -> bool:
+        """Whether any file sits under `root`. gcloud says "matched no objects" when none do."""
+        result = self.gcloud(["storage", "ls", f"{root}**", "--quiet"])
+        if result.returncode == 0:
+            return bool((result.stdout or "").strip())
+        stderr = result.stderr or ""
+        if NO_FILES.search(stderr) and not DENIED.search(stderr):
+            return False
+        raise AdminError(self.stopped(f"Couldn't check the files in {root}: {last_line(stderr)}"))
 
     def look(self) -> tuple[bool, list[str]]:
         """Whether the account is there already, and which folders are. Stops on anything
@@ -538,16 +626,100 @@ def optout_link(team: Team) -> str | None:
     return team.optout_form + urllib.parse.quote(team.name, safe="")
 
 
+def new_code(choose: Callable[[str], str] | None = None) -> str:
+    """A new project code, from a secure random source (must-refuse 18). `choose` is for tests."""
+    choose = choose or secrets.choice
+    return "DD-" + "".join(choose(CODE_CHARS) for _ in range(4))
+
+
+def pick_code(team: Team, gcloud: Runner, choose: Callable[[str], str] | None) -> Team:
+    """The team, with a new project code nobody uses yet: a code whose upload account, folders,
+    files or local team file are there already is never used (must-refuse 17). The local checks
+    run before gcloud is asked anything."""
+    for _ in range(CODE_TRIES):
+        candidate = replace(team, name=new_code(choose))
+        if os.path.lexists(candidate.team_file):
+            continue
+        check_team(candidate)
+        if not AddTeam(candidate, gcloud=gcloud).taken():
+            return candidate
+    raise AdminError(
+        f"Each of {CODE_TRIES} new project codes was in use already. Run again, or give a code. "
+        f"{NOTHING_CHANGED}"
+    )
+
+
+def filled(text: str, team: Team, link: str | None) -> str:
+    """An agreed text with the team's code and link put in. Nothing else is filled in."""
+    return text.replace(CODE_FIELD, team.name).replace(LINK_FIELD, link or LINK_FIELD)
+
+
+def next_steps(team: Team, path: Path, link: str | None) -> list[str]:
+    """What add-team prints after the team file: the order of the producer's steps (#150, item
+    6), day 7 (items 3 and 4), then the notice and the mentor message (item 1)."""
+    lines = [
+        f"Project code: {team.name}",
+        "Send the team file to the team's producer privately (never in a repo, Issue, PR or "
+        "channel), with the project code and the two texts below. Their steps, in this order:",
+        "  1. Post the channel notice in each channel, and pin it.",
+        "  2. Send the mentor message to the mentor, in Slack.",
+        "  3. Run setup once, in their own terminal, with the team file where they saved it, and "
+        "paste each pinned notice's link when it asks:",
+        f"       uv run diffdata setup ~/Downloads/{path.name}",
+        f"On day 7, when every channel's 7 days are over: look at the form's answers for "
+        f"{team.name} and find each person's Slack user ID. Record each per-use answer (ID, uses, "
+        "date) in the private log, outside the repo. Then run this, and enter only the people "
+        "who opted out of everything:",
+        f"       uv run diffdata admin optouts {team.name} --bucket {team.bucket}",
+        "  Then tell the producer they can run the export. Don't send them the IDs: the export "
+        "fetches the list itself.",
+    ]
+    if link is None:
+        lines.append(
+            "No --optout-form given: the team's link is the form's pre-filled link followed by "
+            f"{urllib.parse.quote(team.name, safe='')}. Put it in place of {LINK_FIELD} in both "
+            "texts by hand."
+        )
+    else:
+        lines.append(f"Opt-out link for {team.name}: {link}")
+    lines += [
+        "",
+        "Before posting: replace each [close date] with the date 7 days after the day the notice "
+        "is posted.",
+        "",
+        "Channel notice (posted by the producer, then pinned):",
+        "",
+        filled(NOTICE, team, link),
+        "",
+        "Mentor message (from the producer, in Slack). Also replace [mentor] and #[channel]:",
+        "",
+        filled(MENTOR, team, link),
+    ]
+    return lines
+
+
 def add_team(
     team: Team,
     ask_yes: Callable[[str], bool],
     say: Callable[[str], None] = print,
     gcloud: Runner = run_gcloud,
     sleep: Callable[[float], None] = time.sleep,
+    make_code: bool = False,
+    choose: Callable[[str], str] | None = None,
 ) -> int:
-    """Look, show the plan, ask, then make it all and write the team file."""
+    """Look, show the plan, ask, then make it all and write the team file. With make_code (no
+    code given), make a new project code first (#150, item 2): team.name is then ignored."""
+    if make_code:
+        team = pick_code(team, gcloud, choose)
+        say(f"Made the project code {team.name}.")
     run = AddTeam(check_team(team), gcloud=gcloud, sleep=sleep)
     account_there, present = run.look()
+    if make_code and (account_there or present):
+        # Someone made it between the check and now: a new code finishes nobody's run (17).
+        raise AdminError(
+            f"The new project code {team.name} came into use while add-team ran. Run again. "
+            f"{NOTHING_CHANGED}"
+        )
     for line in run.plan(account_there, present):
         say(line)
     if not ask_yes("Make these changes?"):
@@ -582,17 +754,8 @@ def add_team(
         f"{len(team.grants()) - len(present)} folders made, {grants} grants, 1 key."
     )
     say(f"Team file: {path}")
-    say("Send it to the team's producer privately (never in a repo, Issue, PR or channel).")
-    link = optout_link(team)
-    if link is None:
-        say(
-            "No --optout-form given: the team's link is the form's pre-filled link followed by "
-            f"{urllib.parse.quote(team.name, safe='')}. Put it in the notice by hand."
-        )
-    else:
-        say(f"Opt-out link for {team.name}: {link}")
-    say("Channel notice, for the producer to post and pin in each channel:")
-    say(NOTICE.format(link=link or "<the team's opt-out link>"))
+    for line in next_steps(team, path, optout_link(team)):
+        say(line)
     return 0
 
 
@@ -608,8 +771,9 @@ def read_ids(ask: Callable[[str], str], say: Callable[[str], None], known: list[
     "none" on the first line means nobody new; an empty line ends the list. Never from a
     file or the command line, so they don't stay in the shell's history."""
     say(
-        "Paste the Slack user IDs of the people who opted out, one per line, then an empty "
-        "line. Type none if nobody new opted out."
+        "Paste the Slack user IDs of the people who opted out of everything, one per line, then "
+        "an empty line. Type none if nobody new did. People who opted out of particular uses "
+        "only don't go on this list: record them in the private log."
     )
     found: list[str] = []
     while True:
