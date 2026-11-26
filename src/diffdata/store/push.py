@@ -11,10 +11,18 @@ Every check runs before the store is opened, so a refusal sends nothing:
   - a scrub or another push running, or a scrub cut short
   - no scrubbed/ folder or manifest, or a manifest not exactly in the shape a scrub writes
   - scrubbed/ being a link, holding a link or a hard-linked file, or not being a folder
+  - a canvas or Google Doc copy whose source isn't listed in config.toml or approved at review
+    now (CON-3): it may have been withdrawn since the scrub, or the approvals file can't be read
+  - a Google Doc copy that isn't exactly what a scrub makes from the doc now (#147): the doc's
+    clean copy and events.jsonl are read for this check, never sent
+  - a canvas or doc copy whose header isn't one a scrub writes, or names another canvas or doc
   - a listed copy that isn't a name a scrub makes, that's missing, a link or hard-linked, that
     the manifest also lists as held back, whose content changed since the scrub, or in which
     the scrub's last check, run again here, finds a name, a Slack ID, an email, a secret, a
     meeting link or a phone number
+
+Each canvas or doc is checked again just before its copy is sent, so one withdrawn while the
+push runs isn't sent.
 
 The push holds the scrub's lock throughout, so no scrub can replace the copies while they're
 checked and sent.
@@ -48,20 +56,26 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from diffdata import __version__
-from diffdata.common.config import Config
+from diffdata.common.config import Config, ConfigError, load_config
 from diffdata.common.paths import find_git_root, synced_by
 from diffdata.discover import team_optouts
 from diffdata.discover.slack_inbox import applied_stamp
-from diffdata.scrub.people import PEOPLE_FILE, PeopleError, nfc, read_people
+from diffdata.scrub import docs
+from diffdata.scrub.people import PEOPLE_FILE, People, PeopleError, nfc, read_people
 from diffdata.scrub.run import (
     CHANNEL_LINE,
     IN_PROGRESS,
     LOCK,
     PRIVATE,
     SCRUBBED,
+    OptedIn,
     ScrubError,
     is_link,
+    make_copy,
+    opted_in,
+    read_comments,
     saved_left_out,
+    sources,
     write_file,
 )
 from diffdata.scrub.secrets import RulesError, rules
@@ -78,6 +92,15 @@ BUCKET = re.compile(r"[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?")
 # The copies a scrub makes (scrub/run.py), and nothing else.
 SLACK_COPY = re.compile(r"slack/export/(?P<id>[A-Z0-9]+)/(?P<date>\d{4}-\d{2}-\d{2})\.md")
 CANVAS_COPY = re.compile(r"documents/current/slack-canvas_(?P<id>[A-Z0-9]+)\.md")
+# A Google Doc's current version and its comments (#147).
+DOC_COPY = re.compile(r"documents/current/google-doc_(?P<id>[A-Za-z0-9_-]{20,})\.md")
+COMMENTS_COPY = re.compile(r"documents/comments/google-doc_(?P<id>[A-Za-z0-9_-]{20,})\.md")
+# Each document copy's shape and the source a manifest gives it.
+DOCUMENT_COPIES = {
+    "slack-canvas": CANVAS_COPY,
+    "google-doc": DOC_COPY,
+    "google-doc-comments": COMMENTS_COPY,
+}
 SHA256 = re.compile(r"[0-9a-f]{64}")
 # A manifest, and each entry in it, has exactly the fields a scrub writes.
 MANIFEST_FIELDS = {"tool", "approved_for_release", "note", "opt_out_stamp", "copies", "held_back"}
@@ -87,9 +110,11 @@ HELD_FIELDS = {"source", "id", "why"}
 HELD_IDS = {
     "slack": re.compile(r"[A-Z0-9]+/\d{4}-\d{2}-\d{2}"),
     "slack-canvas": re.compile(r"[A-Z0-9]+"),
+    "google-doc": re.compile(r"[A-Za-z0-9_-]{20,}"),
+    "google-doc-comments": re.compile(r"[A-Za-z0-9_-]{20,}"),
 }
 IP_ADDRESS = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}")
-# A canvas copy's date is the day it last changed, from its header.
+# A canvas or doc copy's date is the day it last changed, from its header.
 LAST_CHANGED = re.compile(r"^last_changed: (\d{4}-\d{2}-\d{2})", re.MULTILINE)
 MARKDOWN = "text/markdown; charset=utf-8"
 APPROVED, NOT_APPROVED = "approved", "not-approved"
@@ -401,18 +426,22 @@ def read_manifest(data: Path) -> dict:
 
 
 def object_name(prefix: str, copy: dict, text: str) -> str | None:
-    """Where a copy goes in the store, or None if a canvas copy's header has no date."""
+    """Where a copy goes in the store, or None if a document copy's header has no date."""
     path, digest = copy["path"], copy["sha256"][:16]
     if slack := SLACK_COPY.fullmatch(path):
         return f"{prefix}/slack/{slack['date']}/{slack['id']}.{digest}.md"
-    canvas = CANVAS_COPY.fullmatch(path)
     changed = LAST_CHANGED.search(text.partition("\n---\n")[0])
     if changed is None:
         return None
-    return f"{prefix}/slack-canvas/{changed[1]}/{canvas['id']}.{digest}.md"
+    if canvas := CANVAS_COPY.fullmatch(path):
+        return f"{prefix}/slack-canvas/{changed[1]}/{canvas['id']}.{digest}.md"
+    if doc := DOC_COPY.fullmatch(path):
+        return f"{prefix}/google-doc/{changed[1]}/{doc['id']}.{digest}.md"
+    comments = COMMENTS_COPY.fullmatch(path)
+    return f"{prefix}/google-doc/{changed[1]}/{comments['id']}.comments.{digest}.md"
 
 
-def last_check(data: Path) -> Scrubber:
+def last_check(data: Path) -> tuple[People, Scrubber]:
     """The scrub's last check, with the people list on this computer. Push runs it again on
     every copy, so a file put in scrubbed/ by hand, with a manifest entry to match, still can't
     send a name, a Slack ID, an email, a secret, a meeting link or a phone number."""
@@ -425,20 +454,41 @@ def last_check(data: Path) -> Scrubber:
             f"repository, or reinstall with uv sync, and run again. {NOTHING_SENT}"
         ) from None
     try:
-        return Scrubber(read_people(data / PEOPLE_FILE))
+        people = read_people(data / PEOPLE_FILE)
     except (OSError, PeopleError):
         raise PushError(
             f"{PEOPLE_FILE} in your data folder is missing or can't be read, so the copies "
             f"can't be checked again before sending. Run uv run diffdata scrub again. "
             f"{NOTHING_SENT}"
         ) from None
+    return people, Scrubber(people)
 
 
-def plan(data: Path, found: Settings, expected: str) -> tuple[dict, list[Upload], int]:
+def still_scrubbed(text: str, scrubber: Scrubber, document: bool) -> bool:
+    """Whether scrubbing a copy again leaves it as it is and the last check finds nothing. A
+    document's title and body are checked on their own, as the scrub makes them; a header that
+    isn't one a scrub writes fails."""
+    if document:
+        header = docs.split(text)
+        fields = docs.fields_text(header) if header is not None else None
+        if fields is None:
+            return False
+        parts = [fields]
+    else:
+        parts = [text]
+    return not any(scrubber.leftovers(part) or scrubber.scrub(part)[0] != nfc(part)
+                   for part in parts)  # fmt: skip
+
+
+def plan(
+    config: Config, found: Settings, expected: str, opted: OptedIn
+) -> tuple[dict, list[Upload], int]:
     """Every check on the copies, before anything is sent. `expected` is the left-out stamp
-    worked out from config.toml and the saved data now (scrub/run.py). Returns the manifest,
-    what to send, and how many canvas copies were left out for having no date. A copy is named
-    by its place in the manifest, never by its path: the manifest could have been edited."""
+    worked out from config.toml and the saved data now (scrub/run.py), and `opted` what's
+    opted in now. Returns the manifest, what to send, and how many document copies were left
+    out for having no date. A copy is named by its place in the manifest, never by its path:
+    the manifest could have been edited."""
+    data = config.data_dir
     manifest = read_manifest(data)
     prefix = found.prefix(manifest["approved_for_release"])
     if not (manifest["opt_out_stamp"] == applied_stamp(data) == expected):
@@ -452,18 +502,58 @@ def plan(data: Path, found: Settings, expected: str) -> tuple[dict, list[Upload]
         )
     scrubbed = data / SCRUBBED
     held = {(h["source"], h["id"]) for h in manifest["held_back"]}
-    scrubber = last_check(data) if manifest["copies"] else None
+    people, scrubber = last_check(data) if manifest["copies"] else (None, None)
+    # A doc's copies must be exactly what a scrub makes from the doc now (#147), so a comment
+    # whose author opted out since, or a copy made by hand, can't go.
+    found_sources = sources(config, opted)[0]
+    twice = {s.copy for s in found_sources if [t.copy for t in found_sources].count(s.copy) > 1}
+    originals = {(s.kind, s.id): s for s in found_sources if s.copy not in twice}
+    rows = read_comments(data, found_sources)
+    if people is not None:
+        # A commenter on any opted-in doc that the people list doesn't have yet: a scrub now
+        # would add them and replace their name in every copy, so these copies are stale.
+        owners = docs.whole_names(people)
+        gone = docs.opted_out_names(people, set(config.slack_opted_out))
+        new = {
+            name
+            for doc_rows in rows.values()
+            for row in doc_rows or []
+            if (name := docs.author_name(row)) is not None
+            and docs.has_letter(name)
+            and docs.key(name) not in owners
+            and docs.key(name) not in gone
+        }
+        if new:
+            raise PushError(
+                "A Google Doc has a commenter the people list doesn't have yet, so a scrub now "
+                "would replace their name in the copies. Run uv run diffdata scrub again, then "
+                f"push. {NOTHING_SENT}"
+            )
     uploads, seen, undated = [], set(), 0
     for number, copy in enumerate(manifest["copies"], start=1):
         which = f"Copy {number} in {SCRUBBED}/{MANIFEST}"
         path = copy["path"]
-        slack, canvas = SLACK_COPY.fullmatch(path), CANVAS_COPY.fullmatch(path)
+        slack = SLACK_COPY.fullmatch(path)
+        document = (
+            DOCUMENT_COPIES[copy["source"]].fullmatch(path)
+            if copy["source"] in DOCUMENT_COPIES
+            else None
+        )
         made = (
             slack and copy["source"] == "slack" and copy["id"] == f"{slack['id']}/{slack['date']}"
-        ) or (canvas and copy["source"] == "slack-canvas" and copy["id"] == canvas["id"])
+        ) or (document and copy["id"] == document["id"])
         if not made:
             raise PushError(
                 f"{which} isn't one a scrub makes. Run uv run diffdata scrub again. {NOTHING_SENT}"
+            )
+        mine = opted.canvases if copy["source"] == "slack-canvas" else opted.docs
+        if document and copy["id"] not in mine:
+            # Withdrawn since the scrub, or the approvals file can't be read now (CON-3).
+            raise PushError(
+                f"{which} is from a canvas or Google Doc that isn't listed in config.toml or "
+                "approved at review now: it may have been withdrawn since the scrub, or the "
+                "approvals file next to config.toml can't be read. Run uv run diffdata scrub "
+                f"again, then push. {NOTHING_SENT}"
             )
         if path in seen or (copy["source"], copy["id"]) in held:
             raise PushError(
@@ -483,7 +573,7 @@ def plan(data: Path, found: Settings, expected: str) -> tuple[dict, list[Upload]
             text = content.decode("utf-8")
         except UnicodeDecodeError:
             raise PushError(f"{which} isn't UTF-8 text. {NOTHING_SENT}") from None
-        if scrubber.leftovers(text) or scrubber.scrub(text)[0] != nfc(text):
+        if not still_scrubbed(text, scrubber, copy["source"] in DOCUMENT_COPIES):
             # A scrubbed copy is left as it is by scrubbing it again. Anything the scrub
             # would still change, such as a mention it doesn't know, means it isn't one.
             raise PushError(
@@ -498,12 +588,46 @@ def plan(data: Path, found: Settings, expected: str) -> tuple[dict, list[Upload]
                     f"{which} has a header that doesn't name its channel. Run uv run diffdata "
                     f"scrub again. {NOTHING_SENT}"
                 )
+        else:
+            header = docs.split(text)
+            if header is None or not docs.names_itself(header, copy["source"], copy["id"]):
+                raise PushError(
+                    f"{which} has a header that doesn't name its canvas or doc. Run uv run "
+                    f"diffdata scrub again. {NOTHING_SENT}"
+                )
+        if copy["source"] in (docs.SOURCE, docs.COMMENTS):
+            source = originals.get((copy["source"], copy["id"]))
+            made = None
+            if source is not None:
+                made = make_copy(source, data, people, scrubber, set(config.slack_opted_out), rows)[
+                    0
+                ]
+            if made != text:
+                raise PushError(
+                    f"{which} isn't what a scrub makes from its doc now: the doc, its comments, "
+                    f"the people list or slack_opted_out may have changed since. Run uv run "
+                    f"diffdata scrub again, then push. {NOTHING_SENT}"
+                )
         name = object_name(prefix, copy, text)
         if name is None:
             undated += 1
             continue
         uploads.append(Upload(copy, name, content))
     return manifest, uploads, undated
+
+
+def still_opted_in(config: Config, copy: dict) -> bool:
+    """Whether a copy's canvas or doc is listed in config.toml, read again now, or approved
+    now. A Slack day is always. A config.toml that can't be read again counts as no."""
+    if copy["source"] not in DOCUMENT_COPIES:
+        return True
+    if config.path is not None and config.path.is_file():
+        try:
+            config = load_config(config.path)
+        except ConfigError:
+            return False
+    opted = opted_in(config)
+    return copy["id"] in (opted.canvases if copy["source"] == "slack-canvas" else opted.docs)
 
 
 def open_gcs(bucket: str, key: dict) -> Store:
@@ -552,7 +676,7 @@ def push(config: Config, opener: Callable[[str, dict], Store] | None = None) -> 
             expected = saved_left_out(config)[2]
         except ScrubError as e:
             raise PushError(f"{e} {NOTHING_SENT}") from e
-        manifest, uploads, undated = plan(config.data_dir, found, expected)
+        manifest, uploads, undated = plan(config, found, expected, opted_in(config))
         if not manifest["approved_for_release"] and config.store_send_not_approved != "yes":
             raise PushError(
                 "These copies are marked not approved for release: names of people who aren't "
@@ -607,8 +731,22 @@ def push(config: Config, opener: Callable[[str, dict], Store] | None = None) -> 
         kept = f"This push's record is in {LOCAL_PUSHES}/{record_name} in your data folder."
         store = (opener or open_gcs)(found.bucket, key)  # signs in: after every check passed
         failure = None
+        withdrawn = (
+            "A canvas or Google Doc was withdrawn while this push ran, so it stopped before "
+            "sending its copy. {added} copy(ies) were added before it stopped. Run uv run "
+            "diffdata scrub again, then push."
+        )
+        if not all(still_opted_in(config, upload.copy) for upload in uploads):
+            # Withdrawn during sign-in: nothing is sent (CON-3).
+            failure, uploads_now = withdrawn.format(added=0), []
+        else:
+            uploads_now = uploads
         try:
-            for upload in uploads:
+            for upload in uploads_now:
+                if not still_opted_in(config, upload.copy):
+                    # Withdrawn while this push ran (CON-3): checked again before each add.
+                    failure = withdrawn.format(added=results.count("added"))
+                    break
                 try:
                     results.append(store.add(upload.name, upload.data, MARKDOWN))
                 except Exception as e:
@@ -644,7 +782,9 @@ def push(config: Config, opener: Callable[[str, dict], Store] | None = None) -> 
     if held := len(manifest["held_back"]):
         report.append(f"{held} copy(ies) the scrub held back were not sent.")
     if undated:
-        report.append(f"{undated} canvas copy(ies) had no last_changed date and were not sent.")
+        report.append(
+            f"{undated} canvas or doc copy(ies) had no last_changed date and were not sent."
+        )
     report.append(
         "These copies are marked not approved for release, and went to the not-approved part of "
         "your team's folder, which consumers are never given."

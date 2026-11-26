@@ -253,14 +253,17 @@ def test_a_second_run_writes_the_same_files_byte_for_byte(config, scrubbed):
     assert (copies(config), people_file(config).read_bytes(), flags(config)) == before
 
 
-def test_google_docs_clean_copies_are_skipped(config, export):
+def test_a_google_doc_that_isnt_opted_in_is_skipped(config, export):
     export()
     current = config.data_dir / "documents" / "current"
-    other = current / "google-doc_kickoff-notes_FAKE-DOC-0001.md"
+    other = current / "google-doc_kickoff-notes_FAKEDOC000000000000000001.md"
     other.write_text("By Alex Example\n", encoding="utf-8")
     report = scrub(config)
     assert not any("google" in path for path in copies(config))
-    assert "1 clean copy(ies) from other sources, like Google Docs, skipped" in report
+    assert (
+        "1 clean copy(ies) skipped: canvases or docs not listed in config.toml or approved "
+        "at review now, or from a source the scrub doesn't know." in report
+    )
 
 
 def test_the_manifest_lists_each_copy_and_says_its_not_approved(config, scrubbed):
