@@ -239,12 +239,29 @@ def seen_in_slack(data: Path) -> dict[str, set[str]]:
 
 def add_seen(people: People, seen: dict[str, set[str]]) -> int:
     """Add what the saved data shows: a person with the next number for each new Slack ID,
-    and new names for people already listed. Returns how many people are new."""
+    and new names for people already listed. Returns how many people are new.
+
+    A new Slack ID one of whose names is, whole, a name of exactly one person with no Slack
+    IDs (someone first seen as a Google Doc commenter, #147) joins that person, so they keep
+    their number."""
+    from diffdata.scrub.text import key  # text.py imports this file
+
     by_id = {slack_id: person for person in people.people for slack_id in person.slack_ids}
     next_number = max(map(number, people.people), default=0) + 1
     new = 0
     for user_id in sorted(seen):  # so a run gives new people the same numbers every time
         person = by_id.get(user_id)
+        if person is None:
+            names = {key(name) for name in seen[user_id]} - {""}
+            unclaimed = [
+                p
+                for p in people.people
+                if not p.slack_ids and names & {key(n) for n in (*p.names, *p.nicknames)}
+            ]
+            if len(unclaimed) == 1:
+                person = unclaimed[0]
+                person.slack_ids.append(user_id)
+                by_id[user_id] = person
         if person is None:
             person = Person(f"[Person {next_number}]", [user_id])
             people.people.append(person)

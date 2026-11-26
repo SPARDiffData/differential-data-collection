@@ -1,9 +1,11 @@
-"""Make the scrubbed copies (SCR-2): every opted-in Slack day file and canvas clean copy, with
-people, Slack IDs and emails replaced. The originals are only ever read.
+"""Make the scrubbed copies (SCR-2): every opted-in Slack day file, canvas clean copy and
+Google Doc, with people, Slack IDs and emails replaced. The originals are only ever read.
 
 Under the data folder:
   scrubbed/slack/export/<channel ID>/<YYYY-MM-DD>.md
   scrubbed/documents/current/slack-canvas_<canvas ID>.md
+  scrubbed/documents/current/google-doc_<doc ID>.md    a doc's current version (#147)
+  scrubbed/documents/comments/google-doc_<doc ID>.md   its comments (scrub/docs.py)
   scrubbed/manifest.json   each copy with its hash and checks, and the copies held back
   private/people.toml      who's who (people.py), never in a scrubbed copy
   private/people-numbers.json  every [Person N] given, to catch someone lost from the list
@@ -38,7 +40,8 @@ from pathlib import Path
 from diffdata import __version__
 from diffdata.collect import slack_canvas
 from diffdata.common.config import Config
-from diffdata.common.documents import documents_dir
+from diffdata.common.documents import document_dir, documents_dir
+from diffdata.consent import approvals
 from diffdata.discover import slack_state
 from diffdata.discover.slack_export import read_inbox, read_store, saved_records
 from diffdata.discover.slack_inbox import (
@@ -49,6 +52,7 @@ from diffdata.discover.slack_inbox import (
     slack_dir,
 )
 from diffdata.discover.slack_joins import is_held, late_joiners, left_out_stamp
+from diffdata.scrub import docs
 from diffdata.scrub.people import (
     NUMBERS_FILE,
     PEOPLE_FILE,
@@ -71,6 +75,7 @@ from diffdata.scrub.text import (
     UNKNOWN_MENTION,
     Flag,
     Scrubber,
+    key,
 )
 
 SCRUBBED = "scrubbed"
@@ -81,14 +86,17 @@ FLAGS = "flags.md"
 DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 SAFE_ID = re.compile(r"[A-Z0-9]+")
 CHANNEL_LINE = re.compile(r"^channel_id: (\S+)$", re.MULTILINE)
+# A Google Doc's ID, as config.py and the approvals file take it.
+DOC_ID = re.compile(r"[A-Za-z0-9_-]{20,}")
 # Every folder and file a scrub makes in scrubbed/ and scrubbed-in-progress/, the folders
 # it replaces, including a temporary file a run cut short left where it writes. Anything
 # else stops the run, except what Finder and File Explorer add to a folder someone opens.
-FOLDERS = re.compile(r"slack(?:/export(?:/[A-Z0-9]+)?)?|documents(?:/current)?")
+FOLDERS = re.compile(r"slack(?:/export(?:/[A-Z0-9]+)?)?|documents(?:/current|/comments)?")
 MADE = re.compile(
     r"manifest\.json|slack/export/[A-Z0-9]+/\d{4}-\d{2}-\d{2}\.md"
     r"|documents/current/slack-canvas_[A-Z0-9]+\.md"
-    r"|(?:(?:slack/export/[A-Z0-9]+|documents/current)/)?\.writing-[^/]+"
+    r"|documents/(?:current|comments)/google-doc_[A-Za-z0-9_-]{20,}\.md"
+    r"|(?:(?:slack/export/[A-Z0-9]+|documents/current|documents/comments)/)?\.writing-[^/]+"
 )
 SYSTEM_FILES = {".DS_Store", "Thumbs.db", "desktop.ini"}
 FLAG_KINDS = {
@@ -101,9 +109,11 @@ FLAG_KINDS = {
 NOTE = (
     "Not approved for release. Replaced: secrets (the rules of "
     f"{RULES_RELEASE}, run in Python, and a randomness check), meeting links, phone "
-    "numbers, emails, Slack IDs, mentions and the names in the people list. Not checked "
-    "yet: names of people who aren't in the people list, and links that open the original "
-    "(a doc shared with anyone who has the link, a Slack file)."
+    "numbers, emails, Slack IDs, mentions and the names in the people list. Google Docs: "
+    "the current version and the comments, with each comment's author from the people "
+    "list and comments by people who opted out left out; their versions and suggestions "
+    "aren't sent yet. Not checked yet: names of people who aren't in the people list, and "
+    "links that open the original (a doc shared with anyone who has the link, a Slack file)."
 )
 FLAGS_HEADER = """\
 # Flags from the last scrub
@@ -124,25 +134,46 @@ class ScrubError(Exception):
 
 @dataclass(frozen=True)
 class Source:
-    kind: str  # "slack" for a day file, or "slack-canvas" for a canvas clean copy
-    id: str  # the channel ID and day, or the canvas ID
+    # "slack" for a day file, "slack-canvas" for a canvas clean copy, "google-doc" for a
+    # doc's clean copy, or "google-doc-comments" for its events.jsonl
+    kind: str
+    id: str  # the channel ID and day, or the canvas or doc ID
     original: Path
     copy: str  # where its copy goes, under scrubbed/
 
 
-def opted_in(config: Config) -> tuple[Callable[[str, str], bool], set[str]]:
-    """The channels (a test on ID and name) and canvases (by ID) that get a scrubbed copy: the
-    ones listed in config.toml right now, by name or by ID (CON-1). Anything else gets none,
-    and its earlier copy is gone after the next run. This rule lives only here, so the
-    approval step can add to it."""
-    return config.lists_channel, set(config.slack_canvases)
+@dataclass(frozen=True)
+class OptedIn:
+    channels: Callable[[str, str], bool]  # a test on a channel's ID and name
+    canvases: frozenset[str]
+    docs: frozenset[str]
+    approvals_read: bool  # False if the approvals file couldn't be read
 
 
-def sources(config: Config) -> tuple[list[Source], int]:
-    """The originals that get a copy, and how many other clean copies were skipped: Google
-    Docs aren't scrubbed yet."""
+def opted_in(config: Config) -> OptedIn:
+    """What gets a scrubbed copy, and what push may send (CON-1, CON-3): the channels listed
+    in config.toml right now, by name or by ID, and the canvases and Google Docs listed
+    there or whose latest decision in the approvals file is "approved". A skipped, withdrawn
+    or undecided one gets none, and its earlier copy is gone after the next run. If the
+    approvals file can't be read, only the listed ones count. This rule lives only here."""
+    canvases, docs_ = set(config.slack_canvases), set(config.google_docs)
+    decisions = approvals.read_decisions(approvals.approvals_file(config))
+    for found in approvals.approved_keys(decisions or {}):
+        if found.startswith(approvals.CANVAS_PREFIX):
+            canvases.add(found.removeprefix(approvals.CANVAS_PREFIX))
+        elif found.startswith(approvals.GOOGLE_PREFIX):
+            docs_.add(found.removeprefix(approvals.GOOGLE_PREFIX))
+    return OptedIn(
+        config.lists_channel, frozenset(canvases), frozenset(docs_), decisions is not None
+    )
+
+
+def sources(config: Config, opted: OptedIn | None = None) -> tuple[list[Source], int]:
+    """The originals that get a copy, and how many clean copies were skipped because they
+    aren't opted in, or aren't from a source the scrub knows."""
     data = config.data_dir
-    channels, canvases = opted_in(config)
+    opted = opted or opted_in(config)
+    channels, canvases = opted.channels, opted.canvases
     found = []
     for channel_id, name in sorted(run_channel_names(data).items()):
         if not channels(channel_id, name) or not SAFE_ID.fullmatch(channel_id):
@@ -153,15 +184,31 @@ def sources(config: Config) -> tuple[list[Source], int]:
             if DAY.fullmatch(day.stem):
                 copy = f"slack/export/{channel_id}/{day.name}"
                 found.append(Source("slack", f"{channel_id}/{day.stem}", day, copy))
-    skipped = 0
+    skipped, with_comments = 0, set()
     for path in sorted((documents_dir(data) / "current").glob("*.md")):
         # <source>_<title>_<id>.md: neither the source nor the title holds a _
         parts = path.stem.split("_", 2)
-        if parts[0] != slack_canvas.SOURCE:
-            skipped += 1
-        elif len(parts) == 3 and parts[2] in canvases:
+        if len(parts) == 3 and parts[0] == slack_canvas.SOURCE and parts[2] in canvases:
             copy = f"documents/current/{slack_canvas.SOURCE}_{parts[2]}.md"
             found.append(Source(slack_canvas.SOURCE, parts[2], path, copy))
+        elif (
+            len(parts) == 3
+            and parts[0] == docs.SOURCE
+            and parts[2] in opted.docs
+            and DOC_ID.fullmatch(parts[2])
+        ):
+            doc_id = parts[2]
+            copy = f"documents/current/{docs.SOURCE}_{doc_id}.md"
+            found.append(Source(docs.SOURCE, doc_id, path, copy))
+            events = document_dir(data, docs.SOURCE, doc_id) / "events.jsonl"
+            # Two clean copies of one doc (an old title left behind) are both held back as
+            # a clash; its comments get one copy either way.
+            if events.is_file() and doc_id not in with_comments:
+                with_comments.add(doc_id)
+                comments = f"documents/comments/{docs.SOURCE}_{doc_id}.md"
+                found.append(Source(docs.COMMENTS, doc_id, events, comments))
+        else:
+            skipped += 1
     return found, skipped
 
 
@@ -269,6 +316,19 @@ def make_copies(config: Config, earlier: bool) -> str:
     except SlackExportError as e:
         raise ScrubError(str(e)) from e
     new = add_seen(people, seen)
+    opted = opted_in(config)
+    found, skipped = sources(config, opted)
+    # Each opted-in doc's comment authors join the list by name (#147, scrub/docs.py). A doc
+    # whose comments can't be read adds no one, and its comments copy is held back below.
+    comment_rows = read_comments(data, found)
+    authors = {
+        name
+        for rows in comment_rows.values()
+        for row in rows or []
+        if (name := docs.author_name(row)) is not None
+    }
+    gone = docs.opted_out_names(people, opted_out)
+    new += docs.add_authors(people, {name for name in authors if key(name) not in gone})
     if render(people) != before or not people_file.is_file():
         write_file(people_file, render(people))
     # After the list, so a run cut short between the two never records a number the list
@@ -280,28 +340,22 @@ def make_copies(config: Config, earlier: bool) -> str:
     building = data / IN_PROGRESS
     remove(building)  # anything a run cut short left
     building.mkdir()
-    found, skipped = sources(config)
     clashes = Counter(source.copy for source in found)
     copies, held, flags = [], [], []
+    left_out = 0
     for source in found:
-        why = None
-        try:
-            text = source.original.read_bytes().decode("utf-8")
-        except UnicodeDecodeError:
-            why = "it isn't UTF-8 text"
-        if why is None and clashes[source.copy] > 1:
-            why = "two originals would make this one copy"
-        if why is None and source.kind == "slack":
-            channel = CHANNEL_LINE.search(text.partition("\n---\n")[0])
-            if channel is None or channel[1] != source.id.split("/")[0]:
-                why = "its header doesn't name its channel"
-        if why is None:
-            scrubbed, found_flags = scrubber.scrub(text)
-            if left := scrubber.leftovers(scrubbed):
-                why = "the last check found " + " and ".join(left)
+        if clashes[source.copy] > 1:
+            scrubbed, why, found_flags = None, "two originals would make this one copy", []
+        else:
+            scrubbed, why, found_flags, dropped = make_copy(
+                source, data, people, scrubber, opted_out, comment_rows
+            )
+            left_out += dropped
         if why is not None:
             held.append({"source": source.kind, "id": source.id, "why": why})
             continue
+        if scrubbed is None:
+            continue  # a doc with no comments has no comments copy
         write_file(building / source.copy, scrubbed)
         copies.append(
             {
@@ -331,9 +385,16 @@ def make_copies(config: Config, earlier: bool) -> str:
     write_file(data / PRIVATE / FLAGS, render_flags(flags))
 
     kinds = Counter(copy["source"] for copy in copies)
+    with_docs = ""
+    if kinds[docs.SOURCE] or kinds[docs.COMMENTS]:
+        with_docs = (
+            f", {kinds[docs.SOURCE]} Google Doc(s) and {kinds[docs.COMMENTS]} Google Doc "
+            "comments copy(ies)"
+        )
     report = [
-        f"{len(copies)} scrubbed copy(ies): {kinds['slack']} Slack day file(s) and "
-        f"{kinds[slack_canvas.SOURCE]} canvas(es), with {len(flags)} flag(s) for review."
+        f"{len(copies)} scrubbed copy(ies): {kinds['slack']} Slack day file(s)"
+        f"{',' if with_docs else ' and'} {kinds[slack_canvas.SOURCE]} canvas(es){with_docs}, "
+        f"with {len(flags)} flag(s) for review."
     ]
     if flags:
         report.append(f"What was flagged is in {PRIVATE}/{FLAGS} in your data folder.")
@@ -342,10 +403,19 @@ def make_copies(config: Config, earlier: bool) -> str:
             f"{len(held)} copy(ies) held back, with no file written: see "
             f"{SCRUBBED}/manifest.json for why."
         )
+    if left_out:
+        report.append(
+            f"{left_out} Google Doc comment(s) or reply(ies) by people who opted out were left out."
+        )
     if skipped:
         report.append(
-            f"{skipped} clean copy(ies) from other sources, like Google Docs, skipped: they "
-            "aren't scrubbed yet."
+            f"{skipped} clean copy(ies) of canvases or docs not listed in config.toml or "
+            "approved at review now skipped."
+        )
+    if not opted.approvals_read:
+        report.append(
+            "Couldn't read the approvals file next to config.toml, so only the canvases and "
+            "docs listed in config.toml got a copy."
         )
     report.append(f"The people list has {len(people.people)} people, {new} of them new.")
     report.append(
@@ -354,6 +424,81 @@ def make_copies(config: Config, earlier: bool) -> str:
         "copies before you push."
     )
     return "\n".join(report)
+
+
+def read_comments(data: Path, found: list[Source]) -> dict[str, list[dict] | None]:
+    """Each doc's comment rows, by doc ID, for the docs among `found` with an events.jsonl:
+    None for one whose events.jsonl can't be read."""
+    rows: dict[str, list[dict] | None] = {}
+    for source in found:
+        if source.kind == docs.COMMENTS:
+            try:
+                rows[source.id] = docs.comment_rows(data, source.id) or []
+            except docs.DocError:
+                rows[source.id] = None
+    return rows
+
+
+def make_copy(
+    source: Source,
+    data: Path,
+    people: People,
+    scrubber: Scrubber,
+    opted_out: set[str],
+    comment_rows: dict[str, list[dict] | None],
+) -> tuple[str | None, str | None, list[Flag], int]:
+    """One source's scrubbed copy. Returns its text (None if it gets no copy and isn't held
+    back: a doc with no comments), why it's held back (None if it isn't), its flags, and how
+    many comments were left out because their author opted out. Push uses this too, to check a
+    doc's copies are what a scrub makes from the doc now."""
+    author_flags, dropped = [], 0
+    if source.kind == docs.COMMENTS:
+        rows, meta = comment_rows.get(source.id), read_meta(data, source.id)
+        if rows == []:
+            return None, None, [], 0
+        if rows is None or meta is None:
+            return None, "its comments can't be read", [], 0
+        text, author_flags, dropped = docs.comments_copy(source.id, meta, rows, people, opted_out)
+    else:
+        try:
+            text = source.original.read_bytes().decode("utf-8")
+        except UnicodeDecodeError:
+            return None, "it isn't UTF-8 text", [], 0
+    if source.kind == "slack":
+        channel = CHANNEL_LINE.search(text.partition("\n---\n")[0])
+        if channel is None or channel[1] != source.id.split("/")[0]:
+            return None, "its header doesn't name its channel", [], 0
+        scrubbed, found = scrubber.scrub(text)
+        left = scrubber.leftovers(scrubbed)
+    else:
+        # A document: its header read strictly, its title and body scrubbed on their own.
+        header = docs.split(text)
+        if header is None or not docs.names_itself(header, source.kind, source.id):
+            what = "canvas" if source.kind == slack_canvas.SOURCE else "doc"
+            return None, f"its header doesn't name its {what}", [], 0
+        if source.kind == docs.SOURCE and comment_rows.get(source.id, []) is None:
+            # Its commenters weren't learned, so a name of theirs could be left in the text.
+            return None, "its comments can't be read", [], 0
+        title, found = docs.title(header), []
+        if title is not None:
+            title, found = scrubber.scrub(title)
+        body, body_flags = scrubber.scrub(header.body)
+        found += body_flags
+        scrubbed = docs.join(docs.with_title(header, title, body))
+        left = sorted(set(scrubber.leftovers(title or "")) | set(scrubber.leftovers(body)))
+    if left:
+        return None, "the last check found " + " and ".join(left), [], dropped
+    return scrubbed, None, author_flags + found, dropped
+
+
+def read_meta(data: Path, doc_id: str) -> dict | None:
+    """A doc's meta.json (common/documents.py), or None if it can't be read."""
+    path = document_dir(data, docs.SOURCE, doc_id) / "meta.json"
+    try:
+        meta = json.loads(path.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    return meta if isinstance(meta, dict) else None
 
 
 def render_flags(flags: list[tuple[str, Flag]]) -> str:
