@@ -50,6 +50,12 @@ PEOPLE = (
 )
 
 
+def write(path: Path, text: str) -> None:
+    """Write `text` with \n line endings on every system, as the shared format and the scrub
+    write their files (write_text would write \r\n on Windows)."""
+    path.write_bytes(text.encode("utf-8"))
+
+
 def comment(cid, name, content, quote=None, perm="1234567890", replies=()):
     found = {
         "id": cid,
@@ -95,7 +101,7 @@ def decide(home: Path, *rows: tuple[str, str]) -> None:
 def home(tmp_path) -> Path:
     home = tmp_path / "fake-diffdata"
     home.mkdir()
-    (home / "store-key.json").write_text(json.dumps(KEY), encoding="utf-8")
+    write((home / "store-key.json"), json.dumps(KEY))
     return home
 
 
@@ -103,13 +109,13 @@ def home(tmp_path) -> Path:
 def config(tmp_path, home) -> Config:
     data = tmp_path / "data"
     (data / "private").mkdir(parents=True)
-    (data / "private" / "people.toml").write_text(PEOPLE, encoding="utf-8")
+    write((data / "private" / "people.toml"), PEOPLE)
     team = data / "slack" / "team_opted_out.json"
     team.parent.mkdir(parents=True)
     body = {"format": "diffdata-team-opted-out", "slack_opted_out": []}
-    team.write_text(json.dumps(body | {"bucket": "fake-bucket", "folder": "fake-team"}))
+    write(team, json.dumps(body | {"bucket": "fake-bucket", "folder": "fake-team"}))
     # As the last Slack build leaves it, having applied the opt-out list.
-    applied_path(data).write_text(json.dumps({"applied": opt_out_stamp([OPTED_OUT_ID])}))
+    write(applied_path(data), json.dumps({"applied": opt_out_stamp([OPTED_OUT_ID])}))
     return Config(
         data_dir=data,
         slack_channels=(),
@@ -188,7 +194,7 @@ def test_must_refuse_1_with_the_approvals_file_unreadable_only_listed_docs_get_a
     add_doc(config.data_dir)
     add_doc(config.data_dir, DOC_2)
     decide(home, (f"google:{DOC_2}", "approved"))
-    (home / "approvals.jsonl").write_text("not JSON\n", encoding="utf-8")
+    write((home / "approvals.jsonl"), "not JSON\n")
     report = scrub(config)
     assert CURRENT in copies(config)
     assert not any(DOC_2 in path for path in copies(config))
@@ -233,7 +239,7 @@ def test_must_refuse_3_push_refuses_an_unlisted_doc_when_approvals_cant_be_read(
     decide(home, (f"google:{DOC}", "approved"))
     unlisted = replace(config, google_docs=())
     scrub(unlisted)
-    (home / "approvals.jsonl").write_text("not JSON\n", encoding="utf-8")
+    write((home / "approvals.jsonl"), "not JSON\n")
     store = FakeStore()
     with pytest.raises(PushError, match="can't be read"):
         push(unlisted, lambda bucket, key: store)
@@ -242,7 +248,7 @@ def test_must_refuse_3_push_refuses_an_unlisted_doc_when_approvals_cant_be_read(
 
 def test_must_refuse_3_a_listed_doc_still_goes_with_approvals_unreadable(config, home):
     add_doc(config.data_dir)
-    (home / "approvals.jsonl").write_text("not JSON\n", encoding="utf-8")
+    write((home / "approvals.jsonl"), "not JSON\n")
     scrub(config)
     names = [k for k in sent(config).objects if "/pushes/" not in k]
     assert len(names) == 1 and names[0].startswith(f"{PREFIX}/google-doc/")
@@ -254,7 +260,7 @@ def test_must_refuse_3_a_listed_doc_still_goes_with_approvals_unreadable(config,
 def test_must_refuse_4_a_clean_copy_whose_header_names_another_doc_is_held_back(config):
     add_doc(config.data_dir)
     path = next((config.data_dir / "documents" / "current").glob(f"*_{DOC}.md"))
-    path.write_text(path.read_text("utf-8").replace(f"id: {DOC}", f"id: {DOC_2}"), "utf-8")
+    write(path, path.read_text("utf-8").replace(f"id: {DOC}", f"id: {DOC_2}"))
     scrub(config)
     assert CURRENT not in copies(config)
     assert held(config)[("google-doc", DOC)] == "its header doesn't name its doc"
@@ -296,7 +302,7 @@ def test_must_refuse_5_a_commenter_not_in_slack_gets_a_placeholder_everywhere(co
 @pytest.mark.parametrize("name", ["Q", "Fakeword"])
 def test_must_refuse_5_a_one_letter_or_not_names_author_still_becomes_a_placeholder(config, name):
     people = config.data_dir / "private" / "people.toml"
-    people.write_text(PEOPLE.replace("not_names = []", 'not_names = ["Fakeword"]'), "utf-8")
+    write(people, PEOPLE.replace("not_names = []", 'not_names = ["Fakeword"]'))
     add_doc(config.data_dir, comments=[comment("c1", name, "A comment.")])
     scrub(config)
     text = copies(config)[COMMENTS]
@@ -333,7 +339,7 @@ def test_must_refuse_7_an_author_name_two_people_have_becomes_name_and_is_flagge
         '[[person]]\nplaceholder = "[Person 4]"\nslack_ids = ["UFAKE00004"]\n'
         'names = ["Jo Shared"]\nnicknames = []\n'
     )
-    (config.data_dir / "private" / "people.toml").write_text(people, encoding="utf-8")
+    write((config.data_dir / "private" / "people.toml"), people)
     add_doc(config.data_dir, comments=[comment("c1", "Jo Shared", "Hello.")])
     scrub(config)
     assert "**[name]** ·" in copies(config)[COMMENTS]
@@ -366,6 +372,8 @@ def test_must_refuse_8_a_google_person_id_in_the_text_becomes_name_maybe(config,
     add_doc(config.data_dir, text=f"Edited by {found} today.\n")
     scrub(config)
     assert "Edited by [name?] today." in copies(config)[CURRENT]
+    flags = (config.data_dir / "private" / "flags.md").read_text(encoding="utf-8")
+    assert "## A Google person ID" in flags and "## A Slack ID" not in flags
 
 
 def test_must_refuse_8_the_last_check_holds_back_a_copy_with_a_google_id(config, monkeypatch):
@@ -475,7 +483,7 @@ def test_must_refuse_12_a_doc_entry_a_scrub_doesnt_make_is_refused(config, edit)
     path = config.data_dir / "scrubbed" / "manifest.json"
     found = json.loads(path.read_text("utf-8"))
     edit(found["copies"][0])
-    path.write_text(json.dumps(found), encoding="utf-8")
+    write(path, json.dumps(found))
     with pytest.raises(PushError, match="Nothing was sent"):
         sent(config)
 
@@ -484,7 +492,7 @@ def test_must_refuse_12_a_doc_copy_edited_after_the_scrub_is_refused(config):
     add_doc(config.data_dir)
     scrub(config)
     path = config.data_dir / "scrubbed" / CURRENT
-    path.write_text(path.read_text("utf-8") + "Quinn Fakeperson\n", encoding="utf-8")
+    write(path, path.read_text("utf-8") + "Quinn Fakeperson\n")
     with pytest.raises(PushError, match="changed after the scrub"):
         sent(config)
 
@@ -513,10 +521,10 @@ def test_must_refuse_13_no_report_error_or_manifest_quotes_doc_data(config, monk
 def add_canvas(data: Path) -> None:
     path = data / "documents" / "current" / f"slack-canvas_fake-canvas_{CANVAS}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    write(
+        path,
         f'---\ntitle: "Fake canvas"\nsource: slack-canvas\nid: {CANVAS}\n'
         f"last_changed: 2026-10-06T09:00:00Z\n---\n\nPlan.\n",
-        encoding="utf-8",
     )
 
 
@@ -545,7 +553,7 @@ def test_must_refuse_14_push_refuses_a_canvas_withdrawn_since_the_scrub(config, 
 
 def test_a_mention_placeholder_is_never_matched_as_a_name(config):
     people = config.data_dir / "private" / "people.toml"
-    people.write_text(PEOPLE.replace('names = ["Morgan Testname"]', 'names = ["Mention"]'))
+    write(people, PEOPLE.replace('names = ["Morgan Testname"]', 'names = ["Mention"]'))
     add_doc(config.data_dir, comments=[comment("c1", "A B", "+quinn@fake-mail.example see")])
     scrub(config)
     assert "@[mention] see" in copies(config)[COMMENTS]
@@ -606,7 +614,7 @@ def test_push_refuses_a_canvas_copy_whose_header_names_another_canvas(config, ho
     (folder / old).rename(folder / new)
     found = json.loads((folder / "manifest.json").read_text("utf-8"))
     found["copies"][0].update(path=new, id="FFAKECANVAS1")
-    (folder / "manifest.json").write_text(json.dumps(found), encoding="utf-8")
+    write((folder / "manifest.json"), json.dumps(found))
     with pytest.raises(PushError, match="doesn't name its canvas or doc"):
         sent(config)
 
@@ -615,12 +623,12 @@ def test_push_refuses_a_comments_copy_after_a_commenter_is_found_to_have_opted_o
     add_doc(config.data_dir, comments=[comment("c1", "Quinn Fakeperson", "Mine.")])
     scrub(config)
     people = config.data_dir / "private" / "people.toml"
-    people.write_text(
+    write(
+        people,
         people.read_text("utf-8").replace(
             'names = ["Rowan Optout"]\nnicknames = []',
             'names = ["Rowan Optout"]\nnicknames = ["Quinn Fakeperson"]',
         ),
-        encoding="utf-8",
     )
     with pytest.raises(PushError, match="isn't what a scrub makes from its doc now"):
         sent(config)
@@ -632,12 +640,12 @@ def test_push_refuses_a_comments_copy_made_by_hand_for_a_doc_with_no_comments(co
     folder = config.data_dir / "scrubbed"
     forged = f"---\nsource: google-doc-comments\nid: {DOC}\nlast_changed: {WHEN}\n---\nHi.\n"
     (folder / COMMENTS).parent.mkdir(parents=True)
-    (folder / COMMENTS).write_text(forged, encoding="utf-8")
+    write((folder / COMMENTS), forged)
     found = json.loads((folder / "manifest.json").read_text("utf-8"))
     entry = dict(found["copies"][0], source="google-doc-comments", path=COMMENTS)
     entry["sha256"] = hashlib.sha256(forged.encode("utf-8")).hexdigest()
     found["copies"].append(entry)
-    (folder / "manifest.json").write_text(json.dumps(found), encoding="utf-8")
+    write((folder / "manifest.json"), json.dumps(found))
     with pytest.raises(PushError, match="isn't what a scrub makes from its doc now"):
         sent(config)
 
@@ -645,7 +653,7 @@ def test_push_refuses_a_comments_copy_made_by_hand_for_a_doc_with_no_comments(co
 def test_an_opted_out_name_with_no_letters_still_leaves_their_comments_out(config):
     people = config.data_dir / "private" / "people.toml"
     # Only the person who opted out (the last entry) has it.
-    people.write_text(PEOPLE.removesuffix("nicknames = []\n") + 'nicknames = ["007"]\n')
+    write(people, PEOPLE.removesuffix("nicknames = []\n") + 'nicknames = ["007"]\n')
     add_doc(config.data_dir, comments=[comment("c1", "007", "Their words.")])
     scrub(config)
     assert "Their words." not in copies(config)[COMMENTS]

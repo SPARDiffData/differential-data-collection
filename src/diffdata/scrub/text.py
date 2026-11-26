@@ -86,6 +86,7 @@ SHARED = "shared name"
 MAYBE_SECRET = "possible secret"
 UNKNOWN_ID = "unknown Slack ID"
 UNKNOWN_MENTION = "unknown mention"
+UNKNOWN_GOOGLE = "unknown Google ID"
 # A Google person ID, as the shared format writes an actor: perm: from Drive, gaia: from the
 # Docs changelog, in any case, with the colon written or %3A, and an ID with a digit in it.
 # Never in a copy (#147): the Slack ID step replaces one with [name?], and the last check
@@ -278,8 +279,12 @@ class Scrubber:
             flags.append(Flag(UNKNOWN_ID, match[0]))
             return "[name?]"
 
+        def google(match: re.Match) -> str:
+            flags.append(Flag(UNKNOWN_GOOGLE, match[0]))
+            return "[name?]"
+
         # A Google person ID (#147) is an ID too, of someone the list can't tell.
-        return GOOGLE_PERSON.sub(replace, self.slack_id.sub(replace, text))
+        return GOOGLE_PERSON.sub(google, self.slack_id.sub(replace, text))
 
     def mentions(self, text: str, flags: list[Flag]) -> str:
         def replace(match: re.Match) -> str:

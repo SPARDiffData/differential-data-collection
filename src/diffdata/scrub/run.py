@@ -71,6 +71,7 @@ from diffdata.scrub.text import (
     CHECKS,
     MAYBE_SECRET,
     SHARED,
+    UNKNOWN_GOOGLE,
     UNKNOWN_ID,
     UNKNOWN_MENTION,
     Flag,
@@ -103,6 +104,7 @@ FLAG_KINDS = {
     SHARED: "A name more than one person has, hidden as [name]",
     UNKNOWN_MENTION: "A mention of someone not in the list, hidden as @[name?]",
     UNKNOWN_ID: "A Slack ID of someone not in the list, hidden as [name?]",
+    UNKNOWN_GOOGLE: "A Google person ID (perm: or gaia:), hidden as [name?]",
     MAYBE_SECRET: "Text that looks random, maybe a key or password, hidden as [secret?]",
 }
 # What's checked and what isn't, for anyone who reads the manifest (Paul, #117).

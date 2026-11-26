@@ -16,12 +16,13 @@ Every check runs before the store is opened, so a refusal sends nothing:
   - a Google Doc copy that isn't exactly what a scrub makes from the doc now (#147): the doc's
     clean copy and events.jsonl are read for this check, never sent
   - a canvas or doc copy whose header isn't one a scrub writes, or names another canvas or doc
-Each canvas or doc is checked again just before its copy is sent, so one withdrawn while the
-push runs isn't sent.
   - a listed copy that isn't a name a scrub makes, that's missing, a link or hard-linked, that
     the manifest also lists as held back, whose content changed since the scrub, or in which
     the scrub's last check, run again here, finds a name, a Slack ID, an email, a secret, a
     meeting link or a phone number
+
+Each canvas or doc is checked again just before its copy is sent, so one withdrawn while the
+push runs isn't sent.
 
 The push holds the scrub's lock throughout, so no scrub can replace the copies while they're
 checked and sent.
