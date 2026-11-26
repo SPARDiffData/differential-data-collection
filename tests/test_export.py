@@ -521,10 +521,113 @@ def test_an_unexpected_error_shows_only_its_type(world, monkeypatch):
     assert any("unexpected ValueError" in s for s in w.said)
 
 
-def test_ctrl_c_says_how_to_carry_on(world):
+def test_closed_input_says_how_to_carry_on(world):
     w = world(["y"])  # then the push question finds no more answers: closed input
     assert run(w) == 130
     assert "review answers so far are kept" in w.said[-1]
+
+
+def test_ctrl_c_stops_and_says_how_to_carry_on(world, monkeypatch):
+    w = world(["y", "push"])
+
+    def interrupted(config):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(export.scrub_run, "scrub", interrupted)
+    assert run(w) == 130
+    assert "push" not in w.calls
+    assert "review answers so far are kept" in w.said[-1]
+
+
+# From Codex's review
+
+
+def test_the_opt_out_list_fetched_at_the_start_is_in_the_config_the_scrub_uses(world, monkeypatch):
+    w = world(["y", "push"])
+    loads = []
+    fresh_config = a_config(w.data.parent, slack_opted_out=("U0FAKE001",))
+
+    def load_config():
+        loads.append(1)
+        return w.config if len(loads) == 1 else fresh_config
+
+    used = []
+    monkeypatch.setattr(export, "load_config", load_config)
+    monkeypatch.setattr(
+        export.scrub_run, "saved_left_out", lambda c: used.append(c) or ({}, {}, "stamp")
+    )
+    run(w)
+    assert used == [fresh_config]
+
+
+def test_two_channels_listed_by_id_are_both_checked_for_day_7(world):
+    posted = int((datetime.now(UTC) - timedelta(days=3)).timestamp())
+    w = world(
+        ["y", "push"],
+        slack_channels=(),
+        slack_channel_ids=("C0FAKE001", "C0FAKE002"),
+        slack_notices=(("C0FAKE001", f"C0FAKE001/{posted}.000000"), ("C0FAKE002", "none")),
+    )
+    assert run(w) == 1
+    assert w.calls == []
+    assert not any("C0FAKE001" in s for s in w.said)
+
+
+def test_typed_ahead_input_is_dropped_before_the_review_and_clean_history(world, monkeypatch):
+    w = world(["y", "push"])
+    monkeypatch.setattr(export, "drop_typed_ahead", lambda: w.calls.append("drop"))
+    run(w)
+    assert w.calls[w.calls.index("review") - 1] == "drop"
+    assert w.calls[w.calls.index("clean-history") - 1] == "drop"
+
+
+def test_a_push_whose_record_wasnt_sent_doesnt_end_the_export(world):
+    w = world(["push"])
+    write_run(w.data, test=False, at=datetime.now(UTC) - timedelta(hours=2))
+    folder = w.data / store_push.LOCAL_PUSHES
+    folder.mkdir(parents=True)
+    at = slack_inbox.utc_iso(datetime.now(UTC) - timedelta(hours=1))
+    record = {"pushed_at": at, "complete": True, "record_sent": False}
+    (folder / "fake.json").write_text(json.dumps(record))
+    run(w)
+    assert w.calls[0] == "review"
+
+
+def test_a_run_from_before_the_test_flag_doesnt_count_as_an_export(world):
+    w = world(["y", "push"])
+    folder = slack_inbox.slack_dir(w.data) / "runs"
+    folder.mkdir(parents=True)
+    old = {"started_at": "2026-01-01T10:00:00Z", "closed_at": "2026-01-01T10:05:00Z"}
+    (folder / "old.json").write_text(json.dumps(old | {"closed_why": "built"}))
+    run(w)
+    assert w.calls[0] == "claude test"
+
+
+def test_claude_exe_right_in_the_version_folder_is_found(tmp_path, monkeypatch):
+    monkeypatch.setattr(export.shutil, "which", lambda tool: None)
+    version = tmp_path / "2.1.331"
+    version.mkdir()
+    (version / "claude.exe").write_text("")
+    monkeypatch.setattr(export.check, "desktop_versions", lambda: {(2, 1, 331): version})
+    assert export.claude_command() == [str(version / "claude.exe")]
+
+
+def test_a_lost_google_sign_in_signs_in_again_once(world, monkeypatch):
+    w = world(["y", "", "push"])
+    w.docs = ["FAKE-doc-id-0000000000001"]
+    w.fetched = set(w.docs)  # fetched before, so no sign-in first
+    tries = []
+
+    def collect(config):
+        tries.append(1)
+        w.calls.append("google fetch")
+        if len(tries) == 1:
+            raise export.google_signin.SignInError("Not signed in to Google yet.")
+        return "Fetched."
+
+    monkeypatch.setattr(export.google_fetch, "collect", collect)
+    assert run(w) == 0
+    assert w.calls[3:6] == ["google fetch", "google sign-in", "google fetch"]
 
 
 # The run's test flag, which tells a test run from an export

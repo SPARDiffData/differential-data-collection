@@ -105,7 +105,8 @@ def claude_command() -> list[str] | None:
         return [found]
     versions = check.desktop_versions()
     for version in sorted(versions, reverse=True):
-        for pattern in ("*/claude.app/Contents/MacOS/claude", "*/claude.exe", "*/claude"):
+        patterns = ("*/claude.app/Contents/MacOS/claude", "claude.exe", "*/claude.exe", "*/claude")
+        for pattern in patterns:
             for path in sorted(versions[version].glob(pattern)):
                 if path.is_file():
                     return [str(path)]
@@ -135,32 +136,43 @@ def built_since(data: Path, started: str, test: bool) -> bool:
     return any(
         run.get("closed_why") == "built"
         and str(run.get("started_at", "")) >= started
-        and bool(run.get("test")) == test
+        and run.get("test") is test
         for run in runs(data)
     )
 
 
 def exported_since_push(data: Path) -> bool:
-    """Whether an export was built after the last push that sent everything: then steps 1
-    and 2 are done, and a run again starts at the review."""
+    """Whether an export was built after the last push that sent everything, its record
+    included: then steps 1 and 2 are done, and a run again starts at the review. A run from
+    before runs said whether they were tests doesn't count, so a new export is read."""
     pushed = []
     for path in (data / store_push.LOCAL_PUSHES).glob("*.json"):
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if isinstance(record, dict) and record.get("complete") is True:
+        if (
+            isinstance(record, dict)
+            and record.get("complete") is True
+            and record.get("record_sent", True) is True
+        ):
             pushed.append(str(record.get("pushed_at", "")))
     built = [
         str(run.get("closed_at", ""))
         for run in runs(data)
-        if run.get("closed_why") == "built" and not run.get("test")
+        if run.get("closed_why") == "built" and run.get("test") is False
     ]
     return max(built, default="") > max(pushed, default="")
 
 
 def fresh(ask: Ask, question: str) -> str:
     """The answer, typed after the question shows: anything pasted ahead is dropped first."""
+    drop_typed_ahead()
+    return ask(question).strip().lower()
+
+
+def drop_typed_ahead() -> None:
+    """Drop anything typed or pasted before a question shows, so it can't answer it."""
     if termios is not None:
         try:
             termios.tcflush(sys.stdin, termios.TCIFLUSH)
@@ -171,7 +183,6 @@ def fresh(ask: Ask, question: str) -> str:
 
         while msvcrt.kbhit():
             msvcrt.getwch()
-    return ask(question).strip().lower()
 
 
 def yes(ask: Ask, say: Say, question: str) -> bool:
@@ -202,6 +213,7 @@ def slack(claude: Claude, command: list[str], test: bool, data: Path, say: Say) 
 
 def ask_review(config, ask: Ask, say: Say) -> None:
     """The review, as `diffdata consent review` runs it, with its own terminal check."""
+    drop_typed_ahead()
     while review.run_review(config) != 0:
         if not yes(ask, say, "The review didn't record anything. Try it again?"):
             raise Stop(f"Stopped. {AGAIN}")
@@ -239,7 +251,12 @@ def rounds(config, claude: Claude, command: list[str], ask: Ask, say: Say) -> No
             if any(f"google:{doc}" not in got for doc in new_docs):
                 say("Google's sign-in opens in your browser: pick the docs to share.")
                 say(google_signin.sign_in(listed=sorted(docs)))
-            say(google_fetch.collect(config))
+            try:
+                say(google_fetch.collect(config))
+            except google_signin.SignInError:  # the saved sign-in is gone or ran out: once more
+                say("Google's sign-in opens in your browser: pick the docs to share.")
+                say(google_signin.sign_in(listed=sorted(docs)))
+                say(google_fetch.collect(config))
             fetched = docs
 
 
@@ -251,20 +268,18 @@ def steps(ask: Ask, say: Say, claude: Claude) -> int:
     if gaps:
         raise Stop("\n".join(["Setup isn't done. Fix these, then run again:", *check.lines(gaps)]))
     shown = {
-        ("A channel listed by its ID" if channel_id(key) else f"#{key}"): notice
-        for key, notice in config.slack_notices
+        (f"Channel {n}, listed by its ID," if channel_id(key) else f"#{key}"): notice
+        for n, (key, notice) in enumerate(config.slack_notices, start=1)
     }
     closes = team_optouts.check_windows(shown, datetime.now(UTC))
     say(team_optouts.fetch_list(config, closes))
+    config = load_config()  # with the IDs just fetched in slack_opted_out
     command = claude_command()
     if command is None:
         raise Stop(NO_CLAUDE)
     # 2: the test run, then the export.
     if exported_since_push(data):
-        say(
-            "Your export is done and not all of it is pushed yet, so this carries on from the "
-            "review. A copy the push can't send, such as a canvas with no date, keeps it here."
-        )
+        say("Your export is done but not pushed yet, so this carries on from the review.")
     else:
         slack(claude, command, True, data, say)
         if not yes(ask, say, "\nThe test run worked. Export now?"):
@@ -272,7 +287,9 @@ def steps(ask: Ask, say: Say, claude: Claude) -> int:
             return 0
         slack(claude, command, False, data, say)
     rounds(config, claude, command, ask, say)
-    # 5: scrub, rebuilt first if the opt-out list changed since the build.
+    # 5: scrub, rebuilt first if the opt-out list changed since the build. Read again: each
+    # /slack-export's start fetches the team's list too.
+    config = load_config()
     if scrub_run.saved_left_out(config)[2] != slack_inbox.applied_stamp(data):
         say(slack_export.build(config))
     say("\nScrubbing:")
@@ -294,6 +311,7 @@ def steps(ask: Ask, say: Say, claude: Claude) -> int:
     say(report)
     # 7: clean-history. Every Claude Code this started has ended (item 6).
     if getattr(report, "complete", False):
+        drop_typed_ahead()
         return history.clean(ask, say, data=data)
     say(history.LATER)
     return 0

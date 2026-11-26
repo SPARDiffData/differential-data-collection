@@ -356,9 +356,10 @@ def no_repeats(pairs: list[tuple[str, object]]) -> dict:
     return found
 
 
-def read_manifest(data: Path) -> dict:
+def read_manifest(data: Path, answered: str | None = None) -> dict:
     """The last scrub's manifest, if it's exactly in the shape a scrub writes. Anything else
-    stops."""
+    stops. With `answered`, these exact bytes must be the manifest the producer typed push
+    for (#128, must-refuse 3)."""
     if (data / IN_PROGRESS).exists() or is_link(data / IN_PROGRESS):
         raise PushError(
             f"A scrub stopped without finishing ({IN_PROGRESS}/ is in your data folder). Run uv "
@@ -386,6 +387,11 @@ def read_manifest(data: Path) -> dict:
     raw = read_plain(scrubbed, MANIFEST)
     if raw is None:
         raise PushError(broken)
+    if answered is not None and hashlib.sha256(raw).hexdigest() != answered:
+        raise PushError(
+            "The scrubbed copies changed after you typed push, so they need your OK again. "
+            f"Run uv run diffdata export again. {NOTHING_SENT}"
+        )
     try:
         manifest = json.loads(raw.decode("utf-8"), object_pairs_hook=no_repeats)
     except (UnicodeDecodeError, ValueError):  # JSONDecodeError is a ValueError
@@ -481,7 +487,7 @@ def still_scrubbed(text: str, scrubber: Scrubber, document: bool) -> bool:
 
 
 def plan(
-    config: Config, found: Settings, expected: str, opted: OptedIn
+    config: Config, found: Settings, expected: str, opted: OptedIn, answered: str | None = None
 ) -> tuple[dict, list[Upload], int]:
     """Every check on the copies, before anything is sent. `expected` is the left-out stamp
     worked out from config.toml and the saved data now (scrub/run.py), and `opted` what's
@@ -489,7 +495,7 @@ def plan(
     out for having no date. A copy is named by its place in the manifest, never by its path:
     the manifest could have been edited."""
     data = config.data_dir
-    manifest = read_manifest(data)
+    manifest = read_manifest(data, answered)
     prefix = found.prefix(manifest["approved_for_release"])
     if not (manifest["opt_out_stamp"] == applied_stamp(data) == expected):
         # The copies were made leaving out different people than config.toml and the saved
@@ -698,12 +704,7 @@ def push(
             expected = saved_left_out(config)[2]
         except ScrubError as e:
             raise PushError(f"{e} {NOTHING_SENT}") from e
-        manifest, uploads, undated = plan(config, found, expected, opted_in(config))
-        if answered is not None and manifest_digest(config.data_dir) != answered:
-            raise PushError(
-                "The scrubbed copies changed after you typed push, so they need your OK again. "
-                f"Run uv run diffdata export again. {NOTHING_SENT}"
-            )
+        manifest, uploads, undated = plan(config, found, expected, opted_in(config), answered)
         if not manifest["approved_for_release"] and config.store_send_not_approved != "yes":
             raise PushError(
                 "These copies are marked not approved for release: names of people who aren't "
