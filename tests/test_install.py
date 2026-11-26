@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -522,11 +523,14 @@ def test_ps1_stops_with_return_never_by_ending_the_session():
 # --- install.ps1, on Windows ------------------------------------------------------------
 
 SHELLS = [s for s in ("powershell", "pwsh") if shutil.which(s)]
+# Set by .github/scripts/test-as-non-admin.ps1, which runs these tests as a throwaway non-admin
+# user: then a test must reach the refusal it's for, never the administrator one.
+NONADMIN = os.environ.get("DIFFDATA_CI_NONADMIN") == "1"
 
 
 def run_ps1(shell: str, tmp_path, dest: Path, **env: str) -> tuple[int, str]:
-    full = {**os.environ, "DIFFDATA_REPO": str(dest), "USERPROFILE": str(tmp_path), **env}
-    full.pop("CLAUDECODE", None)
+    base = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    full = {**base, "DIFFDATA_REPO": str(dest), "USERPROFILE": str(tmp_path), **env}
     command = f"Get-Content -Raw -LiteralPath '{INSTALL_PS1}' | Invoke-Expression"
     done = subprocess.run(
         [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
@@ -583,6 +587,8 @@ def test_ps1_must_refuse_11_or_12(tmp_path, shell, make, words):
     dest = make(tmp_path)
     before = sorted(p.name for p in dest.iterdir())
     code, out = run_ps1(shell, tmp_path, dest)
+    if NONADMIN:
+        assert not elevated(shell), "the non-admin run is elevated"
     if elevated(shell):  # GitHub's Windows runners: the administrator refusal comes first
         assert "Don't run this as administrator" in out, out
     else:
@@ -597,8 +603,87 @@ def test_ps1_must_refuse_11_or_12(tmp_path, shell, make, words):
 def test_ps1_must_refuse_12_a_folder_inside_diffdata(tmp_path, shell):
     dest = tmp_path / ".diffdata" / "repo"
     code, out = run_ps1(shell, tmp_path, dest)
+    if NONADMIN:
+        assert not elevated(shell) and "inside ~\\.diffdata" in out, out
     assert "administrator" in out or "inside ~\\.diffdata" in out, out
     assert not dest.exists()
+
+
+# Offline runs of the whole install: stand-in git and uv (.cmd files calling this stub) come
+# first on PATH, so nothing is cloned, downloaded or installed.
+WIN_STUB = r"""
+import os, pathlib, sys
+args = sys.argv[1:]
+with open(os.environ["STUB_LOG"], "a", encoding="utf-8") as log:
+    log.write(" ".join(args) + "\n")
+tool, rest = args[0], args[1:]
+if tool == "uv":
+    sys.exit(int(os.environ.get("STUB_SYNC_EXIT", "0")) if rest[:1] == ["sync"] else 0)
+if rest[:1] == ["--no-optional-locks"]:
+    rest = rest[1:]
+if rest[:1] == ["--version"]:
+    print("git version 2.45.0 (stand-in)")
+elif rest[:1] == ["clone"]:
+    pathlib.Path(rest[-1], ".git").mkdir(parents=True)
+sys.exit(0)
+"""
+
+
+def stubbed_install(shell: str, tmp_path, **env: str) -> tuple[int, str, list[str], Path]:
+    if elevated(shell):
+        if NONADMIN:
+            pytest.fail("the non-admin run is elevated")
+        pytest.skip("elevated: the administrator refusal comes first (tested above)")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "stub.py").write_text(WIN_STUB, encoding="utf-8")
+    for tool in ("git", "uv"):
+        (bin_dir / f"{tool}.cmd").write_text(
+            f'@"{sys.executable}" "{bin_dir / "stub.py"}" {tool} %*\r\n', encoding="utf-8"
+        )
+    log = tmp_path / "log.txt"
+    log.write_text("", encoding="utf-8")
+    (tmp_path / ".diffdata").mkdir()
+    (tmp_path / ".diffdata" / "config.toml").write_text("# made up\n", encoding="utf-8")
+    team = tmp_path / "Downloads" / "DD-TEST.diffdata-team.json"
+    team.parent.mkdir()
+    team.write_text(json.dumps({"store_key": MARKER}), encoding="utf-8")
+    dest = tmp_path / "repo"
+    code, out = run_ps1(
+        shell, tmp_path, dest, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        STUB_LOG=str(log), DIFFDATA_TEAM_FILE=str(team), **env,
+    )  # fmt: skip
+    return code, out, log.read_text(encoding="utf-8").splitlines(), team
+
+
+@WINDOWS
+@pytest.mark.parametrize("shell", SHELLS)
+def test_ps1_must_refuse_13_a_whole_install_only_passes_the_team_file_on(tmp_path, shell):
+    code, out, calls_made, team = stubbed_install(shell, tmp_path)
+    assert "Getting diffdata" in out and "Installed. Now run setup yourself" in out, out
+    assert str(team) in out and MARKER not in out
+    assert json.loads(team.read_text(encoding="utf-8")) == {"store_key": MARKER}
+    assert (tmp_path / ".diffdata" / "config.toml").read_text(encoding="utf-8") == "# made up\n"
+    assert sorted(p.name for p in (tmp_path / ".diffdata").iterdir()) == ["config.toml"]
+    assert any(c.startswith("uv sync --locked --project") for c in calls_made)
+    assert not any("diffdata setup" in c for c in calls_made)  # no terminal: not started
+
+
+@WINDOWS
+@pytest.mark.parametrize("shell", SHELLS)
+def test_ps1_must_refuse_14_a_failed_step_stops_before_setup(tmp_path, shell):
+    code, out, calls_made, _ = stubbed_install(shell, tmp_path, STUB_SYNC_EXIT="3")
+    assert "uv sync failed" in out, out
+    assert "Installed" not in out
+    assert not any("diffdata setup" in c for c in calls_made)
+
+
+@WINDOWS
+@pytest.mark.parametrize("shell", SHELLS)
+def test_ps1_must_refuse_14_claude_code_gets_the_line_not_setup(tmp_path, shell):
+    code, out, calls_made, _ = stubbed_install(shell, tmp_path, CLAUDECODE="1")
+    assert "Now run setup yourself" in out, out
+    assert not any("diffdata setup" in c for c in calls_made)
 
 
 @pytest.mark.skipif(not SHELLS, reason="needs PowerShell")
