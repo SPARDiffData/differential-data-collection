@@ -662,7 +662,14 @@ def stopped(e: Exception) -> str:
     return said
 
 
-def push(config: Config, opener: Callable[[str, dict], Store] | None = None) -> str:
+class Report(str):
+    """The push's report. `complete` is True when every passed copy was sent (or was in the
+    store already): only then does `diffdata push` offer clean-history (#150, D8)."""
+
+    complete: bool = False
+
+
+def push(config: Config, opener: Callable[[str, dict], Store] | None = None) -> Report:
     """Send every passed copy, create-only, then the push record. Returns the report."""
     found = settings(config)
     check_environment()
@@ -790,4 +797,6 @@ def push(config: Config, opener: Callable[[str, dict], Store] | None = None) -> 
         "your team's folder, which consumers are never given."
     )
     report.append(kept)
-    return "\n".join(report)
+    done = Report("\n".join(report))
+    done.complete = not undated  # an undated canvas or doc is a passed copy that wasn't sent
+    return done

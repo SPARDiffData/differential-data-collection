@@ -472,3 +472,34 @@ def test_claudes_tools_cant_run_admin_or_read_what_it_writes(command):
 @pytest.mark.parametrize("command", ADMIN_DEVELOPMENT_RUNS)
 def test_working_on_the_admin_code_isnt_blocked(command):
     assert not denied(command)
+
+
+# `diffdata clean-history` (#150, must-refuse 4): deletes Claude Code's session history, so
+# Claude's tools may not run it or import it.
+CLEAN_HISTORY_RUNS = [
+    "Bash(uv run diffdata clean-history)",
+    "Bash(echo yes | script -q /dev/null uv run diffdata clean-history)",
+    "Bash(.venv/bin/diffdata clean-history)",
+    'Bash(uv run python -c "from diffdata.common import history")',
+    'Bash(uv run python -c "import diffdata.common.history")',
+    'Bash(uv run python -c "from diffdata.cli import run_clean_history")',
+    "PowerShell(uv run diffdata clean-history)",
+    "PowerShell(.venv\\Scripts\\diffdata.exe clean-history)",
+    'PowerShell(uv run python -c "from diffdata.common import history")',
+    'PowerShell(uv run python -c "from diffdata.cli import run_clean_history")',
+]
+CLEAN_HISTORY_DEVELOPMENT_RUNS = [
+    "Bash(uv run pytest tests/test_history.py)",
+    "Bash(git add src/diffdata/common/history.py)",
+    "Bash(uv run ruff check src/diffdata/common/history.py)",
+]
+
+
+@pytest.mark.parametrize("command", CLEAN_HISTORY_RUNS)
+def test_claudes_tools_cant_run_clean_history(command):
+    assert denied(command)
+
+
+@pytest.mark.parametrize("command", CLEAN_HISTORY_DEVELOPMENT_RUNS)
+def test_working_on_the_clean_history_code_isnt_blocked(command):
+    assert not denied(command)
