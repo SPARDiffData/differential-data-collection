@@ -30,8 +30,11 @@ def a_config(tmp_path: Path, **changes) -> Config:
     return Config(**(settings | changes))
 
 
-def write_run(data: Path, test: bool, why: str = "built", at: datetime | None = None) -> None:
-    """A closed export run, as /slack-export's build leaves it in slack/runs/."""
+def write_run(
+    data: Path, test: bool, why: str = "built", at: datetime | None = None, saved: bool = True
+) -> None:
+    """A closed export run, as /slack-export's build leaves it in slack/runs/, with one result
+    the hook saved in the inbox unless `saved` is False."""
     at = at or datetime.now(UTC)
     run_id = f"{at:%Y%m%dT%H%M%S}{'-test' if test else ''}Z"
     run = {
@@ -44,6 +47,10 @@ def write_run(data: Path, test: bool, why: str = "built", at: datetime | None = 
     folder = slack_inbox.slack_dir(data) / "runs"
     folder.mkdir(parents=True, exist_ok=True)
     (folder / f"{run_id}.json").write_text(json.dumps(run), encoding="utf-8")
+    if saved:
+        inbox = slack_inbox.inbox_dir(data) / "C0FAKE001" / run_id
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / "slack_read_channel-fake.json").write_text("{}")
 
 
 def write_push(data: Path, at: datetime, complete: bool = True) -> None:
@@ -66,6 +73,7 @@ class World:
         self.claude_argv: list[list[str]] = []
         self.builds_test = True  # whether a test run's build finishes
         self.builds_export = True
+        self.hook_saves = True  # whether the save hook saved anything in Claude's run
         self.approved: set[str] = set()  # canvases approved at review
         self.approve_at_review: list[set[str]] = []  # approved by each review, in turn
         self.read: set[str] = set()  # canvases with saved reads
@@ -88,7 +96,7 @@ class World:
         test = argv[-1].endswith("test")
         self.calls.append("claude test" if test else "claude")
         if (self.builds_test if test else self.builds_export) and argv[-1].startswith("/"):
-            write_run(self.data, test)
+            write_run(self.data, test, saved=self.hook_saves)
             if not test:
                 self.read |= self.approved
 
@@ -542,22 +550,58 @@ def test_ctrl_c_stops_and_says_how_to_carry_on(world, monkeypatch):
 # From Codex's review
 
 
-def test_the_opt_out_list_fetched_at_the_start_is_in_the_config_the_scrub_uses(world, monkeypatch):
+def test_config_is_read_again_after_the_list_fetch_before_the_scrub_and_before_the_push(
+    world, monkeypatch
+):
+    # Each read gives a new snapshot, so a stale one shows up as an old number.
     w = world(["y", "push"])
     loads = []
-    fresh_config = a_config(w.data.parent, slack_opted_out=("U0FAKE001",))
 
     def load_config():
-        loads.append(1)
-        return w.config if len(loads) == 1 else fresh_config
+        loads.append(a_config(w.data.parent, slack_opted_out=(f"U0FAKE{len(loads):03}",)))
+        return loads[-1]
 
-    used = []
+    seen = {}
     monkeypatch.setattr(export, "load_config", load_config)
     monkeypatch.setattr(
-        export.scrub_run, "saved_left_out", lambda c: used.append(c) or ({}, {}, "stamp")
+        export.team_optouts, "fetch_list", lambda c, closes: seen.setdefault("fetch", c) and ""
+    )
+    monkeypatch.setattr(
+        export.scrub_run, "saved_left_out", lambda c: seen.setdefault("scrub", c) and ({}, {}, "")
+    )
+    monkeypatch.setattr(export.slack_inbox, "applied_stamp", lambda d: "")
+    monkeypatch.setattr(
+        export.store_push, "push", lambda c, answered=None: seen.setdefault("push", c) and ""
     )
     run(w)
-    assert used == [fresh_config]
+    assert seen["fetch"] is loads[0]
+    order = [loads.index(seen[step]) for step in ("fetch", "scrub", "push")]
+    assert order == sorted(order) and len(set(order)) == 3
+    assert seen["push"] is loads[-1]
+
+
+def test_a_build_with_nothing_saved_isnt_a_test_that_worked(world):
+    w = world(["y", "push"])
+    w.hook_saves = False
+    assert run(w) == 1
+    assert w.calls == ["claude test"] and w.asked == []
+
+
+def test_the_checks_run_again_before_each_claude(world, monkeypatch):
+    # A channel with a fresh notice added while "Export now?" waited stops the export.
+    w = world(["y", "push"])
+    posted = int((datetime.now(UTC) - timedelta(days=1)).timestamp())
+    fresh = a_config(w.data.parent, slack_notices=(("example-channel", f"C0FAKE001/{posted}.0"),))
+    original = w.claude
+
+    def claude_then_a_new_notice(argv):
+        original(argv)
+        w.config = fresh
+
+    w.claude = claude_then_a_new_notice
+    assert run(w) == 1
+    assert w.calls == ["claude test"]
+    assert any("opt-out window is still open" in s for s in w.said)
 
 
 def test_two_channels_listed_by_id_are_both_checked_for_day_7(world):

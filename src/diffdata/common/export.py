@@ -132,11 +132,14 @@ def runs(data: Path) -> list[dict]:
 
 
 def built_since(data: Path, started: str, test: bool) -> bool:
-    """Whether a test run, or an export, opened after `started` and was built."""
+    """Whether a test run, or an export, opened after `started`, saved results through the
+    hook, and was built. A build with nothing saved means the hook never ran."""
+    inbox = slack_inbox.inbox_dir(data)
     return any(
         run.get("closed_why") == "built"
         and str(run.get("started_at", "")) >= started
         and run.get("test") is test
+        and any(inbox.glob(f"*/{run.get('run_id')}/*.json"))
         for run in runs(data)
     )
 
@@ -203,6 +206,7 @@ def slack(claude: Claude, command: list[str], test: bool, data: Path, say: Say) 
         "Enter. When it has finished, type /exit to come back here."
     )
     started = slack_inbox.utc_iso(datetime.now(UTC))
+    preflight(lambda _: None)  # again: config.toml may have changed while a question waited
     claude([*command, prompt])  # waited for: Claude has ended when this returns (item 6)
     if not built_since(data, started, test):
         what = "The test run" if test else "The export"
@@ -260,10 +264,11 @@ def rounds(config, claude: Claude, command: list[str], ask: Ask, say: Say) -> No
             fetched = docs
 
 
-def steps(ask: Ask, say: Say, claude: Claude) -> int:
+def preflight(say: Say):
+    """Step 1, before anything is read (item 5): setup is done, every channel's 7 days are
+    over, and the team's opt-out list is fetched. Returns config.toml read after the fetch,
+    so the IDs just fetched are in slack_opted_out."""
     config = load_config()
-    data = config.data_dir
-    # 1: checks, before anything is read (item 5).
     gaps = [item for item in check.state_items() if not item.ok]
     if gaps:
         raise Stop("\n".join(["Setup isn't done. Fix these, then run again:", *check.lines(gaps)]))
@@ -273,7 +278,12 @@ def steps(ask: Ask, say: Say, claude: Claude) -> int:
     }
     closes = team_optouts.check_windows(shown, datetime.now(UTC))
     say(team_optouts.fetch_list(config, closes))
-    config = load_config()  # with the IDs just fetched in slack_opted_out
+    return load_config()
+
+
+def steps(ask: Ask, say: Say, claude: Claude) -> int:
+    config = preflight(say)
+    data = config.data_dir
     command = claude_command()
     if command is None:
         raise Stop(NO_CLAUDE)
@@ -307,7 +317,8 @@ def steps(ask: Ask, say: Say, claude: Claude) -> int:
     ):
         say(f"Nothing was sent. {AGAIN}")
         return 0
-    report = store_push.push(config, answered=answered)
+    # Read again: an opt-out added while the question waited makes push refuse these copies.
+    report = store_push.push(load_config(), answered=answered)
     say(report)
     # 7: clean-history. Every Claude Code this started has ended (item 6).
     if getattr(report, "complete", False):

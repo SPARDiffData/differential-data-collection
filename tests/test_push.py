@@ -311,6 +311,22 @@ def test_a_push_typed_for_another_scrub_sends_nothing(data):
     assert opener.opened == 0 and opener.store.objects == {}
 
 
+def test_the_typed_push_is_checked_against_the_exact_manifest_the_push_reads(data, monkeypatch):
+    # A manifest swapped between the checks and the hash can't pass: one read serves both.
+    answered = manifest_digest(data)
+    real = push_module.read_plain
+
+    def swapped(root, relative):
+        raw = real(root, relative)
+        return raw + b"\n" if relative == push_module.MANIFEST else raw
+
+    monkeypatch.setattr(push_module, "read_plain", swapped)
+    opener = Opener()
+    with pytest.raises(PushError, match="changed after you typed push"):
+        push(config(data), opener, answered=answered)
+    assert opener.opened == 0
+
+
 def test_a_push_that_sends_every_passed_copy_is_complete(tmp_path):
     make_scrub(tmp_path, {DAY: DAY_TEXT, CANVAS: CANVAS_TEXT})
     report = push(config(tmp_path), Opener())
