@@ -261,8 +261,8 @@ def test_a_google_doc_that_isnt_opted_in_is_skipped(config, export):
     report = scrub(config)
     assert not any("google" in path for path in copies(config))
     assert (
-        "1 clean copy(ies) of canvases or docs not listed in config.toml or approved at "
-        "review now skipped." in report
+        "1 clean copy(ies) skipped: canvases or docs not listed in config.toml or approved "
+        "at review now, or from a source the scrub doesn't know." in report
     )
 
 

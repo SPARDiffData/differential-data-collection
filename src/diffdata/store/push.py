@@ -56,7 +56,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from diffdata import __version__
-from diffdata.common.config import Config
+from diffdata.common.config import Config, ConfigError, load_config
 from diffdata.common.paths import find_git_root, synced_by
 from diffdata.discover import team_optouts
 from diffdata.discover.slack_inbox import applied_stamp
@@ -470,9 +470,10 @@ def still_scrubbed(text: str, scrubber: Scrubber, document: bool) -> bool:
     isn't one a scrub writes fails."""
     if document:
         header = docs.split(text)
-        if header is None:
+        fields = docs.fields_text(header) if header is not None else None
+        if fields is None:
             return False
-        parts = [docs.title(header) or "", header.body]
+        parts = [fields]
     else:
         parts = [text]
     return not any(scrubber.leftovers(part) or scrubber.scrub(part)[0] != nfc(part)
@@ -504,8 +505,30 @@ def plan(
     people, scrubber = last_check(data) if manifest["copies"] else (None, None)
     # A doc's copies must be exactly what a scrub makes from the doc now (#147), so a comment
     # whose author opted out since, or a copy made by hand, can't go.
-    originals = {(s.kind, s.id): s for s in sources(config, opted)[0]}
-    rows = read_comments(data, list(originals.values()))
+    found_sources = sources(config, opted)[0]
+    twice = {s.copy for s in found_sources if [t.copy for t in found_sources].count(s.copy) > 1}
+    originals = {(s.kind, s.id): s for s in found_sources if s.copy not in twice}
+    rows = read_comments(data, found_sources)
+    if people is not None:
+        # A commenter on any opted-in doc that the people list doesn't have yet: a scrub now
+        # would add them and replace their name in every copy, so these copies are stale.
+        owners = docs.whole_names(people)
+        gone = docs.opted_out_names(people, set(config.slack_opted_out))
+        new = {
+            name
+            for doc_rows in rows.values()
+            for row in doc_rows or []
+            if (name := docs.author_name(row)) is not None
+            and docs.has_letter(name)
+            and docs.key(name) not in owners
+            and docs.key(name) not in gone
+        }
+        if new:
+            raise PushError(
+                "A Google Doc has a commenter the people list doesn't have yet, so a scrub now "
+                "would replace their name in the copies. Run uv run diffdata scrub again, then "
+                f"push. {NOTHING_SENT}"
+            )
     uploads, seen, undated = [], set(), 0
     for number, copy in enumerate(manifest["copies"], start=1):
         which = f"Copy {number} in {SCRUBBED}/{MANIFEST}"
@@ -594,9 +617,15 @@ def plan(
 
 
 def still_opted_in(config: Config, copy: dict) -> bool:
-    """Whether a copy's canvas or doc is listed or approved now. A Slack day is always."""
+    """Whether a copy's canvas or doc is listed in config.toml, read again now, or approved
+    now. A Slack day is always. A config.toml that can't be read again counts as no."""
     if copy["source"] not in DOCUMENT_COPIES:
         return True
+    if config.path is not None and config.path.is_file():
+        try:
+            config = load_config(config.path)
+        except ConfigError:
+            return False
     opted = opted_in(config)
     return copy["id"] in (opted.canvases if copy["source"] == "slack-canvas" else opted.docs)
 
@@ -702,15 +731,21 @@ def push(config: Config, opener: Callable[[str, dict], Store] | None = None) -> 
         kept = f"This push's record is in {LOCAL_PUSHES}/{record_name} in your data folder."
         store = (opener or open_gcs)(found.bucket, key)  # signs in: after every check passed
         failure = None
+        withdrawn = (
+            "A canvas or Google Doc was withdrawn while this push ran, so it stopped before "
+            "sending its copy. {added} copy(ies) were added before it stopped. Run uv run "
+            "diffdata scrub again, then push."
+        )
+        if not all(still_opted_in(config, upload.copy) for upload in uploads):
+            # Withdrawn during sign-in: nothing is sent (CON-3).
+            failure, uploads_now = withdrawn.format(added=0), []
+        else:
+            uploads_now = uploads
         try:
-            for upload in uploads:
+            for upload in uploads_now:
                 if not still_opted_in(config, upload.copy):
                     # Withdrawn while this push ran (CON-3): checked again before each add.
-                    failure = (
-                        f"A canvas or Google Doc was withdrawn while this push ran, so it stopped "
-                        f"before sending that copy. {results.count('added')} copy(ies) were "
-                        "added before it stopped. Run uv run diffdata scrub again, then push."
-                    )
+                    failure = withdrawn.format(added=results.count("added"))
                     break
                 try:
                     results.append(store.add(upload.name, upload.data, MARKDOWN))

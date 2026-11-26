@@ -88,12 +88,11 @@ UNKNOWN_ID = "unknown Slack ID"
 UNKNOWN_MENTION = "unknown mention"
 UNKNOWN_GOOGLE = "unknown Google ID"
 # A Google person ID, as the shared format writes an actor: perm: from Drive, gaia: from the
-# Docs changelog, in any case, with the colon written or %3A, and an ID with a digit in it.
+# Docs changelog, in any case, with the colon written or %3A, then any ID (Drive can give an
+# opaque one with no digits).
 # Never in a copy (#147): the Slack ID step replaces one with [name?], and the last check
 # holds back a copy with one left.
-GOOGLE_PERSON = re.compile(
-    r"(?<![A-Za-z0-9])(?:perm|gaia)(?::|%3a)(?=[\w-]*[0-9])[\w-]+", re.IGNORECASE
-)
+GOOGLE_PERSON = re.compile(r"(?<![A-Za-z0-9])(?:perm|gaia)(?::|%3a)[\w-]+", re.IGNORECASE)
 # The placeholders the steps put in. Nothing is matched inside one.
 # [mention] is how a Google Doc comment shows an @-mention (collect/google_doc.py).
 KEPT = r"\[(?:Person [1-9][0-9]*|name\??|email|secret\??|phone|meeting link|mention)\]"

@@ -11,6 +11,7 @@ import pytest
 
 from diffdata.collect.google_doc import build, save_fetch
 from diffdata.common.config import Config
+from diffdata.common.documents import document_dir
 from diffdata.discover.slack_inbox import applied_path, opt_out_stamp
 from diffdata.scrub import run as scrub_run
 from diffdata.scrub.people import People, Person, add_seen, read_people
@@ -187,7 +188,7 @@ def test_must_refuse_1_only_a_listed_or_approved_doc_gets_a_copy(
     report = scrub(replace(config, google_docs=(DOC,) if listed else ()))
     assert (CURRENT in copies(config)) is copied
     if not copied:
-        assert "not listed in config.toml or approved at review now skipped" in report
+        assert "clean copy(ies) skipped: canvases or docs not listed" in report
 
 
 def test_must_refuse_1_with_the_approvals_file_unreadable_only_listed_docs_get_a_copy(config, home):
@@ -362,7 +363,7 @@ def test_must_refuse_8_emails_and_google_ids_never_reach_a_copy(config):
     )
     scrub(config)
     found = copies(config)
-    assert "**Someone** ·" in found[COMMENTS]
+    assert "**[no name]** ·" in found[COMMENTS]
     assert found[CURRENT].count("[email]") == 2 and found[COMMENTS].count("[email]") == 4
     no_real_values(*found.values())
 
@@ -698,3 +699,92 @@ def test_a_commenter_called_doc_doesnt_break_the_header(config):
     assert "source: google-doc\n" in found[CURRENT] and "[Person 3] wrote this." in found[CURRENT]
     assert "source: google-doc-comments\n" in found[COMMENTS]
     assert len([k for k in sent(config).objects if "/pushes/" not in k]) == 2
+
+
+# Fixes from the second Codex review
+
+
+def test_a_password_named_in_the_title_is_replaced_in_the_body_too(config):
+    add_doc(config.data_dir, title="Wifi password=kettle42x", text="Type kettle42x to log in.\n")
+    scrub(config)
+    found = copies(config)[CURRENT]
+    assert "kettle42x" not in found and "Type [secret] to log in." in found
+
+
+def test_a_doc_taken_off_google_docs_during_sign_in_isnt_sent(config, home):
+    add_doc(config.data_dir)
+    scrub(config)
+    store = FakeStore()
+
+    def opener(bucket, key):  # config.toml edited during sign-in: the doc is no longer listed
+        data = config.data_dir.as_posix()
+        write(
+            home / "config.toml", f'[local]\ndata_dir = "{data}"\n\n[sources]\ngoogle_docs = []\n'
+        )
+        return store
+
+    with pytest.raises(PushError, match="withdrawn while this push ran"):
+        push(config, opener)
+    assert not any("/google-doc/" in name for name in store.objects)
+
+
+def test_a_doc_withdrawn_during_sign_in_stops_the_push_before_any_copy(config, home):
+    add_doc(config.data_dir, DOC_2)
+    add_doc(config.data_dir)
+    decide(home, (f"google:{DOC}", "approved"), (f"google:{DOC_2}", "approved"))
+    unlisted = replace(config, google_docs=())
+    scrub(unlisted)
+    store = FakeStore()
+
+    def opener(bucket, key):
+        decide(home, (f"google:{DOC_2}", "withdrawn"))
+        return store
+
+    with pytest.raises(PushError, match="0 copy\\(ies\\) were added"):
+        push(unlisted, opener)
+    assert not any("/google-doc/" in name for name in store.objects)
+
+
+def test_push_refuses_when_another_doc_has_a_commenter_the_list_doesnt_have(config):
+    add_doc(config.data_dir, title="Notes for Quinn Fakeperson")
+    scrub(config)
+    add_doc(config.data_dir, DOC_2, comments=[comment("c1", "Quinn Fakeperson", "Hi.")])
+    with pytest.raises(PushError, match="commenter the people list doesn't have yet"):
+        sent(replace(config, google_docs=(DOC, DOC_2)))
+
+
+def test_a_doc_with_no_events_file_is_held_back(config):
+    add_doc(config.data_dir)
+    (document_dir(config.data_dir, "google-doc", DOC) / "events.jsonl").unlink()
+    scrub(config)
+    assert held(config)[("google-doc", DOC)] == "its comments can't be read"
+
+
+def test_push_refuses_a_doc_with_two_clean_copies_left_after_the_scrub(config):
+    add_doc(config.data_dir)
+    scrub(config)
+    current = config.data_dir / "documents" / "current"
+    first = next(current.glob(f"*_{DOC}.md"))
+    (current / f"google-doc_old-title_{DOC}.md").write_bytes(first.read_bytes())
+    with pytest.raises(PushError, match="isn't what a scrub makes from its doc now"):
+        sent(config)
+
+
+def test_a_google_permission_id_with_no_digits_is_replaced(config):
+    add_doc(config.data_dir, text="Shared with perm:abcXYZ today.\n")
+    scrub(config)
+    assert "Shared with [name?] today." in copies(config)[CURRENT]
+
+
+def test_two_new_slack_people_with_a_doc_only_persons_name_both_get_new_numbers():
+    people = People([Person("[Person 1]", [], ["Quinn Fakeperson"], [])])
+    seen = {"UFAKE00005": {"Quinn Fakeperson"}, "UFAKE00006": {"Quinn Fakeperson"}}
+    assert add_seen(people, seen) == 2
+    assert people.people[0].slack_ids == []
+
+
+def test_an_author_with_no_name_isnt_given_to_a_person_called_someone(config):
+    write(config.data_dir / "private" / "people.toml", PEOPLE.replace("Morgan Testname", "Someone"))
+    add_doc(config.data_dir, comments=[comment("c1", "", "Anonymous.")])
+    scrub(config)
+    assert "**[no name]** ·" in copies(config)[COMMENTS]

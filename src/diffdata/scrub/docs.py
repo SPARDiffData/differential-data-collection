@@ -13,7 +13,7 @@ no accents):
     matches them by name again, and their name is replaced everywhere
   - two or more people's: [name], flagged
 An author is set from this match, never by searching the text, so a one-letter name or one in
-not_names still becomes their placeholder. An author with no name is "Someone". A Google ID
+not_names still becomes their placeholder. An author with no name is "[no name]". A Google ID
 (perm:..., gaia:...) never goes in a copy.
 
 Comments, replies, resolves and reopens by someone who opted out on Slack (slack_opted_out,
@@ -39,7 +39,12 @@ from diffdata.scrub.text import SHARED, Flag, key
 
 SOURCE = google_doc.SOURCE  # "google-doc": the current version's copy
 COMMENTS = f"{SOURCE}-comments"  # its comments' copy
-SOMEONE = "Someone"
+# An author with no name. A placeholder, so no person's name can be matched in it.
+SOMEONE = "[no name]"
+# Between a document's title and body when they're scrubbed as one text (fields_text):
+# three placeholders on a line of their own. No step changes a placeholder, and none puts
+# these three side by side.
+TITLE_END = "\n\n[meeting link][phone][email]\n\n"
 TIME = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z"
 # Every header line but the title, and the shape its value must have.
 FIXED = {
@@ -48,7 +53,7 @@ FIXED = {
     "link": re.compile(r"https://docs\.google\.com/document/d/[A-Za-z0-9_-]+"),
     "last_changed": re.compile(TIME),
     "collected_at": re.compile(TIME),
-    "tool": re.compile(r"diffdata [0-9]+\.[0-9]+\.[0-9]+"),
+    "tool": re.compile(r"diffdata [0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+-]*"),
 }
 
 
@@ -156,6 +161,26 @@ def title(header: Header) -> str | None:
 def with_title(header: Header, new_title: str | None, body: str) -> Header:
     lines = tuple((n, new_title if n == "title" else v) for n, v in header.lines)
     return Header(lines, body)
+
+
+def fields_text(header: Header) -> str | None:
+    """The title and body as one text, so a secret found in one is replaced in both and the
+    last check reads them together. None if either already holds TITLE_END."""
+    found = title(header) or ""
+    if TITLE_END in found or TITLE_END in header.body:
+        return None
+    return found + TITLE_END + header.body
+
+
+def from_fields(header: Header, text: str) -> Header | None:
+    """The header with its title and body from a scrubbed `fields_text`, or None if the text
+    can't be split back exactly."""
+    if text.count(TITLE_END) != 1:
+        return None
+    new_title, _, body = text.partition(TITLE_END)
+    if title(header) is None and new_title:
+        return None
+    return with_title(header, new_title if title(header) is not None else None, body)
 
 
 def whole_names(people: People) -> dict[str, set[str]]:

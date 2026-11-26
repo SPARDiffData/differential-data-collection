@@ -411,8 +411,8 @@ def make_copies(config: Config, earlier: bool) -> str:
         )
     if skipped:
         report.append(
-            f"{skipped} clean copy(ies) of canvases or docs not listed in config.toml or "
-            "approved at review now skipped."
+            f"{skipped} clean copy(ies) skipped: canvases or docs not listed in config.toml "
+            "or approved at review now, or from a source the scrub doesn't know."
         )
     if not opted.approvals_read:
         report.append(
@@ -478,16 +478,21 @@ def make_copy(
         if header is None or not docs.names_itself(header, source.kind, source.id):
             what = "canvas" if source.kind == slack_canvas.SOURCE else "doc"
             return None, f"its header doesn't name its {what}", [], 0
-        if source.kind == docs.SOURCE and comment_rows.get(source.id, []) is None:
-            # Its commenters weren't learned, so a name of theirs could be left in the text.
+        if source.kind == docs.SOURCE and (
+            source.id not in comment_rows or comment_rows[source.id] is None
+        ):
+            # Its commenters weren't learned (the collector always writes events.jsonl), so a
+            # name of theirs could be left in the text.
             return None, "its comments can't be read", [], 0
-        title, found = docs.title(header), []
-        if title is not None:
-            title, found = scrubber.scrub(title)
-        body, body_flags = scrubber.scrub(header.body)
-        found += body_flags
-        scrubbed = docs.join(docs.with_title(header, title, body))
-        left = sorted(set(scrubber.leftovers(title or "")) | set(scrubber.leftovers(body)))
+        fields = docs.fields_text(header)
+        if fields is None:
+            return None, "its text can't be scrubbed as one", [], 0
+        text, found = scrubber.scrub(fields)
+        new = docs.from_fields(header, text)
+        if new is None:
+            return None, "its text can't be scrubbed as one", [], 0
+        scrubbed = docs.join(new)
+        left = scrubber.leftovers(text)
     if left:
         return None, "the last check found " + " and ".join(left), [], dropped
     return scrubbed, None, author_flags + found, dropped
