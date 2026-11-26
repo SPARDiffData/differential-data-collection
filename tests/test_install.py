@@ -558,6 +558,24 @@ def test_no_team_file_stops_before_anything(box):
 
 
 @POSIX
+def test_no_team_file_but_a_second_download_names_it(box):
+    box["team"].rename(box["team"].with_name("DD-TEST.diffdata-team (1).json"))
+    code, out = run_sh(box)
+    assert code == 1
+    assert "DD-TEST.diffdata-team (1).json doesn't count" in out
+    changed_nothing(box)
+
+
+@POSIX
+def test_no_team_file_on_a_mac_mentions_terminals_access_to_downloads(box):
+    no_team_file(box)
+    code, out = run_sh(box, STUB_OS="Darwin")
+    assert code == 1 and "Files and Folders" in out
+    code, out = run_sh(box)  # Linux: no such setting
+    assert code == 1 and "Files and Folders" not in out
+
+
+@POSIX
 def test_no_downloads_folder_at_all_stops(box):
     shutil.rmtree(box["home"] / "Downloads")
     code, out = run_sh(box)
@@ -820,9 +838,7 @@ def stubbed_install(shell: str, tmp_path, known=None, **env) -> tuple[int, str, 
     log.write_text("", encoding="utf-8")
     (tmp_path / ".diffdata").mkdir()
     (tmp_path / ".diffdata" / "config.toml").write_text("# made up\n", encoding="utf-8")
-    team = tmp_path / "Downloads" / "DD-TEST.diffdata-team.json"
-    team.parent.mkdir()
-    team.write_text(json.dumps({"store_key": MARKER}), encoding="utf-8")
+    team = team_file(tmp_path / "Downloads", "DD-TEST")  # beside any a test put there first
     dest = tmp_path / "repo"
     env.setdefault("DIFFDATA_TEAM_FILE", str(team))
     code, out = run_ps1(
@@ -958,6 +974,8 @@ def test_ps1_anything_but_a_team_file_at_the_top_of_downloads_is_ignored(tmp_pat
         shell, tmp_path, known=downloads, DIFFDATA_TEAM_FILE=None
     )
     assert "No team file in" in out, out
+    if make == "copy":
+        assert "DD-7KQ4.diffdata-team (1).json doesn't count" in out, out
     nothing_installed(out, calls_made)
 
 

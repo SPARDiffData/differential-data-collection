@@ -122,7 +122,17 @@ if [ -z "$TEAM_FILE" ]; then
     fi
   done
   if [ "$count" -eq 0 ]; then
-    stop "No team file in $downloads. Download it from the project team's message (it's named like DD-7KQ4.diffdata-team.json), then run the install line again. Nothing was changed."
+    hint=""
+    for candidate in "$downloads"/*diffdata-team*; do
+      if [ -e "$candidate" ] || [ -L "$candidate" ]; then
+        hint=" ${candidate##*/} doesn't count: the name must be exactly DD- and the code, then .diffdata-team.json, as a file, not a link or folder."
+        break
+      fi
+    done
+    if [ -z "$hint" ] && [ "$(uname -s)" = "Darwin" ]; then
+      hint=" If your Mac asked whether Terminal may open Downloads and you said no, allow it in System Settings > Privacy & Security > Files and Folders."
+    fi
+    stop "No team file in $downloads. Download it from the project team's message (it's named like DD-7KQ4.diffdata-team.json), then run the install line again.$hint Nothing was changed."
   elif [ "$count" -eq 1 ]; then
     TEAM_FILE="${found%$'\n'}"
   else
