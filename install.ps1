@@ -2,11 +2,12 @@
 #
 #   irm https://raw.githubusercontent.com/SPARDiffData/differential-data-collection/main/install.ps1 | iex
 #
-# or, to hand setup your team file straight away:
+# It finds your team file (DD-XXXX.diffdata-team.json) in Downloads (#128), wherever Windows
+# keeps that folder (it may be moved, for example into OneDrive). If it's kept somewhere else:
 #
-#   $env:DIFFDATA_TEAM_FILE = "$HOME\Downloads\DD-7KQ4.diffdata-team.json"; irm https://raw.githubusercontent.com/SPARDiffData/differential-data-collection/main/install.ps1 | iex
+#   $env:DIFFDATA_TEAM_FILE = "$HOME\keys\DD-7KQ4.diffdata-team.json"; irm https://raw.githubusercontent.com/SPARDiffData/differential-data-collection/main/install.ps1 | iex
 #
-# It checks the folder first, then for Git (and installs it with winget if it can), installs
+# It checks the folder first, then finds the team file, then checks for Git (and installs it with winget if it can), installs
 # uv from Astral if it's missing, clones this repo to %USERPROFILE%\differential-data-collection
 # (or $env:DIFFDATA_REPO) or fast-forwards a clean clone, runs `uv sync`, then hands over to
 # `diffdata setup`.
@@ -24,6 +25,11 @@
 #       with your own Git settings' URL rewrites ignored), Astral (uv's installer, with its
 #       download overrides cleared) and winget (Git). uv's installer adds uv to your PATH, as
 #       it always does. `uv sync` then installs the locked Python packages from PyPI.
+#
+# And from #128's must-refuse list (approved on 2026-11-26):
+#   7   to take a team file it isn't sure of: only DD-XXXX.diffdata-team.json at the top of
+#       Downloads, never one in a subfolder, a link or a folder; with two or more, it asks for
+#       the project code (and stops without a window a person types in); with none, it stops
 #
 # Everything runs inside one script block, and stops with `return`, never by ending the
 # session: under `irm | iex`, that would close the person's PowerShell window.
@@ -103,6 +109,53 @@
                 return
             }
             $update = $true
+        }
+
+        # The team file (#128, must-refuse 7): DIFFDATA_TEAM_FILE, or else the one in Downloads.
+        # Only a file named DD-XXXX.diffdata-team.json (a project code, as `diffdata admin
+        # add-team` makes them) at the top of Downloads counts: not one in a subfolder, a link
+        # or a folder. It's only looked at by name, never opened.
+        if (-not $TeamFile) {
+            # The Downloads folder Windows reports: its known folder, recorded here even when it
+            # has been moved (into OneDrive, say). Otherwise the usual one in your home folder.
+            $downloadsId = '{374DE290-123F-4565-9164-39C4925E467B}'
+            $shellFolders = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders'
+            $known = Get-ItemProperty -LiteralPath $shellFolders -Name $downloadsId -ErrorAction SilentlyContinue
+            $downloads = if ($known -and $known.$downloadsId) {
+                [Environment]::ExpandEnvironmentVariables([string]$known.$downloadsId)
+            }
+            else { Join-Path $env:USERPROFILE 'Downloads' }
+            $found = @()
+            if (Test-Path -LiteralPath $downloads -PathType Container) {
+                $found = @(Get-ChildItem -LiteralPath $downloads -File -Force | Where-Object {
+                        $_.Name -cmatch '^DD-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}\.diffdata-team\.json$' -and -not $_.LinkType
+                    } | Sort-Object Name)
+            }
+            $codes = ($found | ForEach-Object { $_.Name.Split('.')[0] }) -join ', '
+            if ($found.Count -eq 0) {
+                Fail "No team file in $downloads. Download it from the project team's message (it's named like DD-7KQ4.diffdata-team.json), then run the install line again. Nothing was changed."
+                return
+            }
+            elseif ($found.Count -eq 1) {
+                $TeamFile = $found[0].FullName
+            }
+            else {
+                $askable = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
+                if ((Test-Path Env:CLAUDECODE) -or -not $askable) {
+                    Fail "There are $($found.Count) team files in ${downloads}: $codes. Set DIFFDATA_TEAM_FILE to the right one's path and run the install line again. Nothing was changed."
+                    return
+                }
+                Say "There are $($found.Count) team files in Downloads: $codes."
+                $answer = ([string](Read-Host "Which is your project code? (It is in the project team's message.)")).Trim().ToUpperInvariant()
+                if (-not $answer.StartsWith('DD-')) { $answer = "DD-$answer" }
+                $match = @($found | Where-Object { $_.Name -ceq "$answer.diffdata-team.json" })
+                if ($match.Count -ne 1) {
+                    Fail "That isn't one of them. Run the install line again and type one of: $codes. Nothing was changed."
+                    return
+                }
+                $TeamFile = $match[0].FullName
+            }
+            Say "Your team file: $TeamFile"
         }
 
         # Git.
@@ -199,8 +252,7 @@
             }
 
             # 14: hand over to setup only in a window a person types in, never under Claude Code.
-            $line = "Set-Location -LiteralPath $(Quote $Dest) -ErrorAction Stop; & $(Quote $Uv) run diffdata setup"
-            if ($TeamFile) { $line = "$line $(Quote $TeamFile)" }
+            $line = "Set-Location -LiteralPath $(Quote $Dest) -ErrorAction Stop; & $(Quote $Uv) run diffdata setup $(Quote $TeamFile)"
             $byPerson = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected
             if ((Test-Path Env:CLAUDECODE) -or -not $byPerson) {
                 Say 'Installed. Now run setup yourself, in your own PowerShell:'
@@ -208,7 +260,7 @@
                 return
             }
             Say 'Installed. Starting setup...'
-            if ($TeamFile) { & $Uv run diffdata setup $TeamFile } else { & $Uv run diffdata setup }
+            & $Uv run diffdata setup $TeamFile
         }
         finally {
             Pop-Location

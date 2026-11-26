@@ -30,7 +30,8 @@ jobs:
       - run: uv sync --locked
       - run: uv run pytest
       # The runner is elevated, so install.ps1 stops at its administrator refusal above. As a
-      # throwaway non-admin user, it reaches must-refuse 12 to 14 (#150, Lachlan's choice (b)).
+      # throwaway non-admin user, it reaches must-refuse 12 to 14 (#150, Lachlan's choice (b)),
+      # and finding the team file in Downloads (#128, must-refuse 7).
       - name: install.ps1 refusals, as a non-admin user
         if: runner.os == 'Windows'
         shell: pwsh

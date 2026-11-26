@@ -1,4 +1,5 @@
-"""The install scripts (#150, item 8). One test or more per must-refuse item 11 to 15.
+"""The install scripts (#150, item 8). One test or more per must-refuse item 11 to 15, and for
+#128's must-refuse 7: the team file found in Downloads only when it's certain.
 
 install.sh runs in a fake home, with stand-ins for git, uv, curl, id, uname and xcode-select
 on PATH: nothing is downloaded, cloned or installed, and the real home is never touched. The
@@ -93,9 +94,10 @@ def box(tmp_path):
     return {"home": home, "team": team, "bin": bin_dir, "log": log, "env": env, "tmp": tmp_path}
 
 
-def run_sh(box, *args: str, tty=False, cwd=None, **env: str):
+def run_sh(box, *args: str, tty=False, cwd=None, typed: bytes = b"", **env: str):
     """Run install.sh as `curl … | bash -s -- args` does: piped in, with no terminal unless
-    `tty`. tty="in" gives it a terminal, but sends its output to a file."""
+    `tty`. tty="in" gives it a terminal, but sends its output to a file. `typed` is what the
+    person types on the terminal."""
     full = {**box["env"], **env}
     command = ["/bin/bash", "-s", "--", *args]
     script = INSTALL_SH.read_bytes()
@@ -105,10 +107,12 @@ def run_sh(box, *args: str, tty=False, cwd=None, **env: str):
             timeout=60, check=False, cwd=cwd,
         )  # fmt: skip
         return done.returncode, done.stdout.decode() + done.stderr.decode()
-    return run_in_pty(command, script, full, output_to_file=(tty == "in"), cwd=cwd)
+    return run_in_pty(command, script, full, output_to_file=(tty == "in"), cwd=cwd, typed=typed)
 
 
-def run_in_pty(command, script: bytes, env, output_to_file=False, cwd=None) -> tuple[int, str]:
+def run_in_pty(
+    command, script: bytes, env, output_to_file=False, cwd=None, typed: bytes = b""
+) -> tuple[int, str]:
     """Run with a pseudo-terminal as the controlling terminal, so /dev/tty opens."""
     import fcntl
     import pty
@@ -127,6 +131,8 @@ def run_in_pty(command, script: bytes, env, output_to_file=False, cwd=None) -> t
         preexec_fn=own_terminal, close_fds=True, cwd=cwd,
     )  # fmt: skip
     os.close(slave)
+    if typed:
+        os.write(master, typed)  # held by the terminal until the script reads it
     child.stdin.write(script)
     child.stdin.close()
     output = b""
@@ -196,10 +202,10 @@ def test_with_a_terminal_it_hands_over_to_setup_on_the_terminal(box):
 
 
 @POSIX
-def test_with_a_terminal_and_no_team_file_setup_asks_for_it(box):
+def test_with_a_terminal_and_no_path_setup_gets_the_file_from_downloads(box):
     code, out = run_sh(box, tty=True)
     assert code == 0, out
-    assert any(c.startswith("uv run diffdata setup (in") for c in calls(box))
+    assert any(c.startswith(f"uv run diffdata setup {box['team']} (in") for c in calls(box))
 
 
 @POSIX
@@ -466,6 +472,158 @@ def test_missing_git_on_linux_stops_with_no_sudo(box):
     assert not any(c.startswith(("xcode-select", "uv ", "curl")) for c in calls(box))
 
 
+# --- #128, must refuse 7: the team file is found in Downloads, only when it's certain -----
+
+
+def team_name(code: str) -> str:
+    return f"{code}.diffdata-team.json"
+
+
+def team_file(folder: Path, code: str) -> Path:
+    """A made-up team file: a project code's name, with the marker as its contents."""
+    path = folder / f"{code}.diffdata-team.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"store_key": MARKER}), encoding="utf-8")
+    return path
+
+
+def no_team_file(box) -> None:
+    box["team"].unlink()
+
+
+@POSIX
+def test_one_team_file_in_downloads_is_used(box):
+    code, out = run_sh(box)
+    assert code == 0, out
+    assert f"Your team file: {box['team']}" in out
+    assert f"run diffdata setup {box['team']}" in out
+    assert MARKER not in out
+
+
+@POSIX
+def test_two_team_files_ask_for_the_project_code(box):
+    other = team_file(box["home"] / "Downloads", "DD-7KQ4")
+    code, out = run_sh(box, tty=True, typed=b"7kq4\n")
+    assert code == 0, out
+    assert "There are 2 team files in Downloads: DD-7KQ4 DD-TEST." in out
+    assert any(c.startswith(f"uv run diffdata setup {other} (in") for c in calls(box))
+    assert MARKER not in out
+
+
+@POSIX
+def test_two_team_files_take_the_code_with_dd_in_front(box):
+    team_file(box["home"] / "Downloads", "DD-7KQ4")
+    code, out = run_sh(box, tty=True, typed=b" DD-TEST \n")
+    assert code == 0, out
+    assert any(c.startswith(f"uv run diffdata setup {box['team']} (in") for c in calls(box))
+
+
+@POSIX
+@pytest.mark.parametrize("typed", [b"DD-XXXX\n", b"\n", b"../DD-TEST\n", b"DD-TES*\n"])
+def test_two_team_files_and_a_wrong_code_stop(box, typed):
+    team_file(box["home"] / "Downloads", "DD-7KQ4")
+    code, out = run_sh(box, tty=True, typed=typed)
+    assert code == 1, out
+    assert "isn't one of them" in out and "Nothing was changed" in out
+    changed_nothing(box)
+
+
+@POSIX
+def test_two_team_files_without_a_terminal_stop_and_ask_for_the_path(box):
+    team_file(box["home"] / "Downloads", "DD-7KQ4")
+    code, out = run_sh(box)
+    assert code == 1, out
+    assert "There are 2 team files" in out and "bash -s --" in out
+    changed_nothing(box)
+
+
+@POSIX
+def test_two_team_files_under_claude_code_stop(box):
+    team_file(box["home"] / "Downloads", "DD-7KQ4")
+    code, out = run_sh(box, tty=True, typed=b"7KQ4\n", CLAUDECODE="1")
+    assert code == 1, out
+    assert "There are 2 team files" in out
+    changed_nothing(box)
+
+
+@POSIX
+def test_no_team_file_stops_before_anything(box):
+    no_team_file(box)
+    code, out = run_sh(box, tty=True)
+    assert code == 1
+    assert "No team file in" in out and "project team's message" in out
+    assert "run the install line again" in out
+    changed_nothing(box)
+    assert not any(c.startswith("git") for c in calls(box))
+
+
+@POSIX
+def test_no_downloads_folder_at_all_stops(box):
+    shutil.rmtree(box["home"] / "Downloads")
+    code, out = run_sh(box)
+    assert code == 1 and "No team file in" in out
+    changed_nothing(box)
+
+
+@POSIX
+@pytest.mark.parametrize(
+    "make",
+    [
+        # A link named like a team file, to a real one somewhere else.
+        lambda box, d: os.symlink(team_file(box["tmp"] / "x", "DD-7KQ4"), d / team_name("DD-7KQ4")),
+        # A folder named like one.
+        lambda box, d: (d / "DD-7KQ4.diffdata-team.json").mkdir(),
+        # A named pipe named like one: never opened, so this would hang if it were.
+        lambda box, d: os.mkfifo(d / "DD-7KQ4.diffdata-team.json"),
+        # One in a subfolder of Downloads.
+        lambda box, d: team_file(d / "older", "DD-7KQ4"),
+        # Names that aren't a project code.
+        lambda box, d: team_file(d, "DD-7KQ0"),
+        lambda box, d: team_file(d, "dd-7kq4"),
+        lambda box, d: team_file(d, "DD-7KQ44"),
+        lambda box, d: (d / "DD-7KQ4.diffdata-team (1).json").write_text("x"),
+        lambda box, d: (d / "DD-7KQ4.diffdata-team.json.txt").write_text("x"),
+    ],
+    ids=["link", "folder", "pipe", "subfolder", "zero", "lowercase", "five", "copy", "txt"],
+)  # fmt: skip
+def test_anything_but_a_team_file_at_the_top_of_downloads_is_ignored(box, make):
+    no_team_file(box)
+    make(box, box["home"] / "Downloads")
+    code, out = run_sh(box)
+    assert code == 1 and "No team file in" in out, out
+    changed_nothing(box)
+
+
+@POSIX
+def test_a_link_beside_one_real_team_file_is_ignored(box):
+    os.symlink(team_file(box["tmp"] / "elsewhere", "DD-7KQ4"),
+               box["home"] / "Downloads" / "DD-7KQ4.diffdata-team.json")  # fmt: skip
+    code, out = run_sh(box)
+    assert code == 0, out
+    assert f"run diffdata setup {box['team']}" in out and "There are" not in out
+
+
+@POSIX
+def test_the_path_given_wins_over_downloads(box):
+    team_file(box["home"] / "Downloads", "DD-7KQ4")
+    kept = team_file(box["tmp"] / "keys", "DD-9ABC")
+    code, out = run_sh(box, str(kept), tty=True)
+    assert code == 0, out
+    assert "There are" not in out and "Your team file" not in out
+    assert any(c.startswith(f"uv run diffdata setup {kept} (in") for c in calls(box))
+
+
+@POSIX
+def test_a_renamed_linux_downloads_folder_is_used(box):
+    no_team_file(box)
+    renamed = box["home"] / "Téléchargements"
+    found = team_file(renamed, "DD-7KQ4")
+    stub(box["bin"], "xdg-user-dir", f'#!/bin/sh\necho "{renamed}"\n')
+    code, out = run_sh(box)
+    assert code == 0, out
+    assert f"Your team file: {found}" in out
+
+
 # --- must refuse 15: no sudo, no other hosts ---------------------------------------------
 
 
@@ -528,10 +686,27 @@ SHELLS = [s for s in ("powershell", "pwsh") if shutil.which(s)]
 NONADMIN = os.environ.get("DIFFDATA_CI_NONADMIN") == "1"
 
 
-def run_ps1(shell: str, tmp_path, dest: Path, **env: str) -> tuple[int, str]:
-    base = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-    full = {**base, "DIFFDATA_REPO": str(dest), "USERPROFILE": str(tmp_path), **env}
-    command = f"Get-Content -Raw -LiteralPath '{INSTALL_PS1}' | Invoke-Expression"
+DOWNLOADS_ID = "{374DE290-123F-4565-9164-39C4925E467B}"
+
+
+def run_ps1(shell: str, tmp_path, dest: Path, known=None, **env) -> tuple[int, str]:
+    """Run install.ps1 as `irm … | iex` does. The lookup of Windows' Downloads folder is
+    always stood in for, so the machine's own one is never looked at: `known` is the folder
+    it reports (None: none recorded). DIFFDATA_TEAM_FILE is a made-up path unless given, and
+    left out when given as None."""
+    base = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "DIFFDATA_TEAM_FILE")}
+    full = {
+        **base, "DIFFDATA_REPO": str(dest), "USERPROFILE": str(tmp_path),
+        "DIFFDATA_TEAM_FILE": str(tmp_path / "keys" / "DD-TEST.diffdata-team.json"), **env,
+    }  # fmt: skip
+    full = {k: v for k, v in full.items() if v is not None}
+    value = "" if known is None else str(known).replace("'", "''")
+    reported = f"[pscustomobject]@{{'{DOWNLOADS_ID}' = '{value}'}}" if value else ""
+    # A function comes before the cmdlet of the same name, inside the script's block too.
+    command = (
+        f"function Get-ItemProperty {{ {reported} }}; "
+        f"Get-Content -Raw -LiteralPath '{INSTALL_PS1}' | Invoke-Expression"
+    )
     done = subprocess.run(
         [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
         capture_output=True, text=True, env=full, timeout=180, check=False,
@@ -629,7 +804,7 @@ sys.exit(0)
 """
 
 
-def stubbed_install(shell: str, tmp_path, **env: str) -> tuple[int, str, list[str], Path]:
+def stubbed_install(shell: str, tmp_path, known=None, **env) -> tuple[int, str, list[str], Path]:
     if elevated(shell):
         if NONADMIN:
             pytest.fail("the non-admin run is elevated")
@@ -649,9 +824,10 @@ def stubbed_install(shell: str, tmp_path, **env: str) -> tuple[int, str, list[st
     team.parent.mkdir()
     team.write_text(json.dumps({"store_key": MARKER}), encoding="utf-8")
     dest = tmp_path / "repo"
+    env.setdefault("DIFFDATA_TEAM_FILE", str(team))
     code, out = run_ps1(
-        shell, tmp_path, dest, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-        STUB_LOG=str(log), DIFFDATA_TEAM_FILE=str(team), **env,
+        shell, tmp_path, dest, known, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        STUB_LOG=str(log), **env,
     )  # fmt: skip
     return code, out, log.read_text(encoding="utf-8").splitlines(), team
 
@@ -684,6 +860,105 @@ def test_ps1_must_refuse_14_claude_code_gets_the_line_not_setup(tmp_path, shell)
     code, out, calls_made, _ = stubbed_install(shell, tmp_path, CLAUDECODE="1")
     assert "Now run setup yourself" in out, out
     assert not any("diffdata setup" in c for c in calls_made)
+
+
+# --- install.ps1 and #128's must-refuse 7: the team file found in Downloads ---------------
+
+
+def nothing_installed(out: str, calls_made: list[str]) -> None:
+    assert "Nothing was changed" in out, out
+    assert "Getting diffdata" not in out and "Installed" not in out
+    assert not any(c.startswith(("clone", "uv")) for c in calls_made), calls_made
+
+
+@WINDOWS
+@pytest.mark.parametrize("shell", SHELLS)
+def test_ps1_one_team_file_in_downloads_is_used(tmp_path, shell):
+    code, out, calls_made, team = stubbed_install(shell, tmp_path, DIFFDATA_TEAM_FILE=None)
+    assert f"Your team file: {team}" in out, out
+    assert "Installed. Now run setup yourself" in out and str(team) in out
+    assert MARKER not in out
+
+
+@WINDOWS
+@pytest.mark.parametrize("shell", SHELLS)
+def test_ps1_a_moved_downloads_folder_is_used(tmp_path, shell):
+    moved = tmp_path / "OneDrive" / "Downloads"
+    found = team_file(moved, "DD-7KQ4")
+    code, out, calls_made, home_one = stubbed_install(
+        shell, tmp_path, known=moved, DIFFDATA_TEAM_FILE=None
+    )
+    assert f"Your team file: {found}" in out, out
+    assert str(home_one) not in out  # the usual folder isn't looked at once it's moved
+
+
+@WINDOWS
+@pytest.mark.parametrize("shell", SHELLS)
+def test_ps1_a_downloads_folder_recorded_with_userprofile_is_expanded(tmp_path, shell):
+    found = team_file(tmp_path / "Moved", "DD-7KQ4")
+    code, out, calls_made, _ = stubbed_install(
+        shell, tmp_path, known="%USERPROFILE%\\Moved", DIFFDATA_TEAM_FILE=None
+    )
+    assert f"Your team file: {found}" in out, out
+
+
+@WINDOWS
+@pytest.mark.parametrize("shell", SHELLS)
+def test_ps1_no_team_file_stops_before_anything(tmp_path, shell):
+    code, out, calls_made, _ = stubbed_install(
+        shell, tmp_path, known=tmp_path / "Empty", DIFFDATA_TEAM_FILE=None
+    )
+    assert "No team file in" in out and "project team's message" in out, out
+    nothing_installed(out, calls_made)
+
+
+@WINDOWS
+@pytest.mark.parametrize("shell", SHELLS)
+def test_ps1_two_team_files_without_a_person_stop(tmp_path, shell):
+    team_file(tmp_path / "Downloads", "DD-7KQ4")
+    code, out, calls_made, _ = stubbed_install(shell, tmp_path, DIFFDATA_TEAM_FILE=None)
+    assert "There are 2 team files" in out and "DD-7KQ4, DD-TEST" in out, out
+    assert "DIFFDATA_TEAM_FILE" in out
+    nothing_installed(out, calls_made)
+
+
+@WINDOWS
+@pytest.mark.parametrize("shell", SHELLS)
+def test_ps1_the_environment_variable_wins_over_downloads(tmp_path, shell):
+    team_file(tmp_path / "Downloads", "DD-7KQ4")
+    kept = team_file(tmp_path / "keys", "DD-9ABC")
+    code, out, calls_made, _ = stubbed_install(shell, tmp_path, DIFFDATA_TEAM_FILE=str(kept))
+    assert "There are" not in out and "Your team file" not in out, out
+    assert "Installed. Now run setup yourself" in out and str(kept) in out
+
+
+@WINDOWS
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("make", ["folder", "subfolder", "zero", "lowercase", "copy", "link"])
+def test_ps1_anything_but_a_team_file_at_the_top_of_downloads_is_ignored(tmp_path, shell, make):
+    downloads = tmp_path / "Moved"
+    downloads.mkdir()
+    name = downloads / "DD-7KQ4.diffdata-team.json"
+    if make == "folder":
+        name.mkdir()
+    elif make == "subfolder":
+        team_file(downloads / "older", "DD-7KQ4")
+    elif make == "zero":
+        team_file(downloads, "DD-7KQ0")
+    elif make == "lowercase":
+        team_file(downloads, "dd-7kq4")
+    elif make == "copy":
+        (downloads / "DD-7KQ4.diffdata-team (1).json").write_text("x", encoding="utf-8")
+    else:
+        try:
+            os.symlink(team_file(tmp_path / "elsewhere", "DD-7KQ4"), name)
+        except OSError:
+            pytest.skip("this user can't make links on Windows")
+    code, out, calls_made, _ = stubbed_install(
+        shell, tmp_path, known=downloads, DIFFDATA_TEAM_FILE=None
+    )
+    assert "No team file in" in out, out
+    nothing_installed(out, calls_made)
 
 
 @pytest.mark.skipif(not SHELLS, reason="needs PowerShell")

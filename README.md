@@ -23,24 +23,28 @@ Once the tool is installed (below), `uv run diffdata check` checks the first thr
 
 ### Install with one line
 
-On a Mac or Linux, in Terminal (put your team file's path at the end, or leave it off and setup asks for it):
+First download your team file (named like `DD-7KQ4.diffdata-team.json`) from the project team's message, into your Downloads folder. Then paste one line.
+
+On a Mac or Linux, in Terminal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SPARDiffData/differential-data-collection/main/install.sh | bash -s -- ~/Downloads/DD-7KQ4.diffdata-team.json
+curl -fsSL https://raw.githubusercontent.com/SPARDiffData/differential-data-collection/main/install.sh | bash
 ```
 
 On Windows, in PowerShell (not as administrator):
 
 ```powershell
-$env:DIFFDATA_TEAM_FILE = "$HOME\Downloads\DD-7KQ4.diffdata-team.json"; irm https://raw.githubusercontent.com/SPARDiffData/differential-data-collection/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/SPARDiffData/differential-data-collection/main/install.ps1 | iex
 ```
+
+**The team file:** it looks only at the top of your Downloads folder (on Windows, wherever Windows keeps it, even if it's moved into OneDrive), and takes only a file named `DD-` and 4 letters or digits, then `.diffdata-team.json`. If there's one, it uses it. If there are several, it asks for your project code, which is in the project team's message. If there are none, it stops: download the file and run the line again. If you keep the file somewhere else, give its path: on a Mac or Linux put it at the end, after `bash -s --` (`... | bash -s -- ~/keys/DD-7KQ4.diffdata-team.json`); on Windows set `$env:DIFFDATA_TEAM_FILE = "<path>";` before `irm`.
 
 It first checks the folder it will use, `differential-data-collection` in your home folder (set `DIFFDATA_REPO` for another): if something is there that isn't a clean clone of this repo on `main` (no changes or files of yours), it stops with nothing changed. Then:
 
 - **Git:** on a Mac, if Git is missing, it starts Apple's installer and stops: run the line again when that's done. On Linux it stops and asks you to install Git. On Windows it installs Git with winget, which may ask you to allow it.
 - **uv:** if it's missing, it installs it from Astral, which also adds uv to your PATH so `uv run` works in new windows.
 - **The repo:** it clones it, or fast-forwards your clean clone, then runs `uv sync` (Python packages from PyPI, as locked).
-- **Setup:** it starts `diffdata setup` with your team file. It never opens the team file: it only passes its path. If it isn't in a terminal you type in, or Claude Code runs it, it prints the setup line for you to run instead. Setup itself checks the rest (`diffdata check`) before it asks anything.
+- **Setup:** it starts `diffdata setup` with your team file, so answering setup's questions is the one next thing to do. It never opens the team file: it only passes its path, and setup checks it. If it isn't in a terminal you type in, or Claude Code runs it, it prints the setup line for you to run instead. Setup itself checks the rest (`diffdata check`) before it asks anything.
 
 It never runs as root or administrator and never uses `sudo`.
 
