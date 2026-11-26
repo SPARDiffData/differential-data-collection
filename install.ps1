@@ -62,6 +62,9 @@
     # check and fetch, so the remote that's checked is the one that's fetched.
     $emptyConfig = [IO.Path]::GetTempFileName()
     function IsoGit {
+        # Git's own messages on stderr must not stop the script in Windows PowerShell 5.1: the
+        # exit code decides, and the script gives its own message.
+        $ErrorActionPreference = 'Continue'
         $saved = $env:GIT_CONFIG_GLOBAL, $env:GIT_CONFIG_NOSYSTEM
         $env:GIT_CONFIG_GLOBAL = $emptyConfig; $env:GIT_CONFIG_NOSYSTEM = '1'
         try { & git @args } finally { $env:GIT_CONFIG_GLOBAL, $env:GIT_CONFIG_NOSYSTEM = $saved }
