@@ -107,11 +107,18 @@ def add_admin_steps(admin: argparse.ArgumentParser) -> None:
     steps = admin.add_subparsers(dest="step", metavar="<step>", required=True)
     add_help = (
         "Make a team's managed folder, its upload account and key, and the producers' read "
-        "access, then write <team>.diffdata-team.json (#132). Run signed in to gcloud as the "
-        "Cloud project's owner."
+        "access, then write <code>.diffdata-team.json (#132), and print the channel notice and "
+        "the mentor message (#150). Run signed in to gcloud as the Cloud project's owner."
     )
     add = steps.add_parser("add-team", help=add_help, description=add_help)
-    add.add_argument("team", metavar="TEAM", help="The team's folder name: letters, digits, - _.")
+    add.add_argument(
+        "team",
+        nargs="?",
+        default=None,
+        metavar="CODE",
+        help="The team's project code, which is also its folder name: DD- and 4 capitals or "
+        "digits, with no 0, O, 1, I or L (like DD-7KQ4). Leave it out to have one made.",
+    )
     add.add_argument("--bucket", required=True, help="The pilot's bucket.")
     add.add_argument("--project", required=True, help="The pilot's short project name.")
     add.add_argument("--gcp-project", required=True, help="The Google Cloud project ID.")
@@ -263,7 +270,8 @@ def run_admin(args: argparse.Namespace) -> int:
             return store_admin.optouts(args.team, args.bucket, ask=prompter.ask, ask_yes=fresh_yes)
         client = args.google_client
         team = store_admin.Team(
-            name=args.team,
+            # Left out: add-team makes a code. Given, even as "", it's checked (must-refuse 16).
+            name=args.team or "",
             bucket=args.bucket,
             project=args.project,
             gcp_project=args.gcp_project,
@@ -272,7 +280,9 @@ def run_admin(args: argparse.Namespace) -> int:
             optout_form=args.optout_form,
             google_client=store_admin.read_client(Path(client)) if client else None,
         )
-        return store_admin.add_team(team, ask_yes=producer_setup.Prompter().yes)
+        return store_admin.add_team(
+            team, ask_yes=producer_setup.Prompter().yes, make_code=args.team is None
+        )
     except store_admin.Cancelled as e:
         print(f"\ndiffdata admin: {e}", file=sys.stderr)
         return 130
