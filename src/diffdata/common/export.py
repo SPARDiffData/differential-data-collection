@@ -166,6 +166,11 @@ def fresh(ask: Ask, question: str) -> str:
             termios.tcflush(sys.stdin, termios.TCIFLUSH)
         except (OSError, ValueError, termios.error):
             pass
+    elif sys.platform == "win32":
+        import msvcrt
+
+        while msvcrt.kbhit():
+            msvcrt.getwch()
     return ask(question).strip().lower()
 
 
@@ -256,7 +261,10 @@ def steps(ask: Ask, say: Say, claude: Claude) -> int:
         raise Stop(NO_CLAUDE)
     # 2: the test run, then the export.
     if exported_since_push(data):
-        say("Your export is already done, so this carries on from the review.")
+        say(
+            "Your export is done and not all of it is pushed yet, so this carries on from the "
+            "review. A copy the push can't send, such as a canvas with no date, keeps it here."
+        )
     else:
         slack(claude, command, True, data, say)
         if not yes(ask, say, "\nThe test run worked. Export now?"):

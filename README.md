@@ -90,7 +90,7 @@ It does every step below in order, and says what happens next at each one:
 6. **Push.** Read the copies, then type `push` to upload them. Anything else sends nothing.
 7. **Clear Claude's history.** It runs `diffdata clean-history`, which shows what it would delete and asks for `yes`.
 
-**If you stop partway** (`n`, `stop`, Ctrl+C or closing the window), your review answers so far are kept and nothing is sent. Run `uv run diffdata export` again: if the export is done since your last push, it starts at the review. The push question is always asked again. It prints counts only. It runs only in a terminal you type in, never with Claude Code's shell, and this repo's settings stop Claude from running it. Claude Code gets only the slash command, with this repo's rules.
+**If you stop partway** (`n`, `stop`, Ctrl+C or closing the window), your review answers so far are kept, and nothing more is sent. Run `uv run diffdata export` again: if the export is done since your last push, it starts at the review. The push question is always asked again. It prints counts only. It runs only in a terminal you type in, never with Claude Code's shell, and this repo's settings stop Claude from running it. Claude Code gets only the slash command, with this repo's rules.
 
 The sections below are the same steps one at a time, which still work.
 

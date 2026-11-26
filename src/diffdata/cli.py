@@ -65,7 +65,7 @@ COMMANDS = {
     "export": (
         "After day 7: export, review, scrub and push, asking you along the way. In your own "
         "terminal, with Claude Code closed.",
-        "DIS-1, CON-1, SCR-1, STO-1",
+        "ENG-1, DIS-1, CON-1, CON-3, CON-5, SCR-1, STO-1, STO-3",
     ),
     "clean-history": (
         "Delete this repo's Claude Code session history, after collecting, in your own terminal "
