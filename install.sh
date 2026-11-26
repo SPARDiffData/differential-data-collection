@@ -109,6 +109,9 @@ if [ -z "$TEAM_FILE" ]; then
     case "$named" in "" | "$HOME" | "$HOME/") ;; *) downloads="$named" ;; esac
   fi
   c='[ABCDEFGHJKMNPQRSTUVWXYZ23456789]'
+  case "$downloads" in
+    *$'\n'*) stop "Your Downloads folder's path has a line break in it. Run the install line again with the team file's path after 'bash -s --'. Nothing was changed." ;;
+  esac
   found=""
   count=0
   for candidate in "$downloads"/DD-*.diffdata-team.json; do
@@ -116,7 +119,9 @@ if [ -z "$TEAM_FILE" ]; then
       DD-$c$c$c$c.diffdata-team.json) ;;
       *) continue ;;
     esac
-    if [ -f "$candidate" ] && [ ! -L "$candidate" ]; then
+    # A file, not a link (a hard link has more than one name: setup refuses it too).
+    if [ -f "$candidate" ] && [ ! -L "$candidate" ] &&
+      [ -n "$(find "$candidate" -prune -links 1 2>/dev/null)" ]; then
       found="$found$candidate"$'\n'
       count=$((count + 1))
     fi
@@ -137,11 +142,12 @@ if [ -z "$TEAM_FILE" ]; then
     TEAM_FILE="${found%$'\n'}"
   else
     codes="$(printf '%s' "$found" | while IFS= read -r f; do n="${f##*/}"; printf ' %s' "${n%%.*}"; done)"
-    if [ -n "${CLAUDECODE+x}" ] || ! { exec 3</dev/tty; } 2>/dev/null; then
+    if [ -n "${CLAUDECODE+x}" ] || ! { exec 3<>/dev/tty; } 2>/dev/null; then
       stop "There are $count team files in $downloads:$codes. Run the install line again with the right one's path after 'bash -s --'. Nothing was changed."
     fi
-    say "There are $count team files in Downloads:$codes."
-    printf 'Which is your project code? (It is in the project team'"'"'s message.) '
+    # Asked on the terminal itself, so it shows even when the output goes to a file.
+    printf 'There are %s team files in Downloads:%s.\n' "$count" "$codes" >&3
+    printf 'Which is your project code? (It is in the project team'"'"'s message.) ' >&3
     answer=""
     IFS= read -r answer <&3 || true
     exec 3<&-

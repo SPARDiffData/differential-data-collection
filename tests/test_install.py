@@ -13,9 +13,11 @@ administrator refusal (must-refuse 11); in a normal window it reaches the folder
 import json
 import os
 import re
+import select
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -27,6 +29,7 @@ REPO_URL = "https://github.com/SPARDiffData/differential-data-collection.git"
 FORK = "https://github.com/someone/fork.git"
 DEST = "differential-data-collection"
 MARKER = "MADE-UP-TEAM-FILE-MARKER"
+FILE_PART = "\n--- the output sent to a file ---\n"  # run_in_pty puts it between the two parts
 POSIX = pytest.mark.skipif(os.name == "nt", reason="install.sh is for macOS and Linux")
 WINDOWS = pytest.mark.skipif(os.name != "nt", reason="install.ps1 runs on Windows")
 
@@ -86,7 +89,7 @@ def box(tmp_path):
     stub(bin_dir, "uname", LOGGER.format(name="uname", body='echo "${STUB_OS:-Linux}"'))
     stub(bin_dir, "xcode-select", LOGGER.format(name="xcode-select", body="exit 0"))
     stub(bin_dir, "curl", LOGGER.format(name="curl", body="exit 0"))
-    for tool in ("sh", "tr", "cat"):
+    for tool in ("sh", "tr", "cat", "find"):
         os.symlink(shutil.which(tool), bin_dir / tool)
     log = tmp_path / "log.txt"
     log.write_text("", encoding="utf-8")
@@ -130,13 +133,22 @@ def run_in_pty(
         command, stdin=subprocess.PIPE, stdout=sink or slave, stderr=sink or slave, env=env,
         preexec_fn=own_terminal, close_fds=True, cwd=cwd,
     )  # fmt: skip
-    os.close(slave)
     if typed:
-        os.write(master, typed)  # held by the terminal until the script reads it
+        # Held by the terminal until the script reads it. The terminal is kept open here until
+        # the script ends: when nobody has it open, the system throws away what was typed.
+        os.write(master, typed)
+    else:
+        os.close(slave)
     child.stdin.write(script)
     child.stdin.close()
     output = b""
-    while True:
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([master], [], [], 0.1)
+        if not ready:
+            if child.poll() is not None:
+                break
+            continue
         try:
             chunk = os.read(master, 4096)
         except OSError:
@@ -145,10 +157,12 @@ def run_in_pty(
             break
         output += chunk
     code = child.wait(timeout=60)
+    if typed:
+        os.close(slave)
     os.close(master)
     if sink is not None:
         sink.seek(0)
-        output += sink.read()
+        output += FILE_PART.encode() + sink.read()
     return code, output.decode(errors="replace")
 
 
@@ -511,6 +525,16 @@ def test_two_team_files_ask_for_the_project_code(box):
 
 
 @POSIX
+def test_two_team_files_ask_on_the_terminal_even_when_output_goes_to_a_file(box):
+    other = team_file(box["home"] / "Downloads", "DD-7KQ4")
+    code, out = run_sh(box, tty="in", typed=b"7KQ4\n")
+    assert code == 0, out
+    on_terminal = out.split(FILE_PART)[0]
+    assert "Which is your project code?" in on_terminal and "DD-7KQ4 DD-TEST" in on_terminal
+    assert f"Your team file: {other}" in out
+
+
+@POSIX
 def test_two_team_files_take_the_code_with_dd_in_front(box):
     team_file(box["home"] / "Downloads", "DD-7KQ4")
     code, out = run_sh(box, tty=True, typed=b" DD-TEST \n")
@@ -601,8 +625,10 @@ def test_no_downloads_folder_at_all_stops(box):
         lambda box, d: team_file(d, "DD-7KQ44"),
         lambda box, d: (d / "DD-7KQ4.diffdata-team (1).json").write_text("x"),
         lambda box, d: (d / "DD-7KQ4.diffdata-team.json.txt").write_text("x"),
+        # A hard link: a second name for a file somewhere else.
+        lambda box, d: os.link(team_file(box["tmp"] / "x", "DD-7KQ4"), d / team_name("DD-7KQ4")),
     ],
-    ids=["link", "folder", "pipe", "subfolder", "zero", "lowercase", "five", "copy", "txt"],
+    ids=["link", "folder", "pipe", "subfolder", "zero", "lowercase", "five", "copy", "txt", "hard"],
 )  # fmt: skip
 def test_anything_but_a_team_file_at_the_top_of_downloads_is_ignored(box, make):
     no_team_file(box)
@@ -705,6 +731,7 @@ NONADMIN = os.environ.get("DIFFDATA_CI_NONADMIN") == "1"
 
 
 DOWNLOADS_ID = "{374DE290-123F-4565-9164-39C4925E467B}"
+SHELL_FOLDERS = r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
 
 
 def run_ps1(shell: str, tmp_path, dest: Path, known=None, **env) -> tuple[int, str]:
@@ -720,9 +747,11 @@ def run_ps1(shell: str, tmp_path, dest: Path, known=None, **env) -> tuple[int, s
     full = {k: v for k, v in full.items() if v is not None}
     value = "" if known is None else str(known).replace("'", "''")
     reported = f"[pscustomobject]@{{'{DOWNLOADS_ID}' = '{value}'}}" if value else ""
-    # A function comes before the cmdlet of the same name, inside the script's block too.
+    # A function comes before the cmdlet of the same name, inside the script's block too. It
+    # answers only for the Downloads folder's own key and value name.
+    asked = f"($args -ccontains '{SHELL_FOLDERS}') -and ($args -ccontains '{DOWNLOADS_ID}')"
     command = (
-        f"function Get-ItemProperty {{ {reported} }}; "
+        f"function Get-ItemProperty {{ if ({asked}) {{ {reported} }} }}; "
         f"Get-Content -Raw -LiteralPath '{INSTALL_PS1}' | Invoke-Expression"
     )
     done = subprocess.run(

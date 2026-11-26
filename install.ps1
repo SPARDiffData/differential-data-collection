@@ -125,10 +125,52 @@
                 [Environment]::ExpandEnvironmentVariables([string]$known.$downloadsId)
             }
             else { Join-Path $env:USERPROFILE 'Downloads' }
+            # A link is a "reparse point". So is every file in a OneDrive folder, so those are
+            # told apart by the reparse point's tag, which Windows lists with the folder: the
+            # file is never opened (PowerShell 5.1's LinkType opens it). OneDrive's tags are
+            # 0x9000?01A. Anything else is a link of some kind, and is skipped. If the tag can't
+            # be read, every reparse point is skipped. (A hard link can't be seen without
+            # opening the file: setup refuses one.)
+            function Plain([IO.FileInfo]$File) {
+                if (-not ($File.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return $true }
+                try {
+                    if (-not ('DiffdataReparseTag' -as [type])) {
+                        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class DiffdataReparseTag {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct FindData {
+        public uint Attributes; public uint C1, C2, A1, A2, W1, W2;
+        public uint SizeHigh, SizeLow, Reserved0, Reserved1;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string Name;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 14)] public string ShortName;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    static extern IntPtr FindFirstFileW(string path, out FindData data);
+    [DllImport("kernel32.dll")]
+    static extern bool FindClose(IntPtr handle);
+    public static long Of(string path) {
+        FindData data;
+        IntPtr handle = FindFirstFileW(path, out data);
+        if (handle == new IntPtr(-1)) { return -1; }
+        FindClose(handle);
+        return (data.Attributes & 0x400) != 0 ? (long)data.Reserved0 : 0;
+    }
+}
+'@
+                    }
+                    $tag = [DiffdataReparseTag]::Of($File.FullName)
+                    # 0xFFFF0FFF and 0x9000001A, in decimal: PowerShell 5.1 reads those hex
+                    # numbers as negative.
+                    return ($tag -ge 0) -and (($tag -band 4294905855) -eq 2415919130)
+                }
+                catch { return $false }
+            }
             $found = @()
             if (Test-Path -LiteralPath $downloads -PathType Container) {
                 $found = @(Get-ChildItem -LiteralPath $downloads -File -Force | Where-Object {
-                        $_.Name -cmatch '^DD-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}\.diffdata-team\.json$' -and -not $_.LinkType
+                        $_.Name -cmatch '^DD-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}\.diffdata-team\.json$' -and (Plain $_)
                     } | Sort-Object Name)
             }
             $codes = ($found | ForEach-Object { $_.Name.Split('.')[0] }) -join ', '
