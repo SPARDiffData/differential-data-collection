@@ -33,19 +33,26 @@ DEST="${DIFFDATA_REPO:-$HOME/differential-data-collection}"
 while [ "${#DEST}" -gt 1 ] && [ "${DEST%/}" != "$DEST" ]; do DEST="${DEST%/}"; done
 TEAM_FILE="${1:-}"
 # Settings from the environment that would point Git or uv somewhere else.
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR UV_PROJECT_ENVIRONMENT
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS \
+  UV_PROJECT_ENVIRONMENT UV_PROJECT UV_WORKING_DIR
 
 say() { printf '%s\n' "$*"; }
 stop() {
   printf 'diffdata install: %s\n' "$*" >&2
   exit 1
 }
-# Git for fetching: your own and the system's settings (URL rewrites, hooks) left out.
+# Git with your own and the system's settings (URL rewrites, hooks) left out, for every check
+# and fetch, so the remote that's checked is the one that's fetched.
 fetch_git() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "$@" </dev/null; }
+# A folder's real path, links resolved; lowercase on macOS, whose disks ignore letter case.
+real() {
+  (cd -P "$1" 2>/dev/null && pwd -P) | if [ "$(uname -s)" = "Darwin" ]; then tr '[:upper:]' '[:lower:]'; else cat; fi
+}
 quoted() { printf '%q' "$1"; }
 
 # 11: never as root.
-if [ "$(id -u)" -eq 0 ]; then
+if [ "$(id -u)" -eq 0 ] || [ -n "${SUDO_USER:-}" ]; then
   stop "Don't run this as root or with sudo: run the install line as yourself. Nothing was changed."
 fi
 
@@ -59,12 +66,23 @@ case "$DEST" in
   /*) ;;
   *) DEST="$PWD/$DEST" ;;
 esac
-parent="$(cd "${DEST%/*}/" 2>/dev/null && pwd -P || true)"
-diffdata_home="$(cd "$HOME/.diffdata" 2>/dev/null && pwd -P || true)"
+case "/$DEST/" in
+  */../* | */./*) stop "Give DIFFDATA_REPO as a plain path, without . or .. in it. Nothing was changed." ;;
+esac
+# The nearest folder above it that exists, as the system sees it (links resolved).
+probe="${DEST%/*}"
+while [ -n "$probe" ] && [ ! -d "$probe" ]; do probe="${probe%/*}"; done
+parent="$(real "${probe:-/}/")"
+diffdata_home="$(real "$HOME/.diffdata")"
+inside_settings=no
+case "$(printf '%s' "$DEST/" | tr '[:upper:]' '[:lower:]')" in
+  "$(printf '%s' "$HOME/.diffdata/" | tr '[:upper:]' '[:lower:]')"*) inside_settings=yes ;;
+esac
 if [ -n "$diffdata_home" ] && [ -n "$parent" ]; then
-  case "$parent/" in
-    "$diffdata_home"/*) stop "$DEST is inside ~/.diffdata, which holds your settings and key. Choose another folder. Nothing was changed." ;;
-  esac
+  case "$parent/" in "$diffdata_home"/*) inside_settings=yes ;; esac
+fi
+if [ "$inside_settings" = yes ]; then
+  stop "$DEST is inside ~/.diffdata, which holds your settings and key. Choose another folder. Nothing was changed."
 fi
 update=no
 if [ -e "$DEST" ] || [ -L "$DEST" ]; then
@@ -85,9 +103,14 @@ fi
 
 # 12, second part: only a clean clone of this repo, on main, in its own work tree.
 if [ "$update" = yes ]; then
-  g() { git --no-optional-locks -C "$DEST" "$@" </dev/null; }
+  g() { fetch_git --no-optional-locks -C "$DEST" "$@"; }
   top="$(g rev-parse --show-toplevel 2>/dev/null)" || stop "$DEST isn't a working clone. Nothing was changed."
-  if [ "$(cd "$top" && pwd -P)" != "$(cd "$DEST" && pwd -P)" ]; then
+  gitdir="$(g rev-parse --absolute-git-dir 2>/dev/null)" || gitdir=""
+  common="$(cd "$DEST" && g rev-parse --git-common-dir 2>/dev/null)" || common=""
+  case "$common" in /*) ;; ?*) common="$DEST/$common" ;; esac
+  here="$(real "$DEST")"
+  if [ "$(real "$top")" != "$here" ] || [ "$(real "$gitdir")" != "$here/.git" ] ||
+    [ "$(real "$common")" != "$here/.git" ]; then
     stop "$DEST's Git settings point to another folder. Move it away, or set DIFFDATA_REPO to another folder. Nothing was changed."
   fi
   remote="$(g remote get-url origin 2>/dev/null)" || remote=""
@@ -99,7 +122,7 @@ if [ "$update" = yes ]; then
   if [ "$branch" != "main" ]; then
     stop "$DEST is on branch ${branch:-unknown}, not main. Switch it to main yourself, then run the install line again. Nothing was changed."
   fi
-  changes="$(g status --porcelain)" || stop "Couldn't check $DEST for changes. Nothing was changed."
+  changes="$(g status --porcelain --untracked-files=normal)" || stop "Couldn't check $DEST for changes. Nothing was changed."
   if [ -n "$changes" ]; then
     stop "$DEST has local changes or files of yours. Keep or move them yourself, then run the install line again. Nothing was changed."
   fi
@@ -121,7 +144,7 @@ find_uv() {
 UV="$(find_uv)"
 if [ -z "$UV" ]; then
   say "Installing uv, from Astral (https://astral.sh/uv)..."
-  curl -LsSf https://astral.sh/uv/install.sh |
+  curl -q -LsSf https://astral.sh/uv/install.sh |
     (unset UV_DOWNLOAD_URL UV_INSTALLER_GITHUB_BASE_URL UV_INSTALLER_GHE_BASE_URL && sh)
   UV="$(find_uv)"
   [ -n "$UV" ] || stop "uv was installed, but this window can't find it. Open a new Terminal and run the install line again."
@@ -130,14 +153,14 @@ fi
 if [ "$update" = yes ]; then
   say "Updating $DEST..."
   fetch_git -C "$DEST" fetch origin main
-  git -C "$DEST" merge --ff-only FETCH_HEAD </dev/null
+  fetch_git -C "$DEST" merge --ff-only --no-overwrite-ignore FETCH_HEAD
 else
   say "Getting diffdata into $DEST..."
   fetch_git clone --branch main "$REPO_URL" "$DEST"
 fi
 
 cd "$DEST"
-"$UV" sync </dev/null
+"$UV" sync --locked --project "$DEST" </dev/null
 
 if ! command -v claude >/dev/null 2>&1 && [ ! -d "/Applications/Claude.app" ]; then
   say "Claude Code wasn't found. /slack-export needs it: see https://claude.com/claude-code"

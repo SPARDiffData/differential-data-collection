@@ -37,6 +37,9 @@ if [ "$1" = "-C" ]; then
   dest="$2"; shift 2
   case "$1 $2" in
     "rev-parse --show-toplevel") /bin/cat "$dest/.git/top" 2>/dev/null || echo "$dest"; exit 0 ;;
+    "rev-parse --absolute-git-dir") /bin/cat "$dest/.git/gitdir" 2>/dev/null \
+      || echo "$dest/.git"; exit 0 ;;
+    "rev-parse --git-common-dir") echo ".git"; exit 0 ;;
     "remote get-url") /bin/cat "$dest/.git/remote" 2>/dev/null || exit 2; exit 0 ;;
     "rev-parse --abbrev-ref") /bin/cat "$dest/.git/branch" 2>/dev/null || echo main; exit 0 ;;
     "status --porcelain") /bin/cat "$dest/.git/status" 2>/dev/null; exit "${STUB_STATUS_EXIT:-0}" ;;
@@ -81,7 +84,8 @@ def box(tmp_path):
     stub(bin_dir, "uname", LOGGER.format(name="uname", body='echo "${STUB_OS:-Linux}"'))
     stub(bin_dir, "xcode-select", LOGGER.format(name="xcode-select", body="exit 0"))
     stub(bin_dir, "curl", LOGGER.format(name="curl", body="exit 0"))
-    os.symlink(shutil.which("sh") or "/bin/sh", bin_dir / "sh")
+    for tool in ("sh", "tr", "cat"):
+        os.symlink(shutil.which(tool), bin_dir / tool)
     log = tmp_path / "log.txt"
     log.write_text("", encoding="utf-8")
     env = {"HOME": str(home), "PATH": str(bin_dir), "STUB_LOG": str(log), "LANG": "C"}
@@ -145,7 +149,7 @@ def calls(box) -> list[str]:
     return box["log"].read_text(encoding="utf-8").splitlines()
 
 
-def clone(box, remote=REPO_URL, branch="main", status="", top=None) -> Path:
+def clone(box, remote=REPO_URL, branch="main", status="", top=None, gitdir=None) -> Path:
     dest = box["home"] / DEST
     (dest / ".git").mkdir(parents=True)
     (dest / ".git" / "remote").write_text(remote + "\n", encoding="utf-8")
@@ -153,6 +157,8 @@ def clone(box, remote=REPO_URL, branch="main", status="", top=None) -> Path:
     (dest / ".git" / "status").write_text(status, encoding="utf-8")
     if top:
         (dest / ".git" / "top").write_text(top + "\n", encoding="utf-8")
+    if gitdir:
+        (dest / ".git" / "gitdir").write_text(gitdir + "\n", encoding="utf-8")
     return dest
 
 
@@ -171,7 +177,7 @@ def test_a_fresh_install_clones_syncs_and_prints_the_setup_line(box):
     assert code == 0, out
     dest = box["home"] / DEST
     assert f"git clone --branch main {REPO_URL} {dest} [global=/dev/null nosystem=1]" in calls(box)
-    assert f"uv sync (in {dest})" in calls(box)
+    assert f"uv sync --locked --project {dest} (in {dest})" in calls(box)
     assert "Now run setup yourself" in out
     assert f"run diffdata setup {box['team']}" in out
     assert not any("diffdata setup" in c for c in calls(box))  # no terminal: not run
@@ -201,7 +207,10 @@ def test_a_clean_clone_is_fetched_then_fast_forwarded(box):
     code, out = run_sh(box)
     assert code == 0, out
     assert f"git -C {dest} fetch origin main [global=/dev/null nosystem=1]" in calls(box)
-    assert any(c.startswith(f"git -C {dest} merge --ff-only FETCH_HEAD") for c in calls(box))
+    merge = f"git -C {dest} merge --ff-only --no-overwrite-ignore FETCH_HEAD [global=/dev/null"
+    assert any(c.startswith(merge) for c in calls(box))
+    status = f"git --no-optional-locks -C {dest} status --porcelain --untracked-files=normal"
+    assert any(c.startswith(status + " [global=/dev/null nosystem=1]") for c in calls(box))
     assert not any(c.startswith("git clone") or " pull " in c for c in calls(box))
 
 
@@ -219,7 +228,7 @@ def test_a_missing_uv_is_installed_from_astral_only(box):
     )  # fmt: skip
     code, out = run_sh(box, UV_DOWNLOAD_URL="https://elsewhere.example/uv")
     assert code == 0, out
-    assert "curl -LsSf https://astral.sh/uv/install.sh" in calls(box)
+    assert "curl -q -LsSf https://astral.sh/uv/install.sh" in calls(box)
     assert "installer UV_DOWNLOAD_URL=unset" in calls(box)  # overrides cleared (15)
     assert any(c.startswith("uv sync") for c in calls(box))
 
@@ -247,6 +256,37 @@ def test_the_printed_line_quotes_odd_paths_for_the_shell(box):
 
 
 @POSIX
+def test_must_refuse_11_sudo_to_another_user_stops_too(box):
+    code, out = run_sh(box, SUDO_USER="someone")
+    assert code == 1 and "Don't run this as root" in out
+    assert calls(box) == ["id -u"]
+
+
+@POSIX
+@pytest.mark.parametrize("path", ["{tmp}/a/../b", "{tmp}/./b"])
+def test_must_refuse_12_dots_in_the_folder_stop(box, path):
+    code, out = run_sh(box, DIFFDATA_REPO=path.format(tmp=box["tmp"]))
+    assert code == 1 and "without . or .." in out
+    changed_nothing(box)
+
+
+@POSIX
+def test_must_refuse_12_diffdata_spelt_in_other_capitals_stops(box):
+    code, out = run_sh(box, DIFFDATA_REPO=str(box["home"] / ".DIFFDATA" / "repo"))
+    assert code == 1 and "inside ~/.diffdata" in out
+    changed_nothing(box)
+
+
+@POSIX
+def test_must_refuse_12_uv_project_overrides_are_cleared(box):
+    record = 'echo "UV_PROJECT=${UV_PROJECT-unset}" >> "$STUB_LOG"\n'
+    stub(box["bin"], "uv", UV_STUB.replace('echo "uv $*', record + 'echo "uv $*', 1))
+    code, out = run_sh(box, UV_PROJECT="/somewhere/else", UV_WORKING_DIR="/somewhere/else")
+    assert code == 0, out
+    assert "UV_PROJECT=unset" in calls(box)
+
+
+@POSIX
 def test_must_refuse_11_root_stops_before_anything(box):
     code, out = run_sh(box, STUB_UID="0")
     assert code == 1
@@ -269,6 +309,7 @@ def test_must_refuse_11_root_stops_before_anything(box):
         (lambda box: clone(box, status=" M README.md\n"), "local changes"),
         (lambda box: clone(box, status="?? my-notes.md\n"), "local changes"),
         (lambda box: clone(box, top="/somewhere/else"), "point to another folder"),
+        (lambda box: clone(box, gitdir=str(box["tmp"])), "point to another folder"),
     ],
 )  # fmt: skip
 def test_must_refuse_12_anything_but_a_clean_clone_stops(box, make, words):
@@ -300,11 +341,20 @@ def test_must_refuse_12_a_link_in_the_way_stops(box, slash):
 
 
 @POSIX
-def test_must_refuse_12_a_folder_inside_diffdata_stops(box):
-    code, out = run_sh(box, DIFFDATA_REPO=str(box["home"] / ".diffdata" / "repo"))
+@pytest.mark.parametrize("inside", ["repo", "new/deeper/repo"])
+def test_must_refuse_12_a_folder_inside_diffdata_stops(box, inside):
+    code, out = run_sh(box, DIFFDATA_REPO=str(box["home"] / ".diffdata" / inside))
     assert code == 1 and "inside ~/.diffdata" in out
     changed_nothing(box)
-    assert not (box["home"] / ".diffdata" / "repo").exists()
+    assert sorted(p.name for p in (box["home"] / ".diffdata").iterdir()) == ["config.toml"]
+
+
+@POSIX
+def test_must_refuse_12_diffdata_through_a_link_stops(box):
+    os.symlink(box["home"] / ".diffdata", box["tmp"] / "alias")
+    code, out = run_sh(box, DIFFDATA_REPO=str(box["tmp"] / "alias" / "new" / "repo"))
+    assert code == 1 and "inside ~/.diffdata" in out
+    changed_nothing(box)
 
 
 @POSIX
