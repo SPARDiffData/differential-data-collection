@@ -194,8 +194,8 @@ public static class DiffdataReparseTag {
                     Fail "There are $($found.Count) team files in ${downloads}: $codes. Set DIFFDATA_TEAM_FILE to the right one's path and run the install line again. Nothing was changed."
                     return
                 }
-                Say "There are $($found.Count) team files in Downloads: $codes."
-                $answer = ([string](Read-Host "Which is your project code? (It is in the project team's message.)")).Trim().ToUpperInvariant()
+                # The choices are in the question itself, so they show wherever the question does.
+                $answer = ([string](Read-Host "There are $($found.Count) team files in Downloads: $codes. Which is your project code? (It is in the project team's message.)")).Trim().ToUpperInvariant()
                 if (-not $answer.StartsWith('DD-')) { $answer = "DD-$answer" }
                 $match = @($found | Where-Object { $_.Name -ceq "$answer.diffdata-team.json" })
                 if ($match.Count -ne 1) {

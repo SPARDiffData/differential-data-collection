@@ -97,12 +97,12 @@ def box(tmp_path):
     return {"home": home, "team": team, "bin": bin_dir, "log": log, "env": env, "tmp": tmp_path}
 
 
-def run_sh(box, *args: str, tty=False, cwd=None, typed: bytes = b"", **env: str):
+def run_sh(box, *args: str, tty=False, cwd=None, typed: bytes = b"", shopts=(), **env: str):
     """Run install.sh as `curl … | bash -s -- args` does: piped in, with no terminal unless
     `tty`. tty="in" gives it a terminal, but sends its output to a file. `typed` is what the
     person types on the terminal."""
     full = {**box["env"], **env}
-    command = ["/bin/bash", "-s", "--", *args]
+    command = ["/bin/bash", *(f for o in shopts for f in ("-O", o)), "-s", "--", *args]
     script = INSTALL_SH.read_bytes()
     if not tty:
         done = subprocess.run(
@@ -658,6 +658,27 @@ def test_the_path_given_wins_over_downloads(box):
 
 
 @POSIX
+def test_lowercase_names_are_ignored_even_when_bash_ignores_case(box):
+    no_team_file(box)
+    team_file(box["home"] / "Downloads", "DD-7kq4")
+    code, out = run_sh(box, shopts=("nocasematch", "nocaseglob"))
+    assert code == 1 and "No team file in" in out, out
+    changed_nothing(box)
+
+
+@POSIX
+def test_a_downloads_folder_ending_in_a_line_break_stops(box):
+    no_team_file(box)
+    team_file(box["home"] / "Incoming", "DD-7KQ4")  # the folder without the line break
+    odd = box["home"] / "Incoming\n"
+    odd.mkdir()
+    stub(box["bin"], "xdg-user-dir", f"#!/bin/sh\nprintf '%s\\n' '{odd}'\n")
+    code, out = run_sh(box)
+    assert code == 1 and "has a line break in it" in out, out
+    changed_nothing(box)
+
+
+@POSIX
 def test_a_renamed_linux_downloads_folder_is_used(box):
     no_team_file(box)
     renamed = box["home"] / "Téléchargements"
@@ -749,7 +770,10 @@ def run_ps1(shell: str, tmp_path, dest: Path, known=None, **env) -> tuple[int, s
     reported = f"[pscustomobject]@{{'{DOWNLOADS_ID}' = '{value}'}}" if value else ""
     # A function comes before the cmdlet of the same name, inside the script's block too. It
     # answers only for the Downloads folder's own key and value name.
-    asked = f"($args -ccontains '{SHELL_FOLDERS}') -and ($args -ccontains '{DOWNLOADS_ID}')"
+    asked = (
+        f"($args -join '|') -ceq '-LiteralPath|{SHELL_FOLDERS}|-Name|{DOWNLOADS_ID}"
+        "|-ErrorAction|SilentlyContinue'"
+    )
     command = (
         f"function Get-ItemProperty {{ if ({asked}) {{ {reported} }} }}; "
         f"Get-Content -Raw -LiteralPath '{INSTALL_PS1}' | Invoke-Expression"
@@ -921,7 +945,9 @@ def nothing_installed(out: str, calls_made: list[str]) -> None:
 def test_ps1_one_team_file_in_downloads_is_used(tmp_path, shell):
     code, out, calls_made, team = stubbed_install(shell, tmp_path, DIFFDATA_TEAM_FILE=None)
     assert f"Your team file: {team}" in out, out
-    assert "Installed. Now run setup yourself" in out and str(team) in out
+    assert "Installed. Now run setup yourself" in out, out
+    line = next(x for x in out.splitlines() if "run diffdata setup" in x)
+    assert line.rstrip().endswith(f"'{team}'"), line
     assert MARKER not in out
 
 

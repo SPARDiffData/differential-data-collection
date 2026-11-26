@@ -105,10 +105,14 @@ fi
 if [ -z "$TEAM_FILE" ]; then
   downloads="$HOME/Downloads"
   if command -v xdg-user-dir >/dev/null 2>&1; then # Linux, where Downloads may be renamed
-    named="$(xdg-user-dir DOWNLOAD 2>/dev/null)" || named=""
+    # The x keeps every line break it prints; only the one that ends its line is taken off.
+    named="$(xdg-user-dir DOWNLOAD 2>/dev/null && printf x)" || named=""
+    named="${named%x}"
+    named="${named%$'\n'}"
     case "$named" in "" | "$HOME" | "$HOME/") ;; *) downloads="$named" ;; esac
   fi
   c='[ABCDEFGHJKMNPQRSTUVWXYZ23456789]'
+  shopt -u nocasematch nocaseglob # the name's letter case counts, whatever bash was given
   case "$downloads" in
     *$'\n'*) stop "Your Downloads folder's path has a line break in it. Run the install line again with the team file's path after 'bash -s --'. Nothing was changed." ;;
   esac
