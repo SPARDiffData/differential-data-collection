@@ -1775,3 +1775,65 @@ def test_156_a_rerun_shows_a_notice_added_where_there_was_none(home):
         f"C00000003 (a channel ID): the notice posted {when} (was: {setup.NOT_ADDED})"
         in script.text
     )
+
+
+def test_156_enter_never_turns_a_saved_message_link_into_a_notice(home):
+    # An older config lists a channel by a message link. Enter keeps the list, and the notice
+    # question is still asked: the saved link is never taken as the notice.
+    path = existing(home)
+    path.write_text(
+        path.read_text(encoding="utf-8")
+        .replace('slack_channels = ["old-channel"]', f'slack_channels = ["{NOTICE}"]')
+        .replace(
+            'slack_notices.C00000002 = "https://example.slack.com/archives/C00000002/'
+            'p1790900000000000"\n',
+            "",
+        ),
+        encoding="utf-8",
+    )
+    code, script = run(home, "y", "y", "", "", "", "", "", "y", team=None)
+    assert code == 0
+    assert asked(script, ASK_NOTICE) == 1
+    assert "Notice for C00000002" not in script.text
+    assert notices(home) == {"old-channel": "none"}
+
+
+NAME_KEYED = (
+    'slack_notices.my-channel = "https://example.slack.com/archives/C00000002/p1790900000000000"'
+)
+
+
+def name_keyed(home: Path) -> Path:
+    """A config whose notice for C00000002 is keyed by the channel's name only."""
+    path = existing(home)
+    text = path.read_text(encoding="utf-8")
+    text = text.replace(
+        'slack_notices.C00000002 = "https://example.slack.com/archives/C00000002/'
+        'p1790900000000000"',
+        NAME_KEYED,
+    ).replace('slack_channels = ["old-channel"]', 'slack_channels = ["my-channel"]')
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_156_a_pasted_notice_also_changes_the_old_one_keyed_by_name(home):
+    name_keyed(home)
+    code, script = run(home, "y", "y", "", NOTICE, "", "", "y", team=None)
+    assert code == 0
+    assert notices(home) == {"old-channel": "none", "my-channel": NOTICE, "C00000002": NOTICE}
+    old = setup.notice_time("1790900000")
+    new = setup.notice_time("1700000000")
+    assert (
+        f"  Notices:          C00000002 (a channel ID): the notice posted {new}, also under the "
+        f"name my-channel (was: the notice posted {old})" in script.shown
+    )
+    # The export reads one notice for the channel, by its ID or its name, with no conflict.
+    loaded = config_module.load_config(settings(home))
+    assert loaded.notice("C00000002", "my-channel") == loaded.notice("C00000002")
+
+
+def test_156_a_notice_from_the_same_minute_still_shows_it_changed(home):
+    existing(home)
+    same_minute = "https://example.slack.com/archives/C00000002/p1790900005000000"
+    _, script = run(home, "y", "y", "", same_minute, "", "", "n", team=None)
+    assert "(was: another notice posted the same minute)" in script.text

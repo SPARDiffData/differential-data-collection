@@ -698,7 +698,9 @@ def ask_channels(prompter: Prompter, keep: str) -> tuple[list[str], str | None, 
     def channels_or_keep(text: str):
         chosen = text if text.strip() or not keep else keep
         channels, space = parse_channels(chosen)
-        return channels, space, pasted_notices(chosen)
+        # Only links typed now are notices: Enter keeps the saved list, and a message link
+        # saved there names a channel, never a notice the producer gave here.
+        return channels, space, pasted_notices(text) if text.strip() else {}
 
     question = (
         f"Channels [Enter keeps: {keep}; what you type replaces this list]: "
@@ -869,7 +871,9 @@ def notices_step(
         found = notice_entry(new, entry)
         others = {k: v for k, v in known.items() if k != entry}
         if entry in pasted:
-            # The same checks as a typed link: this workspace, this channel.
+            # The same checks as a typed link: this workspace, this channel. They can't fail
+            # today (the workspace must match the links', and the link's channel is the
+            # entry), so a failure stops setup with nothing written rather than asking again.
             answer = check_notice(pasted[entry], entry, space, others)
             prompter.say(
                 f"Notice for {shown_channel(entry)}: {describe_notice(answer, space)}, from the "
@@ -895,12 +899,24 @@ def notices_step(
             for key, value in list(new.items()):
                 if channel_id(key) == old_link and same_notice(value, found[1]):
                     new[key] = answer
+        if CHANNEL_ID.fullmatch(entry) and linked_channel(answer) == entry:
+            # The other way round: an entry keyed by a name whose notice links to this
+            # channel would disagree with the new one, and the export would stop. Change it
+            # too; the summary says so (24).
+            for key in name_keys(new, entry):
+                new[key] = answer
         linked = linked_channel(answer)
         if linked and not CHANNEL_ID.fullmatch(entry):
             known[entry] = linked
         elif not CHANNEL_ID.fullmatch(entry):
             known.pop(entry, None)
     return new
+
+
+def name_keys(table: dict, entry: str) -> list[str]:
+    """The slack_notices keys that are channel names, whose value is a notice link to the
+    channel with this ID."""
+    return [k for k, v in table.items() if channel_id(k) is None and linked_channel(v) == entry]
 
 
 def missing_notices(new: dict) -> list[str]:
@@ -1084,9 +1100,19 @@ def check_existing(prompter: Prompter, settings: Path) -> None:
         prompter.say("Your config.toml passes diffdata's checks.")
 
 
+def old_notice(before: dict, entry: str) -> tuple[str, object] | None:
+    """This channel's entry in `before`; for a channel listed by ID with no entry under it, an
+    entry keyed by a name whose notice links to it."""
+    found = notice_entry(before, entry)
+    if found is None and CHANNEL_ID.fullmatch(entry):
+        keys = name_keys(before, entry)
+        found = (keys[0], before[keys[0]]) if keys else None
+    return found
+
+
 def changed_notice(before: dict, after: dict, entry: str) -> bool:
     """Whether this channel's notice differs between two slack_notices tables."""
-    old = notice_entry(before, entry)
+    old = old_notice(before, entry)
     new = notice_entry(after, entry)
     if old is None or new is None:
         return (old is None) != (new is None)
@@ -1124,9 +1150,15 @@ def show_summary(
         ):
             # Written under the channel's ID too (notices_step): on the screen as well (24).
             notice += ", also under its channel ID"
+        if found and CHANNEL_ID.fullmatch(entry):
+            names = [k for k in name_keys(table, entry) if same_notice(table[k], found[1])]
+            if names:
+                notice += f", also under the name {', '.join(printable(k) for k in names)}"
         if before is not None and changed_notice(before, table, entry):
-            old = notice_entry(before, entry)
+            old = old_notice(before, entry)
             was = describe_notice(old[1], space) if old else NOT_ADDED
+            if found and was == describe_notice(found[1], space):
+                was = "another notice posted the same minute"
             notice += f" (was: {was})"
         label = "  Notices:         " if number == 0 else "                   "
         prompter.say(f"{label} {shown_channel(entry)}: {notice}")
