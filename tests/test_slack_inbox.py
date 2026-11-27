@@ -228,6 +228,54 @@ def test_a_post_with_forwarded_messages_is_listed_for_its_thread(config, capsys)
     assert "slack_read_thread: 1791298800.000700, 1791208800.000600." in note
 
 
+def channel_read_with(body: str) -> list[dict]:
+    """A made-up channel read with one post whose lines after its TS are `body`."""
+    text = (
+        "Channel: #example-channel (C00000001)\n\n"
+        "=== Message from Sam Sample <sam@example.com> (U00000002) at 2026-10-01 09:00:00 CDT "
+        f"===\nMessage TS: 1790860000.000100\n{body}\n"
+    )
+    return [{"type": "text", "text": json.dumps({"messages": text, "pagination_info": MORE})}]
+
+
+def test_a_thread_line_with_a_quote_mark_is_listed_for_its_thread(config, capsys):
+    # #159: the connector now writes "> Thread: N replies (latest: ...)".
+    begin(config, ["example-channel=C00000001"], now=T0)
+    body = "Hello.\n\n> Thread: 9 replies (latest: 2026-10-01 09:30:00 CDT)"
+    assert save(config, payload(response=channel_read_with(body)), now=T0) == 0
+    assert "slack_read_thread: 1790860000.000100." in hook_note(capsys)
+    assert len(inbox_files(config)) == 1
+
+
+@pytest.mark.parametrize("opted_out", [(), ("U00000002",)])
+def test_must_refuse_1_a_thread_line_the_parser_didnt_read_is_refused(config, capsys, opted_out):
+    # Refused before the opt-out cut too, which would otherwise drop the line with the text.
+    config = replace(config, slack_opted_out=opted_out)
+    begin(config, ["example-channel=C00000001"], now=T0)
+    body = "Hello.\n>> Thread: 9 replies (latest: 2026-10-01 09:30:00 CDT)"
+    assert save(config, payload(response=channel_read_with(body)), now=T0) == 2
+    err = capsys.readouterr().err
+    assert "thread line" in err and "format may have changed" in err and "project team" in err
+    assert "a line near the end of a message looks like a thread line" in err
+    assert inbox_files(config) == []
+
+
+@pytest.mark.parametrize("line", ["Thread (2 replies)", "Thread: 5 replies", "thread - 2 replies!"])
+def test_a_thread_look_alike_inside_a_posts_text_never_stops_the_export(config, capsys, line):
+    begin(config, ["example-channel=C00000001"], now=T0)
+    body = f"Recap:\n{line}\nthanks all\n> Thread: 2 replies (latest: 2026-10-01 09:30:00 CDT)"
+    assert save(config, payload(response=channel_read_with(body)), now=T0) == 0
+    assert "slack_read_thread: 1790860000.000100." in hook_note(capsys)
+
+
+def test_must_refuse_2_text_that_only_looks_like_a_thread_line_is_saved_as_text(config, capsys):
+    begin(config, ["example-channel=C00000001"], now=T0)
+    body = "Hello.\n> Thread: see below"
+    assert save(config, payload(response=channel_read_with(body)), now=T0) == 0
+    assert "No posts with replies on this page." in hook_note(capsys)
+    assert "> Thread: see below" in saved_text(config)
+
+
 @pytest.fixture
 def overflowed(tmp_path):
     """Claude Code's layout: the session's transcript, and beside it a folder of the same
@@ -828,11 +876,9 @@ def test_must_refuse_2_a_pasted_marker_line_doesnt_keep_the_rest_of_their_text(c
     code = save(opted, payload(response=wrapped(text)), now=T0)
     saved = saved_text(config)
     assert "SECRET" not in saved and "plan.txt" not in saved and "Pasted" not in saved
-    if fake.startswith("=== THREAD REPLIES"):  # the parser never reads a replies line as one
-        assert code == 0
-        assert "Thread: 3 replies" in saved  # the stub keeps its Thread line
-    else:
-        assert code == 2 and inbox_files(config) == []
+    # A pasted replies line hides the Thread line under it from the parser, so the page is
+    # refused as holding a thread line it didn't read (#159).
+    assert code == 2 and inbox_files(config) == []
 
 
 def test_must_refuse_2_in_a_thread_read_a_reply_marker_out_of_order_is_their_text(config):
@@ -1327,6 +1373,27 @@ def test_the_channels_step_lists_names_and_ids(tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert cli.main(["discover", "slack", "channels"]) == 0
     assert capsys.readouterr().out.splitlines()[1:] == ["example-channel", "C00000002"]
+
+
+@pytest.mark.parametrize("value, under", [("1", True), ("0", False), ("", False), (None, False)])
+def test_the_channels_step_says_when_its_under_the_export(
+    tmp_path, capsys, monkeypatch, value, under
+):
+    # #159: the first line tells /slack-export to end with the line to type, nothing else.
+    data = (tmp_path / "data").as_posix()
+    (tmp_path / "config.toml").write_text(
+        f'[sources]\nslack_channels = ["example-channel"]\n[local]\ndata_dir = "{data}"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    if value is not None:
+        monkeypatch.setenv("DIFFDATA_EXPORT", value)
+    assert cli.main(["discover", "slack", "channels"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    if under:
+        assert lines[0] == "Under diffdata export."
+        lines = lines[1:]
+    assert lines[0].startswith("Opted-in channels, from ") and lines[1:] == ["example-channel"]
 
 
 def test_two_names_learned_together_are_both_kept(config):

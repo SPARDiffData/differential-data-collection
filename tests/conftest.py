@@ -13,6 +13,12 @@ LAST_PAGE = "There are no more messages available.\n"
 
 
 @pytest.fixture(autouse=True)
+def not_under_export(monkeypatch):
+    """Tests run the same inside a Claude Code that `diffdata export` started (#159)."""
+    monkeypatch.delenv("DIFFDATA_EXPORT", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def no_real_config(tmp_path_factory, monkeypatch):
     """No test ever reads the person's real ~/.diffdata/config.toml: point that lookup at
     an empty folder. Tests that need one write it there, or pass a path."""

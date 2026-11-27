@@ -5,9 +5,11 @@ Claude's Slack connector, and a hook passes each result to `save_from_hook()`, s
 never retypes it. A result is saved only while an export run is open, and only for the
 channels that run named, all of which must be opted in through config.toml (CON-1).
 A channel read must show that channel's opted-in name and ID in its header, and is saved
-only then. A channel counts as checked in a run once its read is saved in that run's inbox
-folder, and a thread is saved only after that. Each save writes its own file, so two reads
-finishing together can't undo each other's check (#21).
+only then. A channel read is refused if, where a post's Thread line goes (just above its
+detail and forwarded lines), a line looks like one but wasn't read as one (#159). A channel
+counts as checked in a run once its read is saved in that run's inbox folder, and a thread
+is saved only after that. Each save writes its own file, so two reads finishing together
+can't undo each other's check (#21).
 A result too big for Claude's context reaches the hook only as a notice naming the file
 Claude Code saved it in, so `save` reads that file, and only from the session's own
 tool-results folder. After each save, the hook tells Claude what it needs to carry on.
@@ -78,6 +80,7 @@ from diffdata.discover.slack_parse import (
     result_text,
     search_messages,
     still_shows,
+    unread_thread_lines,
 )
 
 # A run that crashed or was forgotten must not leave the hook saving, so runs expire.
@@ -625,6 +628,17 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
         except slack_canvas.CanvasError as e:
             return fail(str(e))
         return tell_claude(note)
+    if tool == "slack_read_channel" and unread_thread_lines(response):
+        # Before the opt-out cut, which could drop such a line with its author's text. A
+        # thread line the parser can't read would leave that thread out of the export, and
+        # the start point would move past it (#159).
+        return fail(
+            'This channel read has a post whose thread line ("Thread: N replies") '
+            "diffdata couldn't read, so it wasn't saved: the threads under it would be missed. "
+            "The Slack connector's format may have changed, or a line near the end of a "
+            "message looks like a thread line. Stop the export and tell the user: they can "
+            "pass this message to the project team."
+        )
     left, left_names = 0, {}
     if tool in SAVED_TOOLS and config.slack_opted_out:
         # People who opted out (#105): their messages are cut to a stub before anything is

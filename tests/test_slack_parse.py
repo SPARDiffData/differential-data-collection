@@ -14,6 +14,7 @@ from diffdata.discover.slack_parse import (
     result_text,
     search_messages,
     to_markdown,
+    unread_thread_lines,
 )
 
 CHANNEL_TOOL = "mcp__claude_ai_Slack__slack_read_channel"
@@ -393,3 +394,282 @@ def test_a_blank_line_between_forwarded_messages_is_kept():
     text = f"Notes\nReactions: eyes (1)\n  \n{forwarded()}\n\n{forwarded(name='Alex Example')}\n\t"
     [message], _ = parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(text=text))
     assert message.text == f"Notes\n{forwarded()}\n\n{forwarded(name='Alex Example')}"
+
+
+# #159: the connector writes the detail lines with "> " before them, at least the Thread line.
+QUOTED_DETAILS = (
+    "Hello there.\n"
+    "\n"
+    "> Thread: 12 replies (latest: 2026-10-01 09:20:00 CDT)\n"
+    "> Reactions: +1 (2), eyes (1)\n"
+    "> Files: notes.txt (ID: F00000009, text, 1 KB)"
+)
+
+
+def channel_page(*bodies: str) -> str:
+    """A made-up channel read, one post per body, in the connector's wrapping."""
+    posts = "".join(
+        f"=== Message from Sam Sample <sam@example.com> (U00000002) at 2026-10-0{i + 1} "
+        f"09:00:00 CDT ===\nMessage TS: 179086{i}000.000100\n{body}\n\n"
+        for i, body in enumerate(bodies)
+    )
+    text = "Channel: #example-channel (C00000001)\n\n" + posts
+    return json.dumps(
+        {"messages": text, "pagination_info": "There are no more messages available."}
+    )
+
+
+def test_detail_lines_with_a_quote_mark_are_read():
+    [post], skipped = parse_result(CHANNEL_TOOL, {}, channel_page(QUOTED_DETAILS))
+    assert (post.text, post.replies, skipped) == ("Hello there.", 12, 0)
+    assert post.reactions == [{"name": "+1", "count": 2}, {"name": "eyes", "count": 1}]
+    assert post.files == [{"id": "F00000009", "name": "notes.txt", "type": "text"}]
+
+
+@pytest.mark.parametrize("count", ["1 reply", "9 replies", "42 replies"])
+def test_a_quoted_thread_line_counts_replies_with_or_without_trailing_space(count):
+    body = f"Hi\n> Thread: {count} (latest: 2026-10-01 09:20:00 CDT) "
+    [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(body))
+    assert (post.text, post.replies) == ("Hi", int(count.split()[0]))
+    assert unread_thread_lines(channel_page(body)) == 0
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "> Thread: see below",
+        "> Reactions: mostly positive",
+        "> Files: in the shared folder",
+        ">> Reactions: +1 (2)",
+        ">Reactions: +1 (2)",
+        "> Thread: 2 replies so far",
+    ],
+)
+def test_must_refuse_2_text_that_only_looks_like_a_quoted_detail_line_stays_text(line):
+    text = f"Quick update.\n{line}"
+    [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(text))
+    assert (post.text, post.replies, post.reactions, post.files) == (text, 0, [], [])
+    # Higher up in a post's text, a look-alike never stops the export. Last, where the Thread
+    # line goes, "> Thread: 2 replies so far" would (see the tests below).
+    assert unread_thread_lines(channel_page(f"{text}\nThanks.")) == 0
+
+
+def test_the_unquoted_detail_lines_still_count_as_before():
+    body = "Hi\nThread: 3 replies (latest: 2026-10-01 09:20:00 CDT)\nReactions: +1 (1)"
+    assert unread_thread_lines(channel_page(body)) == 0
+    [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(body))
+    assert post.replies == 3
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        ">> Thread: 3 replies (latest: 2026-10-01 09:20:00 CDT)",  # two quote marks
+        "> *Thread:* 3 replies (latest: 2026-10-01 09:20:00 CDT)",  # bold
+        "> Thread: 3 replies",  # no latest part
+        "> Thread: 3 replies (newest: 2026-10-01 09:20:00 CDT)",
+        "  thread - 3 replies",
+    ],
+)
+def test_must_refuse_1_a_thread_line_the_parser_didnt_read_is_counted(line):
+    page = channel_page(f"Hi\n{line}", "A second post.")
+    [first, _], _ = parse_result(CHANNEL_TOOL, {}, page)
+    assert first.replies == 0
+    assert unread_thread_lines(page) == 1
+
+
+def test_a_thread_line_before_the_first_post_is_counted_but_not_in_an_unreadable_one():
+    page = json.loads(channel_page("Hi"))
+    page["messages"] = page["messages"].replace(
+        "Channel: #example-channel (C00000001)\n",
+        "Channel: #example-channel (C00000001)\nThread: 2 replies\n",
+    )
+    assert unread_thread_lines(json.dumps(page)) == 1
+    unreadable = (
+        "=== Message from Sam Sample <sam@example.com> (U00000002) at 2026-10-01 09:00:00 CDT "
+        "===\nNo TS line here\nThread: 2 replies (latest: 2026-10-01 09:20:00 CDT)\n"
+    )
+    # parse_result counts that post as unreadable, which holds the start point back already.
+    assert parse_result(CHANNEL_TOOL, {}, json.dumps({"messages": unreadable})) == ([], 1)
+    assert unread_thread_lines(json.dumps({"messages": unreadable})) == 0
+
+
+# Fix round on #160: the guard only looks where the Thread line goes.
+@pytest.mark.parametrize("line", ["Thread (2 replies)", "Thread: 5 replies", "thread - 2 replies!"])
+def test_a_thread_look_alike_in_the_middle_of_a_post_isnt_counted(line):
+    page = channel_page(f"Recap\n{line}\nthanks")
+    assert unread_thread_lines(page) == 0
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "> Thread: 3 replies, latest: 2026-10-01 09:20:00 CDT",
+        "> Thread: 3 replies \u00b7 latest 2026-10-01",
+        "Thread (2 replies)",
+    ],
+)
+def test_at_the_thread_lines_place_any_wording_after_the_count_is_counted(line):
+    page = channel_page(f"Hi\n{line}\nReactions: +1 (1)")
+    assert unread_thread_lines(page) == 1
+
+
+def multi_line_forward(text: str) -> str:
+    return (
+        "Forwarded message from Alex Example "
+        "(https://example.slack.com/archives/C00000001/p1790860000000100): "
+        f"{text} \u2014 use slack_read_thread or slack_read_channel to read it in context"
+    )
+
+
+def test_a_forwarded_message_over_several_lines_doesnt_hide_the_thread_line():
+    forward = multi_line_forward("line one\nline two\nline three")
+    body = f"Hi\n> Thread: 3 replies (latest: 2026-10-01 09:20:00 CDT)\n{forward}"
+    [post, _], _ = parse_result(CHANNEL_TOOL, {}, channel_page(body, "second"))
+    assert post.replies == 3
+    assert post.text == f"Hi\n{forward}"
+    assert unread_thread_lines(channel_page(body)) == 0
+
+
+def test_a_line_that_only_ends_like_a_forward_doesnt_count_as_one():
+    # No start line above it: it's text, and the scan stops there as before.
+    body = (
+        "Hi\nnot a forward \u2014 use slack_read_thread or slack_read_channel to read it in context"
+    )
+    [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(body))
+    assert post.text == body
+
+
+@pytest.mark.parametrize("quote", ["&gt; ", "&gt;"])
+def test_detail_lines_quoted_as_slack_escapes_them_are_read(quote):
+    body = f"Hi\n{quote}Thread: 3 replies (latest: x)\n{quote}Reactions: eyes (1)"
+    [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(body))
+    assert (post.text, post.replies, post.reactions) == ("Hi", 3, [{"name": "eyes", "count": 1}])
+    assert unread_thread_lines(channel_page(body)) == 0
+
+
+def test_an_escaped_quote_on_a_thread_line_in_another_shape_is_counted():
+    assert unread_thread_lines(channel_page("Hi\n&gt;&gt; Thread: 3 replies (latest: x)")) == 1
+
+
+@pytest.mark.parametrize(
+    ("count", "n"), [("1,024", 1024), ("12,345,678", 12345678), ("1024", 1024)]
+)
+def test_a_reply_count_with_thousands_commas_is_read(count, n):
+    body = f"Hi\n> Thread: {count} replies (latest: x)"
+    [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(body))
+    assert post.replies == n
+    assert unread_thread_lines(channel_page(body)) == 0
+
+
+def test_a_badly_placed_comma_isnt_a_count():
+    body = "Hi\n> Thread: 1,02 replies (latest: x)"
+    [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(body))
+    assert post.replies == 0
+    assert unread_thread_lines(channel_page(body)) == 1  # at the Thread line's place
+
+
+# Fix round 2 on #160: the guard passes Reactions and Files lines in any wording, and
+# forwards that only end like one, so a format change there can't hide a Thread line.
+THREAD_LINE = "> Thread: 3 replies (latest: 2026-10-01 09:20:00 CDT)"
+BAD_OPENING = (
+    "Forwarded message from Alex (https://example.slack.com/archives/C1/p1?x=(y)): line one"
+)
+FORWARD_ENDING = "line two \u2014 use slack_read_thread or slack_read_channel to read it in context"
+
+
+@pytest.mark.parametrize(
+    "under",
+    [
+        "> Reactions: :+1: 2",
+        "&gt; Reactions: eyes x1",
+        "> Files: notes.txt (F00000009)",
+        "Files: notes.txt",
+        f"{BAD_OPENING}\n{FORWARD_ENDING}",  # its opening isn't in FORWARDED_START's shape
+        FORWARD_ENDING,  # an ending with no opening at all
+        "Forwarded message from Alex (https://x/y): one\n" + FORWARD_ENDING,
+    ],
+)
+def test_must_refuse_1_a_thread_line_above_lines_in_a_new_shape_is_counted(under):
+    page = channel_page(f"Hi\n{THREAD_LINE}\n{under}")
+    [post], _ = parse_result(CHANNEL_TOOL, {}, page)
+    assert post.replies == 0  # the parser stopped at the line it doesn't know
+    assert THREAD_LINE in post.text  # and kept everything as text, as before
+    assert unread_thread_lines(page) == 1
+
+
+def test_the_guards_wider_scan_doesnt_change_what_the_parser_keeps():
+    body = "Hi\nReactions: mostly positive"
+    [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(body))
+    assert (post.text, post.reactions) == (body, [])
+    assert unread_thread_lines(channel_page(body)) == 0
+
+
+# Fix round 3 on #160: Reactions and Files lines in more shapes, quoted forwards, and a
+# forward that holds another forward's opening line.
+FORWARD_OPENING_LINE = (
+    "Forwarded message from Alex Example "
+    "(https://example.slack.com/archives/C00000001/p1790860000000100): line one"
+)
+
+
+@pytest.mark.parametrize(
+    "under",
+    [
+        "\t> Reactions: :+1: 2",  # a tab before
+        "   Reactions: +1 (2)",  # spaces before
+        "reactions: +1 (2)",  # lowercase
+        "> File: notes.txt (F00000009)",  # singular
+        "> Reaction: :+1: 2",
+        "*Reactions:* +1 (2)",  # bold
+        "> Reactions : +1 (2)",  # a space before the colon
+        "_Files_: notes.txt",
+    ],
+)
+def test_must_refuse_1_a_thread_line_above_reactions_or_files_in_any_shape_is_counted(under):
+    page = channel_page(f"Hi\n{THREAD_LINE}\n{under}")
+    [post], _ = parse_result(CHANNEL_TOOL, {}, page)
+    assert post.replies == 0 and THREAD_LINE in post.text  # the parser's split as before
+    assert unread_thread_lines(page) == 1
+
+
+@pytest.mark.parametrize(
+    "forward",
+    [
+        f"> {FORWARD_OPENING_LINE} \u2014 use slack_read_thread or slack_read_channel to read it "
+        "in context",  # one quoted line
+        f"> {FORWARD_OPENING_LINE}\n> middle\n> {FORWARD_ENDING}",  # quoted, several lines
+        f"&gt; {FORWARD_OPENING_LINE}\nmiddle\n{FORWARD_ENDING}",
+    ],
+)
+def test_must_refuse_1_a_thread_line_above_a_quoted_forward_is_counted(forward):
+    page = channel_page(f"Hi\n{THREAD_LINE}\n{forward}")
+    [post], _ = parse_result(CHANNEL_TOOL, {}, page)
+    assert post.replies == 0
+    assert unread_thread_lines(page) == 1
+
+
+def test_must_refuse_1_a_forward_holding_another_forwards_opening_is_counted():
+    inner = (
+        "Forwarded message from Bob Example "
+        "(https://example.slack.com/archives/C00000001/p1790860000000200): inner"
+    )
+    body = f"Hi\n{THREAD_LINE}\n{FORWARD_OPENING_LINE}\nmiddle\n{inner}\n{FORWARD_ENDING}"
+    page = channel_page(body)
+    [post], _ = parse_result(CHANNEL_TOOL, {}, page)
+    assert post.replies == 0  # the parser jumps only to the inner opening
+    assert unread_thread_lines(page) == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "We met.\nReactions: mostly positive",
+        "See below.\nFiles: in the drive",
+        "Thread (2 replies) was long.\nOK thanks",
+        "> Thread: 2 replies\n> great",  # quoting an email
+        "On Monday you wrote:\n> see the files: attached\n> thanks",
+    ],
+)
+def test_ordinary_text_still_saves(body):
+    assert unread_thread_lines(channel_page(body)) == 0

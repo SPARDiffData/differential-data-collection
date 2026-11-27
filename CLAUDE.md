@@ -79,7 +79,7 @@ src/diffdata/
   common/documents.py   the shared document format (ORG-2): raw, versions, event log, clean copies
   common/check.py   `diffdata check` (#136): Git, uv, Claude Code (the command or the desktop app's), the repo folder, config.toml and the store key's place and mode; it only reads, and setup lists its gaps at the end
   common/history.py `diffdata clean-history` (#150): deletes this repo's Claude Code session history folders, after showing them and a typed yes; push offers it; only in a terminal a person types in, never under CLAUDECODE
-  common/export.py  `diffdata export` (#128): after day 7, the checks, `/slack-export test` and `/slack-export` in an interactive Claude Code, the review, more rounds, scrub, a typed `push` for this scrub, then clean-history; resumes from the runs and push records; only in a terminal a person types in, never under CLAUDECODE
+  common/export.py  `diffdata export` (#128): after day 7, the checks, `/slack-export test` and `/slack-export` in an interactive Claude Code (with DIFFDATA_EXPORT=1, which changes only the command's closing words, #159), the review, more rounds, scrub, a typed `push` for this scrub, then clean-history; resumes from the runs and push records; only in a terminal a person types in, never under CLAUDECODE
   common/setup.py   `diffdata setup` (#130): reads the team file, asks for the channels, shows every value on one screen before writing config.toml, and puts the store key in place; it refuses to run anywhere but a terminal a person types in
 tests/              pytest; fixtures/ holds synthetic data only
 docs/requirements.md

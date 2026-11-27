@@ -48,6 +48,12 @@ CLAUDE_MISSING = (
     "Claude Code isn't installed: neither the `claude` command nor the Claude desktop app was "
     "found. See https://claude.com/claude-code. /slack-export runs in it."
 )
+DESKTOP_BLOCKED = (
+    "macOS blocked Terminal from looking in the Claude app's folder, so diffdata couldn't find "
+    "the app's Claude Code. Either allow Terminal in System Settings > Privacy & Security, "
+    "then run again; or install the `claude` command (https://claude.com/claude-code), then "
+    "open a new terminal and run again."
+)
 REPO_FIX = (
     "This isn't the repo folder. Run diffdata from your clone of differential-data-collection, "
     "so /slack-export runs with the repo's safety rules (.claude/settings.json)."
@@ -70,11 +76,8 @@ def run_version(tool: str) -> str | None:
     """`<tool> --version`, found on PATH. None if it isn't there, fails or hangs. It runs in
     a thread that is left behind after TIMEOUT, so a wrapper that keeps its output open (a
     Windows .cmd's child, say) can't hang setup."""
-    found = shutil.which(tool)
+    found = claude_path() if tool == "claude" else shutil.which(tool)
     if found is None:
-        return None
-    if tool == "claude" and "windowsapps" in found.lower():
-        # The Windows app alias opens the desktop app instead of printing a version.
         return None
     result: list[str | None] = []
 
@@ -100,15 +103,51 @@ def run_version(tool: str) -> str | None:
     return result[0] if result else None
 
 
+def claude_path() -> str | None:
+    """The `claude` command: on PATH, but never the Windows app alias, which opens the
+    desktop app instead. On macOS, also where Claude Code's own installer puts it (~/.local/bin,
+    or ~/.claude/local before that), which a terminal may not have on PATH. Looking there
+    first keeps diffdata out of the desktop app's folder, which macOS may refuse with a "data
+    from other apps" notice (#159)."""
+    found = shutil.which("claude")
+    if found and "windowsapps" not in found.lower():
+        return found
+    if sys.platform == "darwin":
+        for place in (".local/bin/claude", ".claude/local/claude"):
+            path = Path.home() / place
+            try:
+                if path.is_file() and os.access(path, os.X_OK):
+                    return str(path)
+            except OSError:
+                continue
+    return None
+
+
+class DesktopBlocked(Exception):
+    """macOS refused to list the Claude app's folder, and no copy was found elsewhere."""
+
+
 def desktop_claude_code() -> tuple[int, int, int] | None:
     """The newest Claude Code the Claude desktop app keeps, from its folder names only. The
-    app runs /slack-export too, with no `claude` command on PATH."""
-    found = desktop_versions()
+    app runs /slack-export too, with no `claude` command on PATH. Raises DesktopBlocked if
+    macOS refused its folder and nothing was found."""
+    found, blocked = desktop_scan()
+    if not found and blocked:
+        raise DesktopBlocked(DESKTOP_BLOCKED)
     return max(found) if found else None
 
 
 def desktop_versions() -> dict[tuple[int, int, int], Path]:
     """Each Claude Code version the Claude desktop app keeps, and its folder."""
+    return desktop_scan()[0]
+
+
+def desktop_scan() -> tuple[dict[tuple[int, int, int], Path], bool]:
+    """Each Claude Code version the Claude desktop app keeps, and its folder, and whether
+    macOS refused to list the app's folder. It's looked in only when the `claude` command
+    (claude_path()) isn't there, or, for `diffdata check` and setup, when `claude --version`
+    fails or is too old: on macOS, listing it can bring up a "data from other apps" notice
+    (#159). A refused folder counts as no app, and is reported as blocked."""
     places: list[Path] = []
     if sys.platform == "darwin":
         places.append(Path.home() / "Library" / "Application Support" / "Claude" / "claude-code")
@@ -131,6 +170,7 @@ def desktop_versions() -> dict[tuple[int, int, int], Path]:
             except OSError:
                 pass
     found: dict[tuple[int, int, int], Path] = {}
+    blocked = False
     for place in places:
         try:
             for entry in place.iterdir():
@@ -139,9 +179,11 @@ def desktop_versions() -> dict[tuple[int, int, int], Path]:
                     version = parse_version(entry.name)
                     if version:
                         found[version] = entry
+        except PermissionError:
+            blocked = blocked or sys.platform == "darwin"
         except OSError:
             continue
-    return found
+    return found, blocked
 
 
 def parse_version(text: str) -> tuple[int, int, int] | None:
@@ -183,7 +225,10 @@ def claude_item(claude: str | None, desktop: Desktop) -> Item:
         version = None
     if version is not None and version >= CLAUDE_MIN:
         return Item("Claude Code", True, ".".join(map(str, version)))
-    app = desktop()
+    try:
+        app, blocked = desktop(), False
+    except DesktopBlocked:
+        app, blocked = None, True
     if app is not None and app >= CLAUDE_MIN:
         detail = f"{'.'.join(map(str, app))}, in the Claude desktop app"
         if version is not None:
@@ -212,7 +257,7 @@ def claude_item(claude: str | None, desktop: Desktop) -> Item:
             f"The Claude desktop app has Claude Code {'.'.join(map(str, app))}, older than "
             f"{CLAUDE_MIN_SHOWN}, which /slack-export needs: update the app.",
         )
-    return Item("Claude Code", False, CLAUDE_MISSING)
+    return Item("Claude Code", False, DESKTOP_BLOCKED if blocked else CLAUDE_MISSING)
 
 
 def has_rules(settings_json: Path) -> bool:

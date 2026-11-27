@@ -14,9 +14,12 @@ It runs in the producer's own terminal, in this order:
 
 Claude Code opens interactively, with only the slash command as its prompt, in the repo
 folder, so the repo's rules, hooks and deny list apply. The producer types /exit when it's
-done. Whether a step worked is read from the files the export writes (the closed run in
-slack/runs/), not from what Claude says. Headless `claude -p` would need a permission flag
-for the command's tools, which must-refuse 4 rules out.
+done. Its environment also has DIFFDATA_EXPORT=1, which changes only what /slack-export says
+last: `discover slack channels` tells it, and it then ends with the line to type to come
+back here instead of commands to run (#159). After Claude closes, the export says where it
+is and what comes next. Whether a step worked is read from the files the export writes (the
+closed run in slack/runs/), not from what Claude says. Headless `claude -p` would need a
+permission flag for the command's tools, which must-refuse 4 rules out.
 
 Run again after stopping, it starts at the first unfinished step, worked out from files the
 tool already writes: an export built after the last complete push (slack/runs/ and pushes/)
@@ -37,7 +40,7 @@ What it refuses (#128, must-refuse list, approved on 2026-11-26):
 """
 
 import json
-import shutil
+import os
 import subprocess
 import sys
 from collections.abc import Callable
@@ -61,6 +64,10 @@ except ImportError:  # Windows
     termios = None
 
 REPO = history.REPO
+# Set in the environment of the Claude Code this starts, and nowhere else (#159).
+EXPORT_ENV = "DIFFDATA_EXPORT"
+# What `discover slack channels` prints first when it is set, for /slack-export's last words.
+UNDER_EXPORT = "Under diffdata export."
 ROUNDS = 3
 NOT_A_TERMINAL = (
     "run `uv run diffdata export` yourself, in your own terminal, with Claude Code closed. "
@@ -99,11 +106,16 @@ def by_a_person() -> bool:
 
 
 def claude_command() -> list[str] | None:
-    """The `claude` command, else the Claude desktop app's newest Claude Code."""
-    found = shutil.which("claude")
-    if found and "windowsapps" not in found.lower():  # the Windows alias opens the app
+    """The `claude` command (check.claude_path()), else the Claude desktop app's newest
+    Claude Code. The app's folder is looked in last: on macOS, listing it can bring up a
+    "data from other apps" notice (#159)."""
+    found = check.claude_path()
+    if found:
         return [found]
-    versions = check.desktop_versions()
+    versions, blocked = check.desktop_scan()
+    if not versions and blocked:
+        # Not "isn't installed": macOS stopped the look, and says how to let it (#160).
+        raise Stop(check.DESKTOP_BLOCKED)
     for version in sorted(versions, reverse=True):
         patterns = ("*/claude.app/Contents/MacOS/claude", "claude.exe", "*/claude.exe", "*/claude")
         for pattern in patterns:
@@ -114,8 +126,9 @@ def claude_command() -> list[str] | None:
 
 
 def start_claude(argv: list[str]) -> None:
-    """Claude Code, in this terminal and the repo folder, until the producer types /exit."""
-    subprocess.run(argv, cwd=REPO, check=False)
+    """Claude Code, in this terminal and the repo folder, until the producer types /exit.
+    Only its environment gets EXPORT_ENV: this process's own stays as it was."""
+    subprocess.run(argv, cwd=REPO, check=False, env={**os.environ, EXPORT_ENV: "1"})
 
 
 def runs(data: Path) -> list[dict]:
@@ -198,8 +211,9 @@ def yes(ask: Ask, say: Say, question: str) -> bool:
         say("Please type y or n.")
 
 
-def slack(claude: Claude, command: list[str], test: bool, data: Path, say: Say) -> None:
-    """One /slack-export in Claude Code. Stops unless its run was built."""
+def slack(claude: Claude, command: list[str], test: bool, data: Path, say: Say, then: str) -> None:
+    """One /slack-export in Claude Code. Stops unless its run was built. `then` is what comes
+    next, said once Claude has closed."""
     prompt = "/slack-export test" if test else "/slack-export"
     started = slack_inbox.utc_iso(datetime.now(UTC))
     preflight(lambda _: None)  # again: config.toml may have changed while a question waited
@@ -215,6 +229,8 @@ def slack(claude: Claude, command: list[str], test: bool, data: Path, say: Say) 
         raise Stop(
             f"{what} didn't finish, so the export stops here. Claude's last message says why."
         )
+    what = "The test run" if test else "The Slack export"
+    say(f"\nBack in diffdata export. {what} is done. Next: {then}")
 
 
 def ask_review(config, ask: Ask, say: Say) -> None:
@@ -250,7 +266,8 @@ def rounds(config, claude: Claude, command: list[str], ask: Ask, say: Say) -> No
         if answer == "stop":
             raise Stop(f"Stopped. {AGAIN}")
         if canvases:
-            slack(claude, command, False, data, say)
+            nxt = "the Google sign-in and fetch, then the review." if new_docs else "the review."
+            slack(claude, command, False, data, say, nxt)
             tried |= canvases
         if new_docs:
             got = references.google_docs_fetched(data)[0]
@@ -293,11 +310,11 @@ def steps(ask: Ask, say: Say, claude: Claude) -> int:
     if exported_since_push(data):
         say("Your export is done but not pushed yet, so this carries on from the review.")
     else:
-        slack(claude, command, True, data, say)
+        slack(claude, command, True, data, say, "it asks whether to export now.")
         if not yes(ask, say, "\nThe test run worked. Export now?"):
             say(f"Stopped. Nothing more was read. {AGAIN}")
             return 0
-        slack(claude, command, False, data, say)
+        slack(claude, command, False, data, say, "the review, which opens here by itself.")
     rounds(config, claude, command, ask, say)
     # 5: scrub, rebuilt first if the opt-out list changed since the build. Read again: each
     # /slack-export's start fetches the team's list too.

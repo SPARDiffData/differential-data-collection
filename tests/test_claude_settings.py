@@ -233,6 +233,29 @@ def test_slack_export_never_runs_consent_review():
     assert "run `uv run diffdata consent review`. **Never run it yourself.**" in body
 
 
+def test_must_refuse_4_under_the_export_only_the_closing_words_change():
+    # #159: DIFFDATA_EXPORT is read in one place, the channels step's first line, and the
+    # command uses it only for its last words. Its hooks, tools and rules don't mention it.
+    readers = sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "src").rglob("*.py")
+        if "EXPORT_ENV" in path.read_text(encoding="utf-8")
+        or "DIFFDATA_EXPORT" in path.read_text(encoding="utf-8")
+    )
+    assert readers == ["src/diffdata/cli.py", "src/diffdata/common/export.py"]
+    cli_text = (ROOT / "src" / "diffdata" / "cli.py").read_text(encoding="utf-8")
+    assert cli_text.count("EXPORT_ENV") == 1
+    body = (ROOT / ".claude" / "commands" / "slack-export.md").read_text(encoding="utf-8")
+    frontmatter = body.split("\n---\n", 1)[0]
+    assert "DIFFDATA_EXPORT" not in frontmatter and "under" not in frontmatter.lower()
+    last = body[body.index("11. **Last words.**") :]
+    assert "`Type /exit to go back to diffdata export. The review opens by itself.`" in last
+    assert "uv run" not in last and "consent" not in last
+    # Claude still never runs the review, under the export or not.
+    assert "**Never run it yourself.**" in body
+    assert "Under the export, say only that they decide in the review" in body
+
+
 def test_slack_export_reads_canvases_but_cant_write_them():
     # COL-2: the command pre-approves the canvas read, and the deny list blocks every write.
     assert SLACK + "slack_read_canvas" in frontmatter_line("allowed-tools")
