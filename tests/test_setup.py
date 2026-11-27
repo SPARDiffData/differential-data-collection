@@ -1836,4 +1836,63 @@ def test_156_a_notice_from_the_same_minute_still_shows_it_changed(home):
     existing(home)
     same_minute = "https://example.slack.com/archives/C00000002/p1790900005000000"
     _, script = run(home, "y", "y", "", same_minute, "", "", "n", team=None)
-    assert "(was: another notice posted the same minute)" in script.text
+    old = setup.notice_time("1790900000", seconds=True)
+    new = setup.notice_time("1790900005", seconds=True)
+    assert f"(was: the notice posted {old}, now the notice posted {new})" in script.text
+    assert old != new
+
+
+def two_names(home: Path) -> Path:
+    """Two name keys whose notices link to C00000002, with different notices."""
+    path = name_keyed(home)
+    text = path.read_text(encoding="utf-8").replace(
+        NAME_KEYED,
+        NAME_KEYED + '\nslack_notices.my-old-channel = "https://example.slack.com/archives/'
+        'C00000002/p1790800000000000"',
+    )
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_156_every_name_key_that_changes_is_on_the_summary(home):
+    two_names(home)
+    _, script = run(home, "y", "y", "", NOTICE, "", "", "n", team=None)
+    line = next(s for s in script.shown if "C00000002 (a channel ID)" in s and "Notices" in s)
+    assert f"was: the notice posted {setup.notice_time('1790900000')}" in line
+    assert (
+        f"under the name my-old-channel was: the notice posted {setup.notice_time('1790800000')}"
+        in line
+    )
+
+
+def test_156_keeping_a_name_keyed_notice_never_looks_like_removing_it(home):
+    name_keyed(home)
+    # The channel's own link, then Enter at its notice question: the name-keyed notice stays.
+    code, script = run(home, "y", "y", "", LINK, "", "", "", "y", team=None)
+    assert code == 0
+    old = setup.notice_time("1790900000")
+    assert f"press Enter to keep the notice posted {old}" in script.text
+    assert (
+        f"  Notices:          C00000002 (a channel ID): the notice posted {old}, under the "
+        "name my-channel" in script.shown
+    )
+    assert "was:" not in script.text
+    assert "No notice link yet" not in script.text
+    assert notices(home)["my-channel"].endswith("p1790900000000000")
+
+
+def test_156_a_key_that_isnt_a_channel_name_is_never_changed_or_printed(home):
+    path = existing(home)
+    odd = "https://app.slack.com/client/T00000001/C00000002"
+    text = path.read_text(encoding="utf-8").replace(
+        'slack_notices.C00000002 = "https://example.slack.com/archives/C00000002/'
+        'p1790900000000000"',
+        f'slack_notices."{odd}" = "https://example.slack.com/archives/C00000002/p1790900000000000"',
+    )
+    path.write_text(text, encoding="utf-8")
+    before = path.read_bytes()
+    code, script = run(home, "y", "y", "", NOTICE, "", "", "n", team=None)
+    assert code == 0
+    assert odd not in script.text
+    assert "also under the name" not in script.text
+    assert path.read_bytes() == before

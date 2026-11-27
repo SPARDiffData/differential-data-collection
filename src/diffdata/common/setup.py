@@ -777,14 +777,15 @@ def notice_entry(table: dict, entry: str) -> tuple[str, object] | None:
     return None
 
 
-def notice_time(ts: str) -> str:
-    """A notice's time from its link's ts, in this computer's time zone, as Slack shows it."""
+def notice_time(ts: str, seconds: bool = False) -> str:
+    """A notice's time from its link's ts, in this computer's time zone, as Slack shows it.
+    With seconds, to tell apart two notices posted in the same minute."""
     when = datetime.fromtimestamp(int(ts), tz=UTC).astimezone()
     # An offset, not %Z: Windows gives long zone names, such as "W. Europe Standard Time".
-    return when.strftime("%Y-%m-%d %H:%M UTC%z")
+    return when.strftime(f"%Y-%m-%d %H:%M{':%S' if seconds else ''} UTC%z")
 
 
-def describe_notice(value: object, space: str = "") -> str:
+def describe_notice(value: object, space: str = "", seconds: bool = False) -> str:
     """A notice entry as setup shows it: never the link itself, which is a real message's
     address (config.py doesn't print it either). A link from a workspace other than `space`
     says so: it was kept from before the workspace changed."""
@@ -796,7 +797,7 @@ def describe_notice(value: object, space: str = "") -> str:
     if link is None:
         return "a value setup can't read (fix it in config.toml)"
     elsewhere = space and not value.strip().startswith(f"{space}/")
-    return f"the notice posted {notice_time(link[2])}" + (
+    return f"the notice posted {notice_time(link[2], seconds)}" + (
         ", from another workspace" if elsewhere else ""
     )
 
@@ -880,7 +881,9 @@ def notices_step(
                 "link you pasted."
             )
         else:
-            enter = f"keep {describe_notice(found[1], space)}" if found else "add it later"
+            # A notice keyed by the channel's name counts for a channel listed by ID too.
+            kept = old_notice(new, entry)
+            enter = f"keep {describe_notice(kept[1], space)}" if kept else "add it later"
             prompter.say(NOTICE_HELP.format(channel=shown_channel(entry)))
             answer = ask_until(
                 prompter,
@@ -916,14 +919,20 @@ def notices_step(
 def name_keys(table: dict, entry: str) -> list[str]:
     """The slack_notices keys that are channel names, whose value is a notice link to the
     channel with this ID."""
-    return [k for k, v in table.items() if channel_id(k) is None and linked_channel(v) == entry]
+    return [
+        k
+        for k, v in table.items()
+        if channel_id(k) is None
+        and CHANNEL_NAME.fullmatch(channel_name(k))
+        and linked_channel(v) == entry
+    ]
 
 
 def missing_notices(new: dict) -> list[str]:
     """The listed channels with no slack_notices entry."""
     sources = new["sources"]
     table = sources.get(NOTICES_KEY, {})
-    return [e for e in sources["slack_channels"] if notice_entry(table, e) is None]
+    return [e for e in sources["slack_channels"] if old_notice(table, e) is None]
 
 
 def with_answers(
@@ -1110,10 +1119,39 @@ def old_notice(before: dict, entry: str) -> tuple[str, object] | None:
     return found
 
 
+def notice_entry_key(table: dict, entry: str) -> str | None:
+    found = notice_entry(table, entry)
+    return found[0] if found else None
+
+
+def was_notice(before: dict, after: dict, entry: str, space: str) -> str:
+    """What the summary adds after a channel's notice on a re-run (#156, must-refuse 4): the
+    old notice, if it changes, and the old one under each name key that changes with it.
+    Two notices from the same minute are shown to the second."""
+    parts: list[str] = []
+    old = old_notice(before, entry)
+    new = old_notice(after, entry)
+    if changed_notice(before, after, entry):
+        was = describe_notice(old[1], space) if old else NOT_ADDED
+        if old and new and was == describe_notice(new[1], space):
+            was = describe_notice(old[1], space, seconds=True)
+            was += f", now {describe_notice(new[1], space, seconds=True)}"
+        parts.append(f"was: {was}")
+    if CHANNEL_ID.fullmatch(entry):
+        for key in name_keys(after, entry):
+            if old and key == old[0]:
+                continue
+            if key in before and not same_notice(before[key], after[key]):
+                parts.append(
+                    f"under the name {printable(key)} was: {describe_notice(before[key], space)}"
+                )
+    return f" ({'; '.join(parts)})" if parts else ""
+
+
 def changed_notice(before: dict, after: dict, entry: str) -> bool:
     """Whether this channel's notice differs between two slack_notices tables."""
     old = old_notice(before, entry)
-    new = notice_entry(after, entry)
+    new = old_notice(after, entry)
     if old is None or new is None:
         return (old is None) != (new is None)
     if same_notice(old[1], new[1]):
@@ -1150,16 +1188,22 @@ def show_summary(
         ):
             # Written under the channel's ID too (notices_step): on the screen as well (24).
             notice += ", also under its channel ID"
-        if found and CHANNEL_ID.fullmatch(entry):
-            names = [k for k in name_keys(table, entry) if same_notice(table[k], found[1])]
+        if CHANNEL_ID.fullmatch(entry):
+            # Listed by ID: a notice keyed by the channel's name counts too, as the export
+            # reads it, so keeping one never looks like removing it.
+            found = old_notice(table, entry)
+            notice = describe_notice(found[1], space) if found else NOT_ADDED
+            if found and found[0] != notice_entry_key(table, entry):
+                notice += f", under the name {printable(found[0])}"
+            names = [
+                k
+                for k in name_keys(table, entry)
+                if found and k != found[0] and same_notice(table[k], found[1])
+            ]
             if names:
                 notice += f", also under the name {', '.join(printable(k) for k in names)}"
-        if before is not None and changed_notice(before, table, entry):
-            old = old_notice(before, entry)
-            was = describe_notice(old[1], space) if old else NOT_ADDED
-            if found and was == describe_notice(found[1], space):
-                was = "another notice posted the same minute"
-            notice += f" (was: {was})"
+        if before is not None:
+            notice += was_notice(before, table, entry, space)
         label = "  Notices:         " if number == 0 else "                   "
         prompter.say(f"{label} {shown_channel(entry)}: {notice}")
     prompter.say(f"  Workspace:        {new['sources']['slack_workspace_url']}")
