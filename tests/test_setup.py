@@ -103,8 +103,9 @@ def fixed(char="k"):
 
 
 def enters(channels: str) -> list[str]:
-    """Enter at each channel's notice question (revision 6): no entry is written."""
-    return [""] * len(setup.parse_channels(channels)[0])
+    """Enter at each channel's notice question (revision 6): no entry is written. A channel
+    whose notice link was pasted isn't asked (#156)."""
+    return [""] * (len(setup.parse_channels(channels)[0]) - len(setup.pasted_notices(channels)))
 
 
 def quick_answers(channels: str = f"example-channel, {LINK}") -> list[str]:
@@ -1654,3 +1655,244 @@ def test_after_c_on_a_first_run_the_question_shows_the_answer_not_a_config(home)
     assert "You answered: yes." in script.text
     assert "Your config.toml says" not in script.text
     assert written_send(home) == "no"
+
+
+# --- the notice's link at the channel question (#156) --------------------------------------
+
+NOTICE_TWO = "https://example.slack.com/archives/C00000002/p1700000000000300"
+DM_MESSAGE = "https://example.slack.com/archives/D00000004/p1700000000000100"
+
+
+def test_156_a_pasted_notice_link_gives_the_channel_and_its_notice(home):
+    code, script = first(home, "none", channels=f"example-channel, {NOTICE}")
+    assert code == 0
+    raw = tomllib.loads(settings(home).read_text(encoding="utf-8"))
+    assert raw["sources"]["slack_channels"] == ["example-channel", "C00000002"]
+    assert raw["sources"]["slack_workspace_url"] == "https://example.slack.com"
+    assert notices(home) == {"example-channel": "none", "C00000002": NOTICE}
+    # Only example-channel's notice is asked; the workspace isn't asked either.
+    assert asked(script, ASK_NOTICE) == 1
+    assert "Notice link for C00000002" not in script.text
+    assert not asked(script, "Workspace address")
+    # Must-refuse 3: the time comes from the link, and the link itself is never printed.
+    when = setup.notice_time("1700000000")
+    assert f"Notice for C00000002 (a channel ID): the notice posted {when}" in script.text
+    assert f"C00000002 (a channel ID): the notice posted {when}" in script.text
+    assert NOTICE not in script.text
+    assert setup.NEXT_STEP in script.text
+
+
+def test_156_the_channel_question_asks_for_the_notices_link_first(home):
+    _, script = first(home, "none", channels=f"example-channel, {NOTICE}")
+    assert setup.CHANNELS_HELP in script.shown
+    assert "paste the link of the notice you pinned in it" in setup.CHANNELS_HELP
+    assert "paste the channel's link or type its name instead" in setup.CHANNELS_HELP
+
+
+@pytest.mark.parametrize(
+    "link",
+    [REPLY, LINK, f"{NOTICE}?cid=C00000002"],
+    ids=["thread reply", "channel link", "with a query"],
+)
+def test_156_must_refuse_2_any_other_link_gives_the_channel_only(home, link):
+    code, script = first(home, "", channels=link)
+    assert code == 0
+    raw = tomllib.loads(settings(home).read_text(encoding="utf-8"))
+    assert raw["sources"]["slack_channels"] == ["C00000002"]
+    assert asked(script, ASK_NOTICE) == 1
+    assert "Notice link for C00000002 (a channel ID)" in script.text
+    assert notices(home) is None
+
+
+def test_156_must_refuse_2_a_reply_then_the_notice_question_takes_a_link(home):
+    code, _ = first(home, NOTICE, channels=REPLY)
+    assert code == 0
+    assert notices(home) == {"C00000002": NOTICE}
+
+
+def test_156_must_refuse_1_a_dm_message_link_is_refused(home):
+    code, script = run(
+        home, DM_MESSAGE, f"example-channel, {NOTICE}", "none", "y", "n", steps=False
+    )
+    assert code == 0
+    assert "Channel 1 is a direct message or a group DM" in script.text
+    text = settings(home).read_text(encoding="utf-8")
+    assert "D00000004" not in text
+    assert notices(home) == {"example-channel": "none", "C00000002": NOTICE}
+
+
+def test_156_must_refuse_5_two_notice_links_for_one_channel_are_refused():
+    with pytest.raises(SetupError, match="two different notice links for the channel C00000002"):
+        setup.pasted_notices(f"{NOTICE}, {NOTICE_TWO}")
+    # The same notice twice is one notice.
+    assert setup.pasted_notices(f"{NOTICE} {NOTICE}/") == {"C00000002": NOTICE}
+
+
+def test_156_must_refuse_5_nothing_is_written_and_the_channels_are_asked_again(home):
+    # Two notices, then stop at the summary: no file. Then the answer again with one notice.
+    script = Script(f"example-channel, {NOTICE}, {NOTICE_TWO}", f"example-channel, {NOTICE}",
+                    "none", "n")  # fmt: skip
+    code = setup.setup(team_file=team_file(home), prompter=script, picker=no_picker,
+                       choose=fixed())  # fmt: skip
+    assert code == 0
+    assert "two different notice links" in script.text
+    assert asked(script, "Channels") == 2
+    assert not settings(home).exists()
+
+
+def test_156_must_refuse_4_a_rerun_shows_old_and_new_and_n_changes_nothing(home):
+    path = existing(home)
+    before = path.read_bytes()
+    code, script = run(home, "y", "y", "", f"old-channel, {NOTICE}", "", "", "", "n", team=None)
+    assert code == 0
+    assert path.read_bytes() == before
+    assert "Notice link for C00000002" not in script.text
+    screen = script.shown.index(next(s for s in script.shown if s.startswith("Write this to")))
+    old = setup.notice_time("1790900000")
+    new = setup.notice_time("1700000000")
+    assert (
+        f"                    C00000002 (a channel ID): the notice posted {new} "
+        f"(was: the notice posted {old})" in script.shown[:screen]
+    )
+    # An unchanged notice shows no "was".
+    assert f"  Notices:          old-channel: {setup.NONE_SHOWN}" in script.shown[:screen]
+    assert setup.NOTHING_WRITTEN in script.text
+
+
+def test_156_must_refuse_4_a_rerun_changes_the_notice_only_after_y(home):
+    existing(home)
+    code, _ = run(home, "y", "y", "", f"old-channel, {NOTICE}", "", "", "", "y", team=None)
+    assert code == 0
+    assert notices(home) == {"old-channel": "none", "C00000002": NOTICE}
+
+
+def test_156_a_rerun_shows_a_notice_added_where_there_was_none(home):
+    existing(home)
+    _, script = run(home, "y", "y", "", f"new-channel, {OTHER_CHANNEL}", "", "", "", "n",
+                    team=None)  # fmt: skip
+    when = setup.notice_time("1700000000")
+    assert (
+        f"C00000003 (a channel ID): the notice posted {when} (was: {setup.NOT_ADDED})"
+        in script.text
+    )
+
+
+def test_156_enter_never_turns_a_saved_message_link_into_a_notice(home):
+    # An older config lists a channel by a message link. Enter keeps the list, and the notice
+    # question is still asked: the saved link is never taken as the notice.
+    path = existing(home)
+    path.write_text(
+        path.read_text(encoding="utf-8")
+        .replace('slack_channels = ["old-channel"]', f'slack_channels = ["{NOTICE}"]')
+        .replace(
+            'slack_notices.C00000002 = "https://example.slack.com/archives/C00000002/'
+            'p1790900000000000"\n',
+            "",
+        ),
+        encoding="utf-8",
+    )
+    code, script = run(home, "y", "y", "", "", "", "", "", "y", team=None)
+    assert code == 0
+    assert asked(script, ASK_NOTICE) == 1
+    assert "Notice for C00000002" not in script.text
+    assert notices(home) == {"old-channel": "none"}
+
+
+NAME_KEYED = (
+    'slack_notices.my-channel = "https://example.slack.com/archives/C00000002/p1790900000000000"'
+)
+
+
+def name_keyed(home: Path) -> Path:
+    """A config whose notice for C00000002 is keyed by the channel's name only."""
+    path = existing(home)
+    text = path.read_text(encoding="utf-8")
+    text = text.replace(
+        'slack_notices.C00000002 = "https://example.slack.com/archives/C00000002/'
+        'p1790900000000000"',
+        NAME_KEYED,
+    ).replace('slack_channels = ["old-channel"]', 'slack_channels = ["my-channel"]')
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_156_a_pasted_notice_also_changes_the_old_one_keyed_by_name(home):
+    name_keyed(home)
+    code, script = run(home, "y", "y", "", NOTICE, "", "", "y", team=None)
+    assert code == 0
+    assert notices(home) == {"old-channel": "none", "my-channel": NOTICE, "C00000002": NOTICE}
+    old = setup.notice_time("1790900000")
+    new = setup.notice_time("1700000000")
+    assert (
+        f"  Notices:          C00000002 (a channel ID): the notice posted {new}, also under the "
+        f"name my-channel (was: the notice posted {old})" in script.shown
+    )
+    # The export reads one notice for the channel, by its ID or its name, with no conflict.
+    loaded = config_module.load_config(settings(home))
+    assert loaded.notice("C00000002", "my-channel") == loaded.notice("C00000002")
+
+
+def test_156_a_notice_from_the_same_minute_still_shows_it_changed(home):
+    existing(home)
+    same_minute = "https://example.slack.com/archives/C00000002/p1790900005000000"
+    _, script = run(home, "y", "y", "", same_minute, "", "", "n", team=None)
+    old = setup.notice_time("1790900000", seconds=True)
+    new = setup.notice_time("1790900005", seconds=True)
+    assert f"(was: the notice posted {old}, now the notice posted {new})" in script.text
+    assert old != new
+
+
+def two_names(home: Path) -> Path:
+    """Two name keys whose notices link to C00000002, with different notices."""
+    path = name_keyed(home)
+    text = path.read_text(encoding="utf-8").replace(
+        NAME_KEYED,
+        NAME_KEYED + '\nslack_notices.my-old-channel = "https://example.slack.com/archives/'
+        'C00000002/p1790800000000000"',
+    )
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_156_every_name_key_that_changes_is_on_the_summary(home):
+    two_names(home)
+    _, script = run(home, "y", "y", "", NOTICE, "", "", "n", team=None)
+    line = next(s for s in script.shown if "C00000002 (a channel ID)" in s and "Notices" in s)
+    assert f"was: the notice posted {setup.notice_time('1790900000')}" in line
+    assert (
+        f"under the name my-old-channel was: the notice posted {setup.notice_time('1790800000')}"
+        in line
+    )
+
+
+def test_156_keeping_a_name_keyed_notice_never_looks_like_removing_it(home):
+    name_keyed(home)
+    # The channel's own link, then Enter at its notice question: the name-keyed notice stays.
+    code, script = run(home, "y", "y", "", LINK, "", "", "", "y", team=None)
+    assert code == 0
+    old = setup.notice_time("1790900000")
+    assert f"press Enter to keep the notice posted {old}" in script.text
+    assert (
+        f"  Notices:          C00000002 (a channel ID): the notice posted {old}, under the "
+        "name my-channel" in script.shown
+    )
+    assert "was:" not in script.text
+    assert "No notice link yet" not in script.text
+    assert notices(home)["my-channel"].endswith("p1790900000000000")
+
+
+def test_156_a_key_that_isnt_a_channel_name_is_never_changed_or_printed(home):
+    path = existing(home)
+    odd = "https://app.slack.com/client/T00000001/C00000002"
+    text = path.read_text(encoding="utf-8").replace(
+        'slack_notices.C00000002 = "https://example.slack.com/archives/C00000002/'
+        'p1790900000000000"',
+        f'slack_notices."{odd}" = "https://example.slack.com/archives/C00000002/p1790900000000000"',
+    )
+    path.write_text(text, encoding="utf-8")
+    before = path.read_bytes()
+    code, script = run(home, "y", "y", "", NOTICE, "", "", "n", team=None)
+    assert code == 0
+    assert odd not in script.text
+    assert "also under the name" not in script.text
+    assert path.read_bytes() == before

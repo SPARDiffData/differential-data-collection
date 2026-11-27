@@ -320,18 +320,40 @@ def test_it_prints_the_teams_opt_out_link_and_project_code(out):
     _, _, _, said = run(team(out))
     text = "\n".join(said)
     assert f"Opt-out link for DD-7KQ4: {LINK}" in text
-    assert "Project code: DD-7KQ4" in said
+    assert "  2. The project code: DD-7KQ4" in said
     assert text.count(LINK) == 3  # the line, the notice and the mentor message
 
 
-def test_the_producers_steps_come_in_order_post_and_pin_then_setup(out):
+def test_the_output_has_a_block_for_the_team_then_one_for_the_producer(out):
+    # #156: the team's steps and what to send are apart, and nothing tells the team to run
+    # the producer's commands.
+    _, _, _, said = run(team(out))
+    path = next(line for line in said if line.startswith("Team file: ")).removeprefix("Team file: ")
+    team_block = said.index("FOR YOU (the project team)")
+    send = said.index("SEND TO THE PRODUCER, privately (never in a repo, Issue, PR or channel)")
+    assert team_block < send
+    mine = "\n".join(said[team_block:send])
+    assert "optouts DD-7KQ4 --bucket example-bucket" in mine
+    assert "Then tell the producer they can run the export" in mine
+    listed = said[send + 1 : send + 7]
+    assert listed == [
+        f"  1. The team file: {path}",
+        "  2. The project code: DD-7KQ4",
+        "  3. The channel notice, below.",
+        "  4. The mentor message, below.",
+        "  5. The producer guide.",
+        "  The guide has every step they take.",
+    ]
+
+
+def test_the_output_has_no_producer_commands(out):
     _, _, _, said = run(team(out))
     text = "\n".join(said)
-    post = text.index("1. Post the channel notice in each channel, and pin it.")
-    mentor = text.index("2. Send the mentor message")
-    setup = text.index("3. Run setup once")
-    assert post < mentor < setup
-    assert "uv run diffdata setup ~/Downloads/DD-7KQ4.diffdata-team.json" in text
+    assert "diffdata setup" not in text
+    assert "Downloads/" not in text
+    assert "diffdata export" not in text
+    commands = [line.strip() for line in said if line.strip().startswith("uv run")]
+    assert commands == ["uv run diffdata admin optouts DD-7KQ4 --bucket example-bucket"]
 
 
 def test_day_7_is_optouts_then_tell_the_producer_with_no_ids_sent(out):
@@ -403,7 +425,7 @@ def test_with_no_code_add_team_makes_one_and_uses_it_everywhere(out):
     assert said[1].startswith("Team DD-H3XT, bucket")
     data = json.loads((out / "DD-H3XT.diffdata-team.json").read_text(encoding="utf-8"))
     assert data["folder"] == "DD-H3XT"
-    assert "Project code: DD-H3XT" in said
+    assert "  2. The project code: DD-H3XT" in said
     made = ["storage", "managed-folders", "create", "gs://example-bucket/DD-H3XT/", "--quiet"]
     assert made in fake.changes()
 
