@@ -440,8 +440,23 @@ def test_claude_starts_in_the_repo_folder_with_no_flags(monkeypatch):
     export.start_claude([CLAUDE, "/slack-export"])
     argv, kw = started[0]
     assert argv == [CLAUDE, "/slack-export"]
+    env = kw.pop("env")
     assert kw == {"cwd": export.REPO, "check": False}
     assert not any(a.startswith("-") for a in argv)
+    # #159: only the child's environment says it's under the export; the rest is passed on.
+    assert env == {**export.os.environ, "DIFFDATA_EXPORT": "1"}
+    assert "DIFFDATA_EXPORT" not in export.os.environ
+
+
+def test_after_claude_closes_the_export_says_where_it_is_and_what_comes_next(world):
+    w = world(["y", "push"])
+    run(w)
+    back = [s for s in w.said if s.startswith("\nBack in diffdata export.")]
+    assert back == [
+        "\nBack in diffdata export. The test run is done. Next: it asks whether to export now.",
+        "\nBack in diffdata export. The Slack export is done. Next: the review, which opens "
+        "here by itself.",
+    ]
 
 
 def test_no_permission_flag_anywhere_in_the_code():
@@ -451,14 +466,15 @@ def test_no_permission_flag_anywhere_in_the_code():
 
 
 def test_claude_is_found_on_path_or_in_the_desktop_app(tmp_path, monkeypatch):
-    monkeypatch.setattr(export.shutil, "which", lambda tool: None)
+    monkeypatch.setattr(export.check, "claude_path", lambda: None)
     version = tmp_path / "2.1.331"
     binary = version / "fakehash" / "claude.app" / "Contents" / "MacOS" / "claude"
     binary.parent.mkdir(parents=True)
     binary.write_text("")
     monkeypatch.setattr(export.check, "desktop_versions", lambda: {(2, 1, 331): version})
     assert export.claude_command() == [str(binary)]
-    monkeypatch.setattr(export.shutil, "which", lambda tool: "/usr/local/bin/claude")
+    monkeypatch.setattr(export.check, "claude_path", lambda: "/usr/local/bin/claude")
+    monkeypatch.setattr(export.check, "desktop_versions", lambda: pytest.fail("looked in the app"))
     assert export.claude_command() == ["/usr/local/bin/claude"]
 
 
@@ -650,7 +666,7 @@ def test_a_run_from_before_the_test_flag_doesnt_count_as_an_export(world):
 
 
 def test_claude_exe_right_in_the_version_folder_is_found(tmp_path, monkeypatch):
-    monkeypatch.setattr(export.shutil, "which", lambda tool: None)
+    monkeypatch.setattr(export.check, "claude_path", lambda: None)
     version = tmp_path / "2.1.331"
     version.mkdir()
     (version / "claude.exe").write_text("")

@@ -8,9 +8,14 @@ of text blocks holding JSON, whose `messages` field is that text. In detailed mo
     === Message from Name <email> (U...) at 2026-10-01 09:14:00 CDT ===
     Message TS: 1790864040.000100
     the message text, any number of lines
-    Thread: 3 replies (latest: ...)
+    > Thread: 3 replies (latest: ...)
     Reactions: +1 (2)
     Forwarded message from Name (https://.../archives/C.../p...): text — use ... in context
+
+  The detail lines (Thread, Reactions, Files) may start with "> ": since November 2026 the
+  connector writes the Thread line that way (#159). A line in the Thread line's shape that
+  isn't read as one makes the hook refuse the page (`unread_thread_lines()`), so a format
+  change stops the export instead of losing threads.
 
   A post that forwards messages has one "Forwarded message from" line for each, after its
   detail lines (#124). They stay part of the post's text.
@@ -62,8 +67,10 @@ MARKER = re.compile(
 )
 # "Name <email> (U...)". The name can't hold <, > or @, so an email can never end up in it.
 AUTHOR = re.compile(r"^(?P<name>[^<>@]*?)\s*(?:<[^<>]*>)?\s*\((?P<user_id>[A-Z][A-Z0-9]+)\)$")
-# The detail lines at the end of a message, in the connector's exact formats. A line of text
-# that only starts like one, such as "Reactions: mostly positive", stays part of the text.
+# The detail lines at the end of a message, in the connector's exact formats, each with or
+# without "> " before it (#159). A line of text that only starts like one, such as
+# "Reactions: mostly positive" or "> Thread: see below", stays part of the text.
+DETAIL_PREFIX = "> "
 META = {
     "Thread": re.compile(r"\d+ repl(?:y|ies) \(latest: .+\)"),  # "3 replies (latest: ...)"
     "Reactions": re.compile(r"[^\s,()]+ \(\d+\)(?:, [^\s,()]+ \(\d+\))*"),  # "+1 (2), eyes (1)"
@@ -96,6 +103,13 @@ LAST_PAGE = re.compile(
     r"There are no more messages (?:available|in this thread)\.|End of results - No more pages"
 )
 REPLIES = re.compile(r"^(\d+) repl")  # "Thread: 3 replies (latest: ...)"
+# Any line that looks like a Thread line, whatever marks or quoting surround it: "Thread",
+# a count, "reply" or "replies", then nothing, or only a part in brackets. A channel page
+# holding one that wasn't read as a detail line is refused (#159). "Thread: 2 replies so
+# far" isn't in this shape, so it stays text and doesn't stop the export.
+THREAD_SHAPE = re.compile(
+    r"[\W_]*thread\b[\W_]*\d+[\W_]+repl(?:y|ies)\b(?:[\W_]*|\s*\(.*)", re.IGNORECASE
+)
 # A message's text could hold lines that look like a search's own, so a search is refused when
 # the count doesn't match the results, or a result shows a line before its text twice or in
 # another shape. One message's text mustn't pass as another message's channel or thread.
@@ -230,9 +244,9 @@ def search_messages(tool_response) -> list[tuple[str, str, str | None]] | None:
     return rows
 
 
-def parse_block(block: str, who: str | None) -> Message | None:
-    """One message: the From, Time and Message TS lines, then the text, then Thread,
-    Reactions and Files lines at the end."""
+def block_parts(block: str, who: str | None) -> tuple[str, str, list[str], dict] | None:
+    """One message's author, TS, text lines and detail lines, or None if its From, Time and
+    Message TS lines aren't in the connector's shape."""
     lines = block.strip("\n").split("\n")
     ts = None
     while lines and ts is None:
@@ -245,8 +259,17 @@ def parse_block(block: str, who: str | None) -> Message | None:
             return None
     if ts is None or who is None or not TS.fullmatch(ts):
         return None
-
     lines, meta = split_details(lines)
+    return who, ts, lines, meta
+
+
+def parse_block(block: str, who: str | None) -> Message | None:
+    """One message: the From, Time and Message TS lines, then the text, then Thread,
+    Reactions and Files lines at the end."""
+    parts = block_parts(block, who)
+    if parts is None:
+        return None
+    who, ts, lines, meta = parts
 
     author = AUTHOR.match(who)
     if author is None:  # a shape we don't know might carry an email, so don't keep any of it
@@ -301,10 +324,35 @@ def trim_blank(lines: list[str]) -> list[str]:
 
 
 def detail_line(line: str) -> tuple[str, str] | None:
-    """A Thread, Reactions or Files line in the connector's format, as (key, value)."""
-    key, _, value = line.rstrip().partition(": ")
+    """A Thread, Reactions or Files line in the connector's format, with or without "> "
+    before it, as (key, value)."""
+    key, _, value = line.rstrip().removeprefix(DETAIL_PREFIX).partition(": ")
     pattern = META.get(key)
     return (key, value) if pattern and pattern.fullmatch(value) else None
+
+
+def unread_thread_lines(tool_response) -> int:
+    """How many lines of a channel read look like a post's Thread line (THREAD_SHAPE) but
+    weren't read as one: in a message's text, before the first message, or after a replies
+    line, which parse_result passes over. Anything but 0 means the connector's format
+    changed, and the page's threads would be missed, so the hook refuses it (#159). A message
+    the parser couldn't read at all is left out here: parse_result counts it, and that keeps
+    the channel's start point where it was (slack_state)."""
+    text = result_text(tool_response)
+    markers = list(MARKER.finditer(text))  # as parse_result splits it
+    unread = [text[: markers[0].start()] if markers else text]
+    for i, marker in enumerate(markers):
+        end = markers[i + 1].start() if i + 1 < len(markers) else len(text)
+        block = text[marker.end() : end]
+        if marker["replies"]:
+            unread.append(block)
+        elif parts := block_parts(block, marker["who"]):
+            unread.append("\n".join(parts[2]))
+    return sum(
+        THREAD_SHAPE.fullmatch(line.strip()) is not None
+        for part in unread
+        for line in part.split("\n")
+    )
 
 
 def parse_files(value: str) -> list[dict]:

@@ -59,8 +59,12 @@ reworded for the team file, and 16 as Lachlan changed it, approved on 2026-11-25
   17  a direct message or a group DM as a channel (CON-5); the save hook also refuses a read
       of a group DM (discover/slack_inbox.py)
   18  to print anything from the store key or the Google client file in a team file, to put
-      them anywhere but ~/.diffdata/, readable only by the producer, to replace one that's
-      there without a typed yes, or to delete the team file without a typed yes
+      them anywhere but ~/.diffdata/, readable only by the producer, or to replace one that's
+      there without a typed yes. The team file is deleted by itself (#159, approved on
+      2026-11-27), but never before its store key, and its Google client file if it has one,
+      are saved and read back the same from ~/.diffdata/, and never when what's at the path
+      setup was given isn't one plain file (a link, a folder, a file with a second hard link)
+      or no longer holds that key. If deleting fails, setup says so and goes on
   19  to write a value the producer hasn't seen: every value setup chose by itself (data
       folder, workspace, team values, handle) is on the summary screen before the yes, with
       the pseudonym line (revision 5, approved on 2026-11-25)
@@ -89,6 +93,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import string
 import subprocess
 import sys
@@ -133,7 +138,9 @@ NOT_A_TERMINAL = (
     "Terminal or PowerShell and run it there. Nothing was written."
 )
 NOTHING_WRITTEN = "Nothing was written."
-NEXT_STEP = "Next: open Claude Code in the repo folder and run /slack-export."
+NEXT_STEP = "Setup is done. After day 7, when the project team tells you, run:"
+# The repo folder: src/diffdata/common/setup.py -> the repo.
+REPO = Path(__file__).resolve().parents[3]
 CHANNELS_HELP = (
     "Which Slack channels should diffdata collect? Listing a channel is your opt-in. For each "
     "channel, paste the link of the notice you pinned in it (the notice's menu, Copy link). "
@@ -1079,25 +1086,98 @@ def install_file(prompter: Prompter, target: Path, data: bytes, label: str) -> b
     return True
 
 
+def next_lines(repo: Path | None = None, windows: bool | None = None) -> list[str]:
+    """What to type after day 7: go to the repo folder, then run the export. Quoted for
+    PowerShell on Windows, and for a POSIX shell elsewhere."""
+    repo = repo or REPO
+    windows = sys.platform == "win32" if windows is None else windows
+    folder = printable(repo)
+    quoted = "'" + folder.replace("'", "''") + "'" if windows else shlex.quote(folder)
+    return [f"  cd {quoted}", "  uv run diffdata export"]
+
+
+def read_back(target: Path, data: bytes) -> bool:
+    """Whether the file at `target` is one plain file that reads back as `data`."""
+    try:
+        found = push.read_plain(target.parent, target.name)
+    except OSError:
+        return False
+    return found is not None and same_json(found, data)
+
+
+def still_the_team_file(team: TeamFile) -> bool:
+    """Whether the path setup was given is still one plain file, not a link, a folder or a
+    file with a second hard link, holding the store key setup saved."""
+    try:
+        if push.is_link(team.path) or push.is_link(team.path.parent) or not team.path.is_file():
+            return False
+        found = push.read_plain(team.path.parent, team.path.name)
+    except OSError:  # a folder can't be opened as a file on every system
+        return False
+    if found is None:
+        return False
+    try:
+        key = json.loads(found.decode("utf-8")).get("store_key")
+    except (UnicodeDecodeError, ValueError, AttributeError):
+        return False
+    return key is not None and same_json((json.dumps(key) + "\n").encode("utf-8"), team.store_key)
+
+
+def shown_home(folder: Path) -> str:
+    """The settings folder, as ~/.diffdata when it's the usual one."""
+    try:
+        usual = folder.absolute() == (Path.home() / ".diffdata").absolute()
+    except RuntimeError:  # no home folder
+        usual = False
+    return "~/.diffdata" if usual else printable(folder)
+
+
+def team_file_place(path: Path) -> str:
+    """Where the team file was: "from Downloads", or its path."""
+    try:
+        downloads = path.absolute().parent == (Path.home() / "Downloads").absolute()
+    except RuntimeError:
+        downloads = False
+    return "from Downloads" if downloads else f"at {printable(path)}"
+
+
 def install_team_file(prompter: Prompter, folder: Path, team: TeamFile) -> None:
     missing = []
-    if not install_file(prompter, folder / push.KEY_NAME, team.store_key, "store key"):
+    key = folder / push.KEY_NAME
+    if not install_file(prompter, key, team.store_key, "store key") or not read_back(
+        key, team.store_key
+    ):
         missing.append("store key")
-    if team.google_client is not None and not install_file(
-        prompter, folder / CLIENT_NAME, team.google_client, "Google client file"
+    client = folder / CLIENT_NAME
+    if team.google_client is not None and (
+        not install_file(prompter, client, team.google_client, "Google client file")
+        or not read_back(client, team.google_client)
     ):
         missing.append("Google client file")
     if missing:
-        # It may be the producer's only copy of the team's key: never offered for deletion
-        # until every part of it is in place.
+        # It may be the producer's only copy of the team's key: never deleted until every
+        # part of it is saved and read back.
         prompter.say(
             f"Kept the team file at {printable(team.path)}, because its {' and '.join(missing)} "
             f"{'is' if len(missing) == 1 else 'are'} not in place."
         )
         return
-    if prompter.yes(f"Delete the team file at {printable(team.path)}?"):
+    saved = f"Its key is saved in {shown_home(folder)}."
+    if not still_the_team_file(team):
+        prompter.say(
+            f"Kept the team file at {printable(team.path)}: it's no longer one plain file "
+            f"holding this key, so setup doesn't delete it. {saved} Delete the team file yourself."
+        )
+        return
+    try:
         team.path.unlink()
-        prompter.say("Deleted the team file.")
+    except OSError as e:
+        prompter.say(
+            f"Couldn't delete the team file {team_file_place(team.path)} "
+            f"({e.strerror or type(e).__name__}). {saved} Delete the team file yourself."
+        )
+        return
+    prompter.say(f"Deleted the team file {team_file_place(team.path)}. {saved}")
 
 
 def check_existing(prompter: Prompter, settings: Path) -> None:
@@ -1352,4 +1432,6 @@ def setup(
         )
     else:
         prompter.say(NEXT_STEP)
+        for line in next_lines():
+            prompter.say(line)
     return 0

@@ -70,11 +70,8 @@ def run_version(tool: str) -> str | None:
     """`<tool> --version`, found on PATH. None if it isn't there, fails or hangs. It runs in
     a thread that is left behind after TIMEOUT, so a wrapper that keeps its output open (a
     Windows .cmd's child, say) can't hang setup."""
-    found = shutil.which(tool)
+    found = claude_path() if tool == "claude" else shutil.which(tool)
     if found is None:
-        return None
-    if tool == "claude" and "windowsapps" in found.lower():
-        # The Windows app alias opens the desktop app instead of printing a version.
         return None
     result: list[str | None] = []
 
@@ -100,6 +97,26 @@ def run_version(tool: str) -> str | None:
     return result[0] if result else None
 
 
+def claude_path() -> str | None:
+    """The `claude` command: on PATH, but never the Windows app alias, which opens the
+    desktop app instead. On macOS, also where Claude Code's own installer puts it (~/.local/bin,
+    or ~/.claude/local before that), which a terminal may not have on PATH. Looking there
+    first keeps diffdata out of the desktop app's folder, which macOS may refuse with a "data
+    from other apps" notice (#159)."""
+    found = shutil.which("claude")
+    if found and "windowsapps" not in found.lower():
+        return found
+    if sys.platform == "darwin":
+        for place in (".local/bin/claude", ".claude/local/claude"):
+            path = Path.home() / place
+            try:
+                if path.is_file() and os.access(path, os.X_OK):
+                    return str(path)
+            except OSError:
+                continue
+    return None
+
+
 def desktop_claude_code() -> tuple[int, int, int] | None:
     """The newest Claude Code the Claude desktop app keeps, from its folder names only. The
     app runs /slack-export too, with no `claude` command on PATH."""
@@ -108,7 +125,9 @@ def desktop_claude_code() -> tuple[int, int, int] | None:
 
 
 def desktop_versions() -> dict[tuple[int, int, int], Path]:
-    """Each Claude Code version the Claude desktop app keeps, and its folder."""
+    """Each Claude Code version the Claude desktop app keeps, and its folder. Only looked in
+    when there's no `claude` command (claude_path()). Where the system refuses the folder,
+    as macOS can for another app's data, it counts as no app, quietly."""
     places: list[Path] = []
     if sys.platform == "darwin":
         places.append(Path.home() / "Library" / "Application Support" / "Claude" / "claude-code")

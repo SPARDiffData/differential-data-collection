@@ -14,6 +14,7 @@ from diffdata.discover.slack_parse import (
     result_text,
     search_messages,
     to_markdown,
+    unread_thread_lines,
 )
 
 CHANNEL_TOOL = "mcp__claude_ai_Slack__slack_read_channel"
@@ -393,3 +394,99 @@ def test_a_blank_line_between_forwarded_messages_is_kept():
     text = f"Notes\nReactions: eyes (1)\n  \n{forwarded()}\n\n{forwarded(name='Alex Example')}\n\t"
     [message], _ = parse_result(THREAD_TOOL, {"message_ts": PARENT}, thread_parent(text=text))
     assert message.text == f"Notes\n{forwarded()}\n\n{forwarded(name='Alex Example')}"
+
+
+# #159: the connector writes the detail lines with "> " before them, at least the Thread line.
+QUOTED_DETAILS = (
+    "Hello there.\n"
+    "\n"
+    "> Thread: 12 replies (latest: 2026-10-01 09:20:00 CDT)\n"
+    "> Reactions: +1 (2), eyes (1)\n"
+    "> Files: notes.txt (ID: F00000009, text, 1 KB)"
+)
+
+
+def channel_page(*bodies: str) -> str:
+    """A made-up channel read, one post per body, in the connector's wrapping."""
+    posts = "".join(
+        f"=== Message from Sam Sample <sam@example.com> (U00000002) at 2026-10-0{i + 1} "
+        f"09:00:00 CDT ===\nMessage TS: 179086{i}000.000100\n{body}\n\n"
+        for i, body in enumerate(bodies)
+    )
+    text = "Channel: #example-channel (C00000001)\n\n" + posts
+    return json.dumps(
+        {"messages": text, "pagination_info": "There are no more messages available."}
+    )
+
+
+def test_detail_lines_with_a_quote_mark_are_read():
+    [post], skipped = parse_result(CHANNEL_TOOL, {}, channel_page(QUOTED_DETAILS))
+    assert (post.text, post.replies, skipped) == ("Hello there.", 12, 0)
+    assert post.reactions == [{"name": "+1", "count": 2}, {"name": "eyes", "count": 1}]
+    assert post.files == [{"id": "F00000009", "name": "notes.txt", "type": "text"}]
+
+
+@pytest.mark.parametrize("count", ["1 reply", "9 replies", "42 replies"])
+def test_a_quoted_thread_line_counts_replies_with_or_without_trailing_space(count):
+    body = f"Hi\n> Thread: {count} (latest: 2026-10-01 09:20:00 CDT) "
+    [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(body))
+    assert (post.text, post.replies) == ("Hi", int(count.split()[0]))
+    assert unread_thread_lines(channel_page(body)) == 0
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "> Thread: see below",
+        "> Reactions: mostly positive",
+        "> Files: in the shared folder",
+        ">> Reactions: +1 (2)",
+        ">Reactions: +1 (2)",
+        "> Thread: 2 replies so far",
+    ],
+)
+def test_must_refuse_2_text_that_only_looks_like_a_quoted_detail_line_stays_text(line):
+    text = f"Quick update.\n{line}"
+    [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(text))
+    assert (post.text, post.replies, post.reactions, post.files) == (text, 0, [], [])
+    assert unread_thread_lines(channel_page(text)) == 0  # not in the thread line's shape
+
+
+def test_the_unquoted_detail_lines_still_count_as_before():
+    body = "Hi\nThread: 3 replies (latest: 2026-10-01 09:20:00 CDT)\nReactions: +1 (1)"
+    assert unread_thread_lines(channel_page(body)) == 0
+    [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(body))
+    assert post.replies == 3
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        ">> Thread: 3 replies (latest: 2026-10-01 09:20:00 CDT)",  # two quote marks
+        "> *Thread:* 3 replies (latest: 2026-10-01 09:20:00 CDT)",  # bold
+        "> Thread: 3 replies",  # no latest part
+        "> Thread: 3 replies (newest: 2026-10-01 09:20:00 CDT)",
+        "  thread - 3 replies",
+    ],
+)
+def test_must_refuse_1_a_thread_line_the_parser_didnt_read_is_counted(line):
+    page = channel_page(f"Hi\n{line}", "A second post.")
+    [first, _], _ = parse_result(CHANNEL_TOOL, {}, page)
+    assert first.replies == 0
+    assert unread_thread_lines(page) == 1
+
+
+def test_a_thread_line_before_the_first_post_is_counted_but_not_in_an_unreadable_one():
+    page = json.loads(channel_page("Hi"))
+    page["messages"] = page["messages"].replace(
+        "Channel: #example-channel (C00000001)\n",
+        "Channel: #example-channel (C00000001)\nThread: 2 replies\n",
+    )
+    assert unread_thread_lines(json.dumps(page)) == 1
+    unreadable = (
+        "=== Message from Sam Sample <sam@example.com> (U00000002) at 2026-10-01 09:00:00 CDT "
+        "===\nNo TS line here\nThread: 2 replies (latest: 2026-10-01 09:20:00 CDT)\n"
+    )
+    # parse_result counts that post as unreadable, which holds the start point back already.
+    assert parse_result(CHANNEL_TOOL, {}, json.dumps({"messages": unreadable})) == ([], 1)
+    assert unread_thread_lines(json.dumps({"messages": unreadable})) == 0

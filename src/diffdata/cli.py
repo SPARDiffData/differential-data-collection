@@ -9,6 +9,7 @@ Any other subcommand added before it's built is a stub that names the requiremen
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -341,6 +342,9 @@ def run_slack_step(args: argparse.Namespace) -> int:
             if not channels:
                 raise ConfigError(f"No channels are listed under slack_channels in {config.path}.")
             report = "\n".join([f"Opted-in channels, from {config.path}:", *channels])
+            if os.environ.get(producer_export.EXPORT_ENV) == "1":
+                # Only /slack-export's closing words depend on this line (#159).
+                report = f"{producer_export.UNDER_EXPORT}\n{report}"
         elif args.step == "begin":
             report = slack_inbox.begin(config, args.channels, full=args.full, test=args.test)
         elif args.step == "abort":

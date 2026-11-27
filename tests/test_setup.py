@@ -110,10 +110,10 @@ def enters(channels: str) -> list[str]:
 
 def quick_answers(channels: str = f"example-channel, {LINK}") -> list[str]:
     """Answers for a first setup with a team file (revision 5): the channels, the workspace
-    if no channel is a link, Enter at each notice, y on the summary screen, keep the team
-    file."""
+    if no channel is a link, Enter at each notice, y on the summary screen. The team
+    file is then deleted with no question (#159)."""
     space = [] if "/archives/" in channels else ["example.slack.com"]
-    return [channels, *space, *enters(channels), "y", "n"]
+    return [channels, *space, *enters(channels), "y"]
 
 
 # A first setup's answers before c on the summary screen: valid channels, Enter at both
@@ -124,8 +124,8 @@ TO_STEPS = [f"example-channel, {LINK}", "", "", "c"]
 def fresh_answers(channels: str = f"example-channel, {LINK}") -> list[str]:
     """Answers for a first setup with a team file, one question at a time (after c on the
     summary screen, which `run` answers first): use the team values, the data folder, the
-    channels, the workspace, Enter at each notice, the handle, write, keep the team file."""
-    return ["y", "", channels, "example.slack.com", *enters(channels), "", "y", "n"]
+    channels, the workspace, Enter at each notice, the handle, write."""
+    return ["y", "", channels, "example.slack.com", *enters(channels), "", "y"]
 
 
 def run(
@@ -652,28 +652,169 @@ def test_must_refuse_18_a_different_key_is_replaced_only_on_a_typed_yes(home):
     key = write_key(home, data=other)
     before = key.read_bytes()
     answers = fresh_answers()
-    answers[-1:] = ["n"]  # replace the key? no: so no delete question
+    answers += ["n"]  # replace the key? no: so the team file is kept
     _, script = run(home, *answers)
     assert key.read_bytes() == before
     assert "Kept the team file" in script.text
 
     settings(home).unlink()
     answers = fresh_answers()
-    answers[-1:] = ["y", "n"]
+    answers += ["y"]
     run(home, *answers)
     assert setup.push.read_key(key) == KEY
 
 
-def test_must_refuse_18_the_team_file_is_deleted_only_on_a_typed_yes(home):
+def test_the_team_file_is_deleted_by_itself_once_its_parts_are_saved(home):
+    # #159: no question; the key and client file are saved and read back first.
     path = team_file(home)
-    run(home, *fresh_answers(), team=path)
-    assert path.exists()
-
-    settings(home).unlink()
-    answers = fresh_answers()
-    answers[-1] = "y"
-    run(home, *answers, team=path)
+    _, script = run(home, *fresh_answers(), team=path)
     assert not path.exists()
+    assert setup.push.read_key(home / ".diffdata" / "store-key.json") == KEY
+    assert json.loads((home / ".diffdata" / "google-client.json").read_text()) == CLIENT
+    assert "Deleted the team file from Downloads. Its key is saved in ~/.diffdata." in script.text
+    assert not any(line.startswith("Delete the team file") for line in script.shown)
+
+
+def test_a_team_file_outside_downloads_is_named_when_deleted(home):
+    path = team_file(home)
+    elsewhere = home / "team-a.diffdata-team.json"
+    path.rename(elsewhere)
+    _, script = run(home, *fresh_answers(), team=elsewhere)
+    assert not elsewhere.exists()
+    assert f"Deleted the team file at {elsewhere}. Its key is saved in ~/.diffdata." in (
+        script.text
+    )
+
+
+def test_must_refuse_3_the_team_file_is_never_deleted_before_the_key_reads_back(home, monkeypatch):
+    # Saved, but reading it back doesn't give the team's key: the team file stays.
+    path = team_file(home)
+    monkeypatch.setattr(setup, "read_back", lambda target, data: False)
+    _, script = run(home, *fresh_answers(), team=path)
+    assert path.exists()
+    assert "Kept the team file" in script.text and "Deleted" not in script.text
+
+
+def test_must_refuse_3_the_key_is_read_back_from_its_place(home, monkeypatch):
+    # Without the read-back, a key place that changed after the write would still delete it.
+    path = team_file(home)
+    real_install = setup.install_file
+
+    def install_then_lose(prompter, target, data, label):
+        done = real_install(prompter, target, data, label)
+        if label == "store key":
+            target.write_text("{}", encoding="utf-8")
+        return done
+
+    monkeypatch.setattr(setup, "install_file", install_then_lose)
+    _, script = run(home, *fresh_answers(), team=path)
+    assert path.exists()
+    assert "store key is not in place" in script.text
+
+
+@POSIX
+def test_must_refuse_3_a_team_file_that_became_a_link_is_never_deleted(home, monkeypatch):
+    path = team_file(home)
+    real = path.with_name("real.json")
+    real_install = setup.install_file
+
+    def swap_for_a_link(prompter, target, data, label):
+        done = real_install(prompter, target, data, label)
+        if label == "store key" and not path.is_symlink():
+            path.rename(real)
+            path.symlink_to(real)
+        return done
+
+    monkeypatch.setattr(setup, "install_file", swap_for_a_link)
+    _, script = run(home, *fresh_answers(), team=path)
+    assert path.is_symlink() and real.exists()
+    assert "Kept the team file" in script.text and "no longer one plain file" in script.text
+
+
+def test_must_refuse_3_a_team_file_that_became_a_folder_is_never_deleted(home, monkeypatch):
+    path = team_file(home)
+    real_install = setup.install_file
+
+    def swap_for_a_folder(prompter, target, data, label):
+        done = real_install(prompter, target, data, label)
+        if label == "store key" and path.is_file():
+            path.unlink()
+            path.mkdir()
+        return done
+
+    monkeypatch.setattr(setup, "install_file", swap_for_a_folder)
+    _, script = run(home, *fresh_answers(), team=path)
+    assert path.is_dir()
+    assert "no longer one plain file" in script.text
+
+
+def test_must_refuse_3_a_team_file_with_a_second_hard_link_is_never_deleted(home, monkeypatch):
+    path = team_file(home)
+    real_install = setup.install_file
+
+    def add_a_link(prompter, target, data, label):
+        done = real_install(prompter, target, data, label)
+        if label == "store key":
+            os.link(path, home / "second-name.json")
+        return done
+
+    monkeypatch.setattr(setup, "install_file", add_a_link)
+    _, script = run(home, *fresh_answers(), team=path)
+    assert path.exists()
+    assert "no longer one plain file" in script.text
+
+
+def test_must_refuse_3_a_team_file_with_another_key_now_is_never_deleted(home, monkeypatch):
+    path = team_file(home)
+    real_install = setup.install_file
+
+    def swap_contents(prompter, target, data, label):
+        done = real_install(prompter, target, data, label)
+        if label == "store key":
+            team_file(home, store_key={**KEY, "private_key_id": "another"})
+        return done
+
+    monkeypatch.setattr(setup, "install_file", swap_contents)
+    _, script = run(home, *fresh_answers(), team=path)
+    assert path.exists()
+    assert "no longer one plain file holding this key" in script.text
+
+
+def test_a_team_file_that_cant_be_deleted_is_said_and_setup_goes_on(home, monkeypatch):
+    path = team_file(home)
+    real_unlink = Path.unlink
+
+    def refuse(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError(13, "Permission denied")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+    code, script = run(home, *fresh_answers(), team=path)
+    assert code == 0 and path.exists()
+    assert "Couldn't delete the team file from Downloads (Permission denied)." in script.text
+    assert "Delete the team file yourself." in script.text
+    assert "Store key found." in script.text  # it went on to the end
+
+
+@pytest.mark.parametrize(
+    ("windows", "repo", "cd"),
+    [
+        (False, "/home/fake person/diff's repo", "  cd '/home/fake person/diff'\"'\"'s repo'"),
+        (False, "/home/fake/repo", "  cd /home/fake/repo"),
+        (True, r"C:\Users\fake person\diff's repo", r"  cd 'C:\Users\fake person\diff''s repo'"),
+    ],
+)
+def test_the_last_lines_say_what_to_type_after_day_7(windows, repo, cd):
+    assert setup.next_lines(Path(repo), windows=windows) == [cd, "  uv run diffdata export"]
+
+
+def test_setups_last_lines_are_the_export(home):
+    _, script = first(home, "none", "none")
+    end = script.shown[script.shown.index(setup.NEXT_STEP) :]
+    assert end[0] == "Setup is done. After day 7, when the project team tells you, run:"
+    assert end[1].startswith("  cd ") and end[2] == "  uv run diffdata export"
+    assert "/slack-export" not in "\n".join(end)
 
 
 @POSIX
@@ -684,7 +825,7 @@ def test_must_refuse_18_a_key_place_that_is_a_link_is_never_written_through(home
     folder.mkdir()
     (folder / "store-key.json").symlink_to(target)
     team = team_file(home)
-    _, script = run(home, *fresh_answers()[:-1], team=team)  # no delete question
+    _, script = run(home, *fresh_answers(), team=team)
     assert target.read_text(encoding="utf-8") == "keep me\n"
     assert "store key wasn't put there" in script.text
     assert team.exists()
@@ -999,9 +1140,7 @@ def test_a_safety_question_takes_only_y_or_n():
     ("where", "question", "steps"),
     [
         (3, "Write this?", False),  # the summary screen
-        (4, "Delete the team file", False),
         (0, "Use these?", True),  # after c
-        (8, "Delete the team file", True),
     ],
 )
 def test_must_refuse_16_enter_at_a_first_setup_question_asks_again(home, where, question, steps):
@@ -1033,7 +1172,7 @@ def test_enter_at_replacing_a_key_asks_again(home):
     key = write_key(home, data=other)
     before = key.read_bytes()
     answers = fresh_answers()
-    answers[-1:] = ["", "n"]  # replace? Enter asks again, then no (so no delete question)
+    answers += ["", "n"]  # replace? Enter asks again, then no (so the team file is kept)
     _, script = run(home, *answers)
     assert sum(line.startswith("There's a different store key") for line in script.shown) == 2
     assert key.read_bytes() == before
@@ -1043,13 +1182,13 @@ def test_with_no_change_the_team_files_parts_can_still_be_put_in_place(home):
     path = existing(home)
     before = path.read_bytes()
     team = team_file(home)
-    # Change it? no; put the key and client file in place anyway? yes; delete? no
-    code, script = run(home, "n", "y", "n", team=team)
+    # Change it? no; put the key and client file in place anyway? yes
+    code, script = run(home, "n", "y", team=team)
     assert code == 0
     assert path.read_bytes() == before  # the team values weren't used (16)
     assert setup.push.read_key(home / ".diffdata" / "store-key.json") == KEY
     assert (home / ".diffdata" / "google-client.json").exists()
-    assert team.exists()
+    assert not team.exists()  # deleted by itself once both were in place (#159)
     assert no_marker(script.text)
 
 
@@ -1111,11 +1250,11 @@ def test_must_refuse_18_a_kept_different_key_keeps_the_team_file(home):
     write_key(home, data=other)
     team = team_file(home)
     answers = fresh_answers()
-    answers[-1:] = ["n"]  # replace the key? no
+    answers += ["n"]  # replace the key? no
     _, script = run(home, *answers, team=team)
     assert team.exists()
     assert "Kept the team file" in script.text and "store key is not in place" in script.text
-    assert not any(line.startswith("Delete the team file") for line in script.shown)
+    assert "Deleted the team file" not in script.text
 
 
 def test_must_refuse_18_a_kept_client_file_keeps_the_team_file(home):
@@ -1124,21 +1263,20 @@ def test_must_refuse_18_a_kept_client_file_keeps_the_team_file(home):
     (folder / "google-client.json").write_text('{"installed": {"client_id": "other"}}\n')
     team = team_file(home)
     answers = fresh_answers()
-    answers[-1:] = ["n"]  # replace the client file? no
+    answers += ["n"]  # replace the client file? no
     _, script = run(home, *answers, team=team)
     assert team.exists()
     assert setup.push.read_key(folder / "store-key.json") == KEY  # the key went in
     assert "Google client file is not in place" in script.text
-    assert not any(line.startswith("Delete the team file") for line in script.shown)
+    assert "Deleted the team file" not in script.text
 
 
-def test_with_every_part_already_the_same_the_delete_is_offered(home):
+def test_with_every_part_already_the_same_the_team_file_is_deleted(home):
     team = team_file(home)
-    run(home, *fresh_answers(), team=team)  # puts both in place; keeps the file
+    run(home, *fresh_answers(), team=team)  # puts both in place; deletes the file
     settings(home).unlink()
-    answers = fresh_answers()
-    answers[-1] = "y"
-    _, script = run(home, *answers, team=team)
+    team = team_file(home)
+    _, script = run(home, *fresh_answers(), team=team)
     assert "is the same as the team file's" in script.text
     assert not team.exists()
 
@@ -1164,8 +1302,7 @@ def test_a_hand_saved_key_with_the_same_contents_counts_as_the_same(home):
     key.write_text(json.dumps(KEY, separators=(",", ":")), encoding="utf-8")  # no newline
     os.chmod(key, 0o600)  # so there's no chmod question
     before = key.read_bytes()
-    answers = fresh_answers()
-    answers[-1] = "n"  # no replace question; delete the team file? no
+    answers = fresh_answers()  # no replace question
     _, script = run(home, *answers)
     assert "is the same as the team file's" in script.text
     assert not any(line.startswith("There's a different") for line in script.shown)
@@ -1175,7 +1312,7 @@ def test_a_hand_saved_key_with_the_same_contents_counts_as_the_same(home):
 def test_a_key_with_different_contents_is_still_different(home):
     write_key(home, data={**KEY, "private_key_id": "another"})
     answers = fresh_answers()
-    answers[-1:] = ["n"]  # replace? no
+    answers += ["n"]  # replace? no
     _, script = run(home, *answers)
     assert any(line.startswith("There's a different store key") for line in script.shown)
 
@@ -1249,7 +1386,7 @@ def notices(home: Path) -> dict | None:
 def first(home, *notice_answers: str, channels: str = f"example-channel, {LINK}"):
     """A short first setup with these answers at the notice questions (and any asked again)."""
     space = [] if "/archives/" in channels else ["example.slack.com"]
-    return run(home, channels, *space, *notice_answers, "y", "n", steps=False)
+    return run(home, channels, *space, *notice_answers, "y", steps=False)
 
 
 def test_each_channel_gets_one_notice_question_after_the_channels(home):

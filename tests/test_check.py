@@ -204,7 +204,52 @@ def test_a_pre_release_reads_as_older_than_its_release(text, version):
     assert check.parse_version(text) == version
 
 
-def test_the_windows_app_alias_isnt_run(monkeypatch):
+def test_on_macos_claude_codes_own_install_is_found_off_path(tmp_path, monkeypatch):
+    # #159: so the desktop app's folder isn't looked in, which macOS may refuse with a notice.
+    monkeypatch.setattr(check.shutil, "which", lambda tool: None)
+    monkeypatch.setattr(check.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(check.sys, "platform", "darwin")
+    assert check.claude_path() is None
+    older = tmp_path / ".claude" / "local" / "claude"
+    older.parent.mkdir(parents=True)
+    older.write_text("x", encoding="utf-8")
+    older.chmod(0o755)
+    assert check.claude_path() == str(older)
+    native = tmp_path / ".local" / "bin" / "claude"
+    native.parent.mkdir(parents=True)
+    native.write_text("x", encoding="utf-8")
+    native.chmod(0o755)
+    assert check.claude_path() == str(native)
+    monkeypatch.setattr(check.shutil, "which", lambda tool: "/made-up/claude")
+    assert check.claude_path() == "/made-up/claude"  # PATH first, as before
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_elsewhere_claude_is_looked_for_on_path_only_as_before(tmp_path, monkeypatch, platform):
+    monkeypatch.setattr(check.shutil, "which", lambda tool: None)
+    monkeypatch.setattr(check.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(check.sys, "platform", platform)
+    native = tmp_path / ".local" / "bin" / "claude"
+    native.parent.mkdir(parents=True)
+    native.write_text("x", encoding="utf-8")
+    assert check.claude_path() is None
+
+
+def test_a_desktop_app_folder_the_system_refuses_counts_as_no_app(tmp_path, monkeypatch):
+    monkeypatch.setattr(check.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(check.sys, "platform", "darwin")
+    place = tmp_path / "Library" / "Application Support" / "Claude" / "claude-code"
+    (place / "2.1.331").mkdir(parents=True)
+
+    def refused(self):
+        raise PermissionError("Operation not permitted")
+
+    monkeypatch.setattr(check.Path, "iterdir", refused)
+    assert check.desktop_versions() == {}
+
+
+def test_the_windows_app_alias_isnt_run(monkeypatch, tmp_path):
+    monkeypatch.setattr(check.Path, "home", lambda: tmp_path)  # no Claude Code of its own here
     alias = r"C:\Users\x\AppData\Local\Microsoft\WindowsApps\claude.exe"
     monkeypatch.setattr(check.shutil, "which", lambda tool: alias)
     monkeypatch.setattr(check.subprocess, "run", lambda *a, **k: pytest.fail("ran the alias"))
