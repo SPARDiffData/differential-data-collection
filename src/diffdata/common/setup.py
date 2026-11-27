@@ -1100,13 +1100,26 @@ def next_lines(repo: PurePath | None = None, windows: bool | None = None) -> lis
     return [f"  {go}", "  uv run diffdata export"]
 
 
-def read_back(target: Path, data: bytes) -> bool:
-    """Whether the file at `target` is one plain file that reads back as `data`."""
+def read_back(target: Path, data: bytes, label: str) -> str | None:
+    """Why the file at `target` doesn't read back as `data`, or None if it does: it must be
+    one plain file, in a folder that isn't a link."""
+    if push.is_link(target.parent):
+        return (
+            f"{printable(target.parent)} is a link, so setup can't check the {label} saved "
+            "through it"
+        )
     try:
         found = push.read_plain(target.parent, target.name)
-    except OSError:
-        return False
-    return found is not None and same_json(found, data)
+    except OSError as e:
+        return f"setup couldn't read the {label} back ({e.strerror or type(e).__name__})"
+    if found is None:
+        return (
+            f"{printable(target)} isn't one plain file (it's a link, a folder or a file with a "
+            "second hard link)"
+        )
+    if not same_json(found, data):
+        return f"the {label} at {printable(target)} isn't the team file's"
+    return None
 
 
 def still_the_team_file(team: TeamFile) -> bool:
@@ -1150,18 +1163,19 @@ def install_team_file(
 ) -> None:
     """Put the team file's parts in place, then delete the team file once they're saved and
     read back. With delete=False (setup didn't use the team file's values), it's kept."""
-    missing = []
-    key = folder / push.KEY_NAME
-    if not install_file(prompter, key, team.store_key, "store key") or not read_back(
-        key, team.store_key
-    ):
-        missing.append("store key")
-    client = folder / CLIENT_NAME
-    if team.google_client is not None and (
-        not install_file(prompter, client, team.google_client, "Google client file")
-        or not read_back(client, team.google_client)
-    ):
-        missing.append("Google client file")
+    missing, unchecked = [], []
+    parts = [(folder / push.KEY_NAME, team.store_key, "store key")]
+    if team.google_client is not None:
+        parts.append((folder / CLIENT_NAME, team.google_client, "Google client file"))
+    for target, data, label in parts:
+        if not install_file(prompter, target, data, label):
+            missing.append(label)
+        elif why := read_back(target, data, label):
+            unchecked.append(why)
+    if unchecked and not missing:
+        # Saved, but not read back the same: never deleted, and the real reason is said.
+        prompter.say(f"Kept the team file at {printable(team.path)}: {'; '.join(unchecked)}.")
+        return
     if missing:
         # It may be the producer's only copy of the team's key: never deleted until every
         # part of it is saved and read back.

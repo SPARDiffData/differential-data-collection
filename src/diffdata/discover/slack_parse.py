@@ -96,6 +96,11 @@ FORWARDED_START = re.compile(
     r"(?:\?[^\s()]*)?\): .*"
 )
 FORWARDED_END = " \u2014 use slack_read_thread or slack_read_channel to read it in context"
+# For the thread-line guard only: what it passes over going up from a post's end, beyond
+# what the parser reads. A Reactions or Files line in any wording, and a forward that only
+# starts or ends like one, so a change in their format can't hide a Thread line above them.
+DETAIL_START = re.compile(r"(?:> |&gt; ?)?(?:Reactions|Files):")
+FORWARD_OPENING = "Forwarded message from "
 # Seconds, a dot, then a sequence number. Ten digits of seconds last until the year 2286;
 # anything else would crash the build when it's turned into a date.
 TS = re.compile(r"[0-9]{1,10}\.[0-9]+")
@@ -306,7 +311,7 @@ def reply_count(meta: dict[str, str]) -> int:
     return int(match[1].replace(",", "")) if match else 0
 
 
-def forwarded_start(lines: list[str], end: int) -> int | None:
+def forwarded_start(lines: list[str], end: int) -> int:
     """Where the forwarded entries at the very end of `lines[:end]` start: each is one whole
     line in the FORWARDED shape, or, when its text runs over several lines, a line starting
     like one down to a line ending like one. Blank lines between them go with them."""
@@ -382,16 +387,46 @@ def thread_shaped(line: str) -> bool:
     return THREAD_SHAPE.fullmatch(ESCAPED_QUOTES.sub("", line.strip())) is not None
 
 
+def thread_place(lines: list[str]) -> tuple[str | None, bool]:
+    """For the guard: going up from the end of a message's lines, past blank lines, detail
+    lines, any line starting like a Reactions or Files line, and forwarded entries (a line
+    ending like one goes back to the nearest line above that starts like one, or alone if
+    there's none), the first other line: where the connector writes the Thread line. Also
+    whether a Thread detail line was passed. It's wider than the parser's scan on purpose,
+    and changes nothing the parser keeps."""
+    i = len(lines)
+    thread_passed = False
+    while i:
+        line = lines[i - 1].rstrip()
+        if (
+            not line.strip()
+            or FORWARDED.fullmatch(line)
+            or DETAIL_START.match(line)
+            or line.startswith(FORWARD_OPENING)
+        ):
+            i -= 1
+        elif detail := detail_line(line):
+            thread_passed = thread_passed or detail[0] == "Thread"
+            i -= 1
+        elif line.endswith(FORWARDED_END):
+            opening = (j for j in range(i - 2, -1, -1) if lines[j].startswith(FORWARD_OPENING))
+            i = next(opening, i - 1)
+        else:
+            return line, thread_passed
+    return None, thread_passed
+
+
 def unread_thread_lines(tool_response) -> int:
     """How many places in a channel read hold a post's Thread line the parser didn't read
-    (#159). Only where the connector writes it counts: going up from a message's end past
-    its forwarded entries and detail lines, the next line looks like a Thread line. So does
-    a Thread line under a replies line, which parse_result passes over, or in the text
-    before the first message. A line that only looks like one higher up in a post's text is
-    text. Anything but 0 means the connector's format may have changed, or a message's last
-    line looks like a Thread line, and the hook refuses the page. A message the parser
-    couldn't read at all is left out here: parse_result counts it, and that keeps the
-    channel's start point where it was (slack_state)."""
+    (#159). Only where the connector writes it counts (thread_place()): in what the parser
+    kept as a post's text, there's a Thread detail line it didn't read, or the line there
+    looks like a Thread line. The same goes for the text under a replies line, which
+    parse_result passes over, and the text before the first message.
+    A line that only looks like one higher up in a post's text is text. Anything but 0 means
+    the connector's format may have changed, or a message's last line looks like a Thread
+    line, and the hook refuses the page. A message the parser couldn't read at all is left
+    out here: parse_result counts it, and that keeps the channel's start point where it was
+    (slack_state)."""
     text = result_text(tool_response)
     markers = list(MARKER.finditer(text))  # as parse_result splits it
     unread = [text[: markers[0].start()] if markers else text]
@@ -402,11 +437,12 @@ def unread_thread_lines(tool_response) -> int:
         if marker["replies"]:
             unread.append(block)
         elif parts := block_parts(block, marker["who"]):
-            above, _, _ = split_tail(parts[2])
-            found += bool(above) and thread_shaped(above[-1])
+            # The parser's text, with the detail lines it read taken out: a Thread line the
+            # guard passes in it is one the parser didn't read.
+            unread.append("\n".join(parts[2]))
     for part in unread:
-        above, meta, _ = split_tail(part.split("\n"))
-        found += "Thread" in meta or (bool(above) and thread_shaped(above[-1]))
+        place, passed = thread_place(part.split("\n"))
+        found += passed or (place is not None and thread_shaped(place))
     return found
 
 

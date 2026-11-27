@@ -567,3 +567,39 @@ def test_a_badly_placed_comma_isnt_a_count():
     [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(body))
     assert post.replies == 0
     assert unread_thread_lines(channel_page(body)) == 1  # at the Thread line's place
+
+
+# Fix round 2 on #160: the guard passes Reactions and Files lines in any wording, and
+# forwards that only end like one, so a format change there can't hide a Thread line.
+THREAD_LINE = "> Thread: 3 replies (latest: 2026-10-01 09:20:00 CDT)"
+BAD_OPENING = (
+    "Forwarded message from Alex (https://example.slack.com/archives/C1/p1?x=(y)): line one"
+)
+FORWARD_ENDING = "line two \u2014 use slack_read_thread or slack_read_channel to read it in context"
+
+
+@pytest.mark.parametrize(
+    "under",
+    [
+        "> Reactions: :+1: 2",
+        "&gt; Reactions: eyes x1",
+        "> Files: notes.txt (F00000009)",
+        "Files: notes.txt",
+        f"{BAD_OPENING}\n{FORWARD_ENDING}",  # its opening isn't in FORWARDED_START's shape
+        FORWARD_ENDING,  # an ending with no opening at all
+        "Forwarded message from Alex (https://x/y): one\n" + FORWARD_ENDING,
+    ],
+)
+def test_must_refuse_1_a_thread_line_above_lines_in_a_new_shape_is_counted(under):
+    page = channel_page(f"Hi\n{THREAD_LINE}\n{under}")
+    [post], _ = parse_result(CHANNEL_TOOL, {}, page)
+    assert post.replies == 0  # the parser stopped at the line it doesn't know
+    assert THREAD_LINE in post.text  # and kept everything as text, as before
+    assert unread_thread_lines(page) == 1
+
+
+def test_the_guards_wider_scan_doesnt_change_what_the_parser_keeps():
+    body = "Hi\nReactions: mostly positive"
+    [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(body))
+    assert (post.text, post.reactions) == (body, [])
+    assert unread_thread_lines(channel_page(body)) == 0

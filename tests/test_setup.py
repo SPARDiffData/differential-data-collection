@@ -690,7 +690,7 @@ def test_a_team_file_outside_downloads_is_named_when_deleted(home):
 def test_must_refuse_3_the_team_file_is_never_deleted_before_the_key_reads_back(home, monkeypatch):
     # Saved, but reading it back doesn't give the team's key: the team file stays.
     path = team_file(home)
-    monkeypatch.setattr(setup, "read_back", lambda target, data: False)
+    monkeypatch.setattr(setup, "read_back", lambda target, data, label: "made-up reason")
     _, script = run(home, *fresh_answers(), team=path)
     assert path.exists()
     assert "Kept the team file" in script.text and "Deleted" not in script.text
@@ -710,7 +710,7 @@ def test_must_refuse_3_the_key_is_read_back_from_its_place(home, monkeypatch):
     monkeypatch.setattr(setup, "install_file", install_then_lose)
     _, script = run(home, *fresh_answers(), team=path)
     assert path.exists()
-    assert "store key is not in place" in script.text
+    assert "Kept the team file" in script.text and "isn't the team file's" in script.text
 
 
 @POSIX
@@ -730,6 +730,20 @@ def test_must_refuse_3_a_team_file_that_became_a_link_is_never_deleted(home, mon
     _, script = run(home, *fresh_answers(), team=path)
     assert path.is_symlink() and real.exists()
     assert "Kept the team file" in script.text and "no longer one plain file" in script.text
+
+
+@POSIX
+def test_with_the_settings_folder_a_link_the_real_reason_is_given(home):
+    # #160 re-review: the key goes in through the link, but can't be checked through it.
+    real = home / "real-settings"
+    real.mkdir()
+    (home / ".diffdata").symlink_to(real)
+    path = team_file(home)
+    _, script = run(home, *fresh_answers(), team=path)
+    assert path.exists()
+    assert "Kept the team file" in script.text
+    assert f"{home / '.diffdata'} is a link" in script.text
+    assert "not in place" not in script.text
 
 
 def test_must_refuse_3_a_team_file_that_became_a_folder_is_never_deleted(home, monkeypatch):
