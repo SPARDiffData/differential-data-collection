@@ -256,6 +256,7 @@ def test_must_refuse_1_a_thread_line_the_parser_didnt_read_is_refused(config, ca
     assert save(config, payload(response=channel_read_with(body)), now=T0) == 2
     err = capsys.readouterr().err
     assert "thread line" in err and "format may have changed" in err and "project team" in err
+    assert "a line near the end of a message looks like a thread line" in err
     assert inbox_files(config) == []
 
 

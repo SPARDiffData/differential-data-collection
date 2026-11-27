@@ -603,3 +603,73 @@ def test_the_guards_wider_scan_doesnt_change_what_the_parser_keeps():
     [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(body))
     assert (post.text, post.reactions) == (body, [])
     assert unread_thread_lines(channel_page(body)) == 0
+
+
+# Fix round 3 on #160: Reactions and Files lines in more shapes, quoted forwards, and a
+# forward that holds another forward's opening line.
+FORWARD_OPENING_LINE = (
+    "Forwarded message from Alex Example "
+    "(https://example.slack.com/archives/C00000001/p1790860000000100): line one"
+)
+
+
+@pytest.mark.parametrize(
+    "under",
+    [
+        "\t> Reactions: :+1: 2",  # a tab before
+        "   Reactions: +1 (2)",  # spaces before
+        "reactions: +1 (2)",  # lowercase
+        "> File: notes.txt (F00000009)",  # singular
+        "> Reaction: :+1: 2",
+        "*Reactions:* +1 (2)",  # bold
+        "> Reactions : +1 (2)",  # a space before the colon
+        "_Files_: notes.txt",
+    ],
+)
+def test_must_refuse_1_a_thread_line_above_reactions_or_files_in_any_shape_is_counted(under):
+    page = channel_page(f"Hi\n{THREAD_LINE}\n{under}")
+    [post], _ = parse_result(CHANNEL_TOOL, {}, page)
+    assert post.replies == 0 and THREAD_LINE in post.text  # the parser's split as before
+    assert unread_thread_lines(page) == 1
+
+
+@pytest.mark.parametrize(
+    "forward",
+    [
+        f"> {FORWARD_OPENING_LINE} \u2014 use slack_read_thread or slack_read_channel to read it "
+        "in context",  # one quoted line
+        f"> {FORWARD_OPENING_LINE}\n> middle\n> {FORWARD_ENDING}",  # quoted, several lines
+        f"&gt; {FORWARD_OPENING_LINE}\nmiddle\n{FORWARD_ENDING}",
+    ],
+)
+def test_must_refuse_1_a_thread_line_above_a_quoted_forward_is_counted(forward):
+    page = channel_page(f"Hi\n{THREAD_LINE}\n{forward}")
+    [post], _ = parse_result(CHANNEL_TOOL, {}, page)
+    assert post.replies == 0
+    assert unread_thread_lines(page) == 1
+
+
+def test_must_refuse_1_a_forward_holding_another_forwards_opening_is_counted():
+    inner = (
+        "Forwarded message from Bob Example "
+        "(https://example.slack.com/archives/C00000001/p1790860000000200): inner"
+    )
+    body = f"Hi\n{THREAD_LINE}\n{FORWARD_OPENING_LINE}\nmiddle\n{inner}\n{FORWARD_ENDING}"
+    page = channel_page(body)
+    [post], _ = parse_result(CHANNEL_TOOL, {}, page)
+    assert post.replies == 0  # the parser jumps only to the inner opening
+    assert unread_thread_lines(page) == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "We met.\nReactions: mostly positive",
+        "See below.\nFiles: in the drive",
+        "Thread (2 replies) was long.\nOK thanks",
+        "> Thread: 2 replies\n> great",  # quoting an email
+        "On Monday you wrote:\n> see the files: attached\n> thanks",
+    ],
+)
+def test_ordinary_text_still_saves(body):
+    assert unread_thread_lines(channel_page(body)) == 0

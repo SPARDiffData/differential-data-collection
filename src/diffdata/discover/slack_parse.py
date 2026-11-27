@@ -99,8 +99,12 @@ FORWARDED_END = " \u2014 use slack_read_thread or slack_read_channel to read it 
 # For the thread-line guard only: what it passes over going up from a post's end, beyond
 # what the parser reads. A Reactions or Files line in any wording, and a forward that only
 # starts or ends like one, so a change in their format can't hide a Thread line above them.
-DETAIL_START = re.compile(r"(?:> |&gt; ?)?(?:Reactions|Files):")
+# Matched after QUOTE_MARKS are taken off the front: any case, singular or plural, with
+# markup such as "*Reactions:*" and a space before the colon.
+DETAIL_START = re.compile(r"[\W_]*(?:reactions?|files?)(?![a-z0-9])\s*[*_]*\s*:", re.IGNORECASE)
 FORWARD_OPENING = "Forwarded message from "
+# Spaces, tabs and quote marks ("> ", "&gt; ") at the start of a line.
+QUOTE_MARKS = re.compile(r"(?:\s|>|&gt;)*")
 # Seconds, a dot, then a sequence number. Ten digits of seconds last until the year 2286;
 # anything else would crash the build when it's turned into a date.
 TS = re.compile(r"[0-9]{1,10}\.[0-9]+")
@@ -387,12 +391,28 @@ def thread_shaped(line: str) -> bool:
     return THREAD_SHAPE.fullmatch(ESCAPED_QUOTES.sub("", line.strip())) is not None
 
 
+def unquoted(line: str) -> str:
+    """The line without spaces, tabs or quote marks at its start."""
+    return line[QUOTE_MARKS.match(line).end() :]
+
+
+def is_forward_opening(line: str) -> bool:
+    return unquoted(line).startswith(FORWARD_OPENING)
+
+
+def thread_detail(line: str) -> bool:
+    detail = detail_line(line)
+    return detail is not None and detail[0] == "Thread"
+
+
 def thread_place(lines: list[str]) -> tuple[str | None, bool]:
     """For the guard: going up from the end of a message's lines, past blank lines, detail
-    lines, any line starting like a Reactions or Files line, and forwarded entries (a line
-    ending like one goes back to the nearest line above that starts like one, or alone if
-    there's none), the first other line: where the connector writes the Thread line. Also
-    whether a Thread detail line was passed. It's wider than the parser's scan on purpose,
+    lines, any line starting like a Reactions or Files line (DETAIL_START), and forwarded
+    entries, quoted or not, the first other line: where the connector writes the Thread
+    line. Also whether a Thread detail line was passed. A line ending like a forward goes
+    back to the nearest line above that starts like one, or alone if there's none; and
+    since a forward's text can hold another forward's opening line, the line above every
+    opening line above it is checked too. It's wider than the parser's scan on purpose,
     and changes nothing the parser keeps."""
     i = len(lines)
     thread_passed = False
@@ -401,16 +421,22 @@ def thread_place(lines: list[str]) -> tuple[str | None, bool]:
         if (
             not line.strip()
             or FORWARDED.fullmatch(line)
-            or DETAIL_START.match(line)
-            or line.startswith(FORWARD_OPENING)
+            or DETAIL_START.match(unquoted(line))
+            or is_forward_opening(line)
         ):
             i -= 1
-        elif detail := detail_line(line):
-            thread_passed = thread_passed or detail[0] == "Thread"
+        elif thread_detail(line):
+            thread_passed = True
+            i -= 1
+        elif detail_line(line):
             i -= 1
         elif line.endswith(FORWARDED_END):
-            opening = (j for j in range(i - 2, -1, -1) if lines[j].startswith(FORWARD_OPENING))
-            i = next(opening, i - 1)
+            openings = [j for j in range(i - 2, -1, -1) if is_forward_opening(lines[j])]
+            for j in openings:
+                above = next((x.rstrip() for x in reversed(lines[:j]) if x.strip()), None)
+                if above is not None and (thread_detail(above) or thread_shaped(above)):
+                    return above, thread_passed or thread_detail(above)
+            i = openings[0] if openings else i - 1
         else:
             return line, thread_passed
     return None, thread_passed

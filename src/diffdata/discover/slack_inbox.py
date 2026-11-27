@@ -635,9 +635,9 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
         return fail(
             'This channel read has a post whose thread line ("Thread: N replies") '
             "diffdata couldn't read, so it wasn't saved: the threads under it would be missed. "
-            "The Slack connector's format may have changed, or a message's last line looks "
-            "like a thread line. Stop the export and tell the user: they can pass this message "
-            "to the project team."
+            "The Slack connector's format may have changed, or a line near the end of a "
+            "message looks like a thread line. Stop the export and tell the user: they can "
+            "pass this message to the project team."
         )
     left, left_names = 0, {}
     if tool in SAVED_TOOLS and config.slack_opted_out:
