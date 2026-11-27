@@ -449,7 +449,9 @@ def test_must_refuse_2_text_that_only_looks_like_a_quoted_detail_line_stays_text
     text = f"Quick update.\n{line}"
     [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(text))
     assert (post.text, post.replies, post.reactions, post.files) == (text, 0, [], [])
-    assert unread_thread_lines(channel_page(text)) == 0  # not in the thread line's shape
+    # Higher up in a post's text, a look-alike never stops the export. Last, where the Thread
+    # line goes, "> Thread: 2 replies so far" would (see the tests below).
+    assert unread_thread_lines(channel_page(f"{text}\nThanks.")) == 0
 
 
 def test_the_unquoted_detail_lines_still_count_as_before():
@@ -490,3 +492,78 @@ def test_a_thread_line_before_the_first_post_is_counted_but_not_in_an_unreadable
     # parse_result counts that post as unreadable, which holds the start point back already.
     assert parse_result(CHANNEL_TOOL, {}, json.dumps({"messages": unreadable})) == ([], 1)
     assert unread_thread_lines(json.dumps({"messages": unreadable})) == 0
+
+
+# Fix round on #160: the guard only looks where the Thread line goes.
+@pytest.mark.parametrize("line", ["Thread (2 replies)", "Thread: 5 replies", "thread - 2 replies!"])
+def test_a_thread_look_alike_in_the_middle_of_a_post_isnt_counted(line):
+    page = channel_page(f"Recap\n{line}\nthanks")
+    assert unread_thread_lines(page) == 0
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "> Thread: 3 replies, latest: 2026-10-01 09:20:00 CDT",
+        "> Thread: 3 replies \u00b7 latest 2026-10-01",
+        "Thread (2 replies)",
+    ],
+)
+def test_at_the_thread_lines_place_any_wording_after_the_count_is_counted(line):
+    page = channel_page(f"Hi\n{line}\nReactions: +1 (1)")
+    assert unread_thread_lines(page) == 1
+
+
+def multi_line_forward(text: str) -> str:
+    return (
+        "Forwarded message from Alex Example "
+        "(https://example.slack.com/archives/C00000001/p1790860000000100): "
+        f"{text} \u2014 use slack_read_thread or slack_read_channel to read it in context"
+    )
+
+
+def test_a_forwarded_message_over_several_lines_doesnt_hide_the_thread_line():
+    forward = multi_line_forward("line one\nline two\nline three")
+    body = f"Hi\n> Thread: 3 replies (latest: 2026-10-01 09:20:00 CDT)\n{forward}"
+    [post, _], _ = parse_result(CHANNEL_TOOL, {}, channel_page(body, "second"))
+    assert post.replies == 3
+    assert post.text == f"Hi\n{forward}"
+    assert unread_thread_lines(channel_page(body)) == 0
+
+
+def test_a_line_that_only_ends_like_a_forward_doesnt_count_as_one():
+    # No start line above it: it's text, and the scan stops there as before.
+    body = (
+        "Hi\nnot a forward \u2014 use slack_read_thread or slack_read_channel to read it in context"
+    )
+    [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(body))
+    assert post.text == body
+
+
+@pytest.mark.parametrize("quote", ["&gt; ", "&gt;"])
+def test_detail_lines_quoted_as_slack_escapes_them_are_read(quote):
+    body = f"Hi\n{quote}Thread: 3 replies (latest: x)\n{quote}Reactions: eyes (1)"
+    [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(body))
+    assert (post.text, post.replies, post.reactions) == ("Hi", 3, [{"name": "eyes", "count": 1}])
+    assert unread_thread_lines(channel_page(body)) == 0
+
+
+def test_an_escaped_quote_on_a_thread_line_in_another_shape_is_counted():
+    assert unread_thread_lines(channel_page("Hi\n&gt;&gt; Thread: 3 replies (latest: x)")) == 1
+
+
+@pytest.mark.parametrize(
+    ("count", "n"), [("1,024", 1024), ("12,345,678", 12345678), ("1024", 1024)]
+)
+def test_a_reply_count_with_thousands_commas_is_read(count, n):
+    body = f"Hi\n> Thread: {count} replies (latest: x)"
+    [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(body))
+    assert post.replies == n
+    assert unread_thread_lines(channel_page(body)) == 0
+
+
+def test_a_badly_placed_comma_isnt_a_count():
+    body = "Hi\n> Thread: 1,02 replies (latest: x)"
+    [post], _ = parse_result(CHANNEL_TOOL, {}, channel_page(body))
+    assert post.replies == 0
+    assert unread_thread_lines(channel_page(body)) == 1  # at the Thread line's place

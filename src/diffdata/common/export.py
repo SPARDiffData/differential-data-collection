@@ -112,7 +112,10 @@ def claude_command() -> list[str] | None:
     found = check.claude_path()
     if found:
         return [found]
-    versions = check.desktop_versions()
+    versions, blocked = check.desktop_scan()
+    if not versions and blocked:
+        # Not "isn't installed": macOS stopped the look, and says how to let it (#160).
+        raise Stop(check.DESKTOP_BLOCKED)
     for version in sorted(versions, reverse=True):
         patterns = ("*/claude.app/Contents/MacOS/claude", "claude.exe", "*/claude.exe", "*/claude")
         for pattern in patterns:

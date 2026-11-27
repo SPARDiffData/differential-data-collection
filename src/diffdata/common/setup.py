@@ -62,9 +62,10 @@ reworded for the team file, and 16 as Lachlan changed it, approved on 2026-11-25
       them anywhere but ~/.diffdata/, readable only by the producer, or to replace one that's
       there without a typed yes. The team file is deleted by itself (#159, approved on
       2026-11-27), but never before its store key, and its Google client file if it has one,
-      are saved and read back the same from ~/.diffdata/, and never when what's at the path
-      setup was given isn't one plain file (a link, a folder, a file with a second hard link)
-      or no longer holds that key. If deleting fails, setup says so and goes on
+      are saved and read back the same from ~/.diffdata/, never when what's at the path setup
+      was given isn't one plain file (a link, a folder, a file with a second hard link) or
+      no longer holds that key, and never when the answer to Change it was n, since its
+      team values weren't used. If deleting fails, setup says so and goes on
   19  to write a value the producer hasn't seen: every value setup chose by itself (data
       folder, workspace, team values, handle) is on the summary screen before the yes, with
       the pseudonym line (revision 5, approved on 2026-11-25)
@@ -104,9 +105,10 @@ from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from diffdata.common import config as config_module
+from diffdata.common import history
 from diffdata.common.config import (
     CHANNEL_ID,
     CHANNEL_NAME,
@@ -139,8 +141,6 @@ NOT_A_TERMINAL = (
 )
 NOTHING_WRITTEN = "Nothing was written."
 NEXT_STEP = "Setup is done. After day 7, when the project team tells you, run:"
-# The repo folder: src/diffdata/common/setup.py -> the repo.
-REPO = Path(__file__).resolve().parents[3]
 CHANNELS_HELP = (
     "Which Slack channels should diffdata collect? Listing a channel is your opt-in. For each "
     "channel, paste the link of the notice you pinned in it (the notice's menu, Copy link). "
@@ -1086,14 +1086,18 @@ def install_file(prompter: Prompter, target: Path, data: bytes, label: str) -> b
     return True
 
 
-def next_lines(repo: Path | None = None, windows: bool | None = None) -> list[str]:
-    """What to type after day 7: go to the repo folder, then run the export. Quoted for
-    PowerShell on Windows, and for a POSIX shell elsewhere."""
-    repo = repo or REPO
+def next_lines(repo: PurePath | None = None, windows: bool | None = None) -> list[str]:
+    """What to type after day 7: go to the repo folder, then run the export. On Windows, for
+    PowerShell: -LiteralPath, so [ ] in the folder's name aren't wildcards, and the name in
+    single quotes. Elsewhere, cd with the name quoted for a POSIX shell."""
+    repo = repo or history.REPO
     windows = sys.platform == "win32" if windows is None else windows
     folder = printable(repo)
-    quoted = "'" + folder.replace("'", "''") + "'" if windows else shlex.quote(folder)
-    return [f"  cd {quoted}", "  uv run diffdata export"]
+    if windows:
+        go = "Set-Location -LiteralPath '" + folder.replace("'", "''") + "'"
+    else:
+        go = f"cd {shlex.quote(folder)}"
+    return [f"  {go}", "  uv run diffdata export"]
 
 
 def read_back(target: Path, data: bytes) -> bool:
@@ -1141,7 +1145,11 @@ def team_file_place(path: Path) -> str:
     return "from Downloads" if downloads else f"at {printable(path)}"
 
 
-def install_team_file(prompter: Prompter, folder: Path, team: TeamFile) -> None:
+def install_team_file(
+    prompter: Prompter, folder: Path, team: TeamFile, delete: bool = True
+) -> None:
+    """Put the team file's parts in place, then delete the team file once they're saved and
+    read back. With delete=False (setup didn't use the team file's values), it's kept."""
     missing = []
     key = folder / push.KEY_NAME
     if not install_file(prompter, key, team.store_key, "store key") or not read_back(
@@ -1163,6 +1171,12 @@ def install_team_file(prompter: Prompter, folder: Path, team: TeamFile) -> None:
         )
         return
     saved = f"Its key is saved in {shown_home(folder)}."
+    if not delete:
+        prompter.say(
+            f"Kept the team file at {printable(team.path)}: setup didn't use its team values, "
+            f"and you may need it to run setup again. {saved}"
+        )
+        return
     if not still_the_team_file(team):
         prompter.say(
             f"Kept the team file at {printable(team.path)}: it's no longer one plain file "
@@ -1363,7 +1377,8 @@ def setup(
                 parts = "store key" + (" and Google client file" if team.google_client else "")
                 if prompter.yes(f"Put the team file's {parts} in place anyway?"):
                     try:
-                        install_team_file(prompter, folder, team)
+                        # Kept: its values weren't used, and setup may need it again.
+                        install_team_file(prompter, folder, team, delete=False)
                     except OSError as e:
                         raise SetupError(
                             f"Couldn't put the team file's parts in place: {e}"

@@ -5,8 +5,8 @@ Claude's Slack connector, and a hook passes each result to `save_from_hook()`, s
 never retypes it. A result is saved only while an export run is open, and only for the
 channels that run named, all of which must be opted in through config.toml (CON-1).
 A channel read must show that channel's opted-in name and ID in its header, and is saved
-only then. A channel read holding a line in the shape of a post's Thread line that the
-parser didn't read as one is refused: the connector's format changed (#159). A channel
+only then. A channel read is refused if, where a post's Thread line goes (just above its
+detail and forwarded lines), a line looks like one but wasn't read as one (#159). A channel
 counts as checked in a run once its read is saved in that run's inbox folder, and a thread
 is saved only after that. Each save writes its own file, so two reads finishing together
 can't undo each other's check (#21).
@@ -633,10 +633,11 @@ def save(config: Config, payload: bytes, now: datetime | None = None) -> int:
         # thread line the parser can't read would leave that thread out of the export, and
         # the start point would move past it (#159).
         return fail(
-            "This channel read holds a line that looks like a post's thread line (\"Thread: "
-            "N replies\"), but diffdata couldn't read it as one, so it wasn't saved. The Slack "
-            "connector's format changed. Stop the export and tell the user: they can pass "
-            "this message to the project team, so the parser can be fixed."
+            'This channel read has a post whose thread line ("Thread: N replies") '
+            "diffdata couldn't read, so it wasn't saved: the threads under it would be missed. "
+            "The Slack connector's format may have changed, or a message's last line looks "
+            "like a thread line. Stop the export and tell the user: they can pass this message "
+            "to the project team."
         )
     left, left_names = 0, {}
     if tool in SAVED_TOOLS and config.slack_opted_out:

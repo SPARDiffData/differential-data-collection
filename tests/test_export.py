@@ -18,6 +18,7 @@ from diffdata.discover.slack_inbox import begin, open_run
 from diffdata.store import push as store_push
 
 CLAUDE = "/fake/bin/claude"
+real_claude_command = export.claude_command
 
 
 def a_config(tmp_path: Path, **changes) -> Config:
@@ -471,11 +472,24 @@ def test_claude_is_found_on_path_or_in_the_desktop_app(tmp_path, monkeypatch):
     binary = version / "fakehash" / "claude.app" / "Contents" / "MacOS" / "claude"
     binary.parent.mkdir(parents=True)
     binary.write_text("")
-    monkeypatch.setattr(export.check, "desktop_versions", lambda: {(2, 1, 331): version})
+    monkeypatch.setattr(export.check, "desktop_scan", lambda: ({(2, 1, 331): version}, False))
     assert export.claude_command() == [str(binary)]
     monkeypatch.setattr(export.check, "claude_path", lambda: "/usr/local/bin/claude")
-    monkeypatch.setattr(export.check, "desktop_versions", lambda: pytest.fail("looked in the app"))
+    monkeypatch.setattr(export.check, "desktop_scan", lambda: pytest.fail("looked in the app"))
     assert export.claude_command() == ["/usr/local/bin/claude"]
+
+
+def test_a_blocked_desktop_app_folder_says_how_to_go_on_not_missing(world, monkeypatch):
+    # #160: macOS refused the Claude app's folder: it's not "Claude Code wasn't found".
+    w = world(["y", "push"])
+    monkeypatch.setattr(export, "claude_command", real_claude_command)
+    monkeypatch.setattr(export.check, "claude_path", lambda: None)
+    monkeypatch.setattr(export.check, "desktop_scan", lambda: ({}, True))
+    assert run(w) == 1
+    said = "\n".join(w.said)
+    assert "macOS blocked Terminal" in said and "Privacy & Security" in said
+    assert "`claude` command" in said and "wasn't found" not in said
+    assert w.calls == []
 
 
 def test_no_claude_stops_with_the_line_to_type(world, monkeypatch):
@@ -670,7 +684,7 @@ def test_claude_exe_right_in_the_version_folder_is_found(tmp_path, monkeypatch):
     version = tmp_path / "2.1.331"
     version.mkdir()
     (version / "claude.exe").write_text("")
-    monkeypatch.setattr(export.check, "desktop_versions", lambda: {(2, 1, 331): version})
+    monkeypatch.setattr(export.check, "desktop_scan", lambda: ({(2, 1, 331): version}, False))
     assert export.claude_command() == [str(version / "claude.exe")]
 
 

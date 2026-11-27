@@ -246,6 +246,38 @@ def test_a_desktop_app_folder_the_system_refuses_counts_as_no_app(tmp_path, monk
 
     monkeypatch.setattr(check.Path, "iterdir", refused)
     assert check.desktop_versions() == {}
+    assert check.desktop_scan() == ({}, True)
+    with pytest.raises(check.DesktopBlocked):
+        check.desktop_claude_code()
+
+
+def test_a_blocked_desktop_app_says_so_not_that_claude_is_missing():
+    def blocked():
+        raise check.DesktopBlocked(check.DESKTOP_BLOCKED)
+
+    item = check.claude_item(None, blocked)
+    assert not item.ok and item.detail == check.DESKTOP_BLOCKED
+    assert "Privacy & Security" in item.detail and "`claude` command" in item.detail
+
+
+def test_a_missing_desktop_app_folder_isnt_blocked(tmp_path, monkeypatch):
+    monkeypatch.setattr(check.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(check.sys, "platform", "darwin")
+    assert check.desktop_scan() == ({}, False)
+    assert check.claude_item(None, check.desktop_claude_code).detail == check.CLAUDE_MISSING
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_a_refused_folder_off_macos_is_quietly_no_app(tmp_path, monkeypatch, platform):
+    monkeypatch.setattr(check.sys, "platform", platform)
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    (tmp_path / "Claude" / "claude-code").mkdir(parents=True)
+
+    def refused(self):
+        raise PermissionError("Operation not permitted")
+
+    monkeypatch.setattr(check.Path, "iterdir", refused)
+    assert check.desktop_scan() == ({}, False)
 
 
 def test_the_windows_app_alias_isnt_run(monkeypatch, tmp_path):

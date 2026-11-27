@@ -9,16 +9,17 @@ Names are examples only.
 import json
 import os
 import re
+import shlex
 import socket
 import stat
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
 from diffdata import cli
 from diffdata.common import config as config_module
-from diffdata.common import setup
+from diffdata.common import history, setup
 from diffdata.common.setup import PSEUDONYM, Prompter, SetupError
 from diffdata.store import push
 
@@ -798,22 +799,44 @@ def test_a_team_file_that_cant_be_deleted_is_said_and_setup_goes_on(home, monkey
 
 
 @pytest.mark.parametrize(
-    ("windows", "repo", "cd"),
+    ("repo", "go"),
     [
-        (False, "/home/fake person/diff's repo", "  cd '/home/fake person/diff'\"'\"'s repo'"),
-        (False, "/home/fake/repo", "  cd /home/fake/repo"),
-        (True, r"C:\Users\fake person\diff's repo", r"  cd 'C:\Users\fake person\diff''s repo'"),
+        (
+            PurePosixPath("/home/fake person/diff's repo"),
+            "  cd '/home/fake person/diff'\"'\"'s repo'",
+        ),
+        (PurePosixPath("/home/fake/repo"), "  cd /home/fake/repo"),
+        (
+            PureWindowsPath(r"C:\Users\fake person\diff's [repo]"),
+            r"  Set-Location -LiteralPath 'C:\Users\fake person\diff''s [repo]'",
+        ),
     ],
 )
-def test_the_last_lines_say_what_to_type_after_day_7(windows, repo, cd):
-    assert setup.next_lines(Path(repo), windows=windows) == [cd, "  uv run diffdata export"]
+def test_the_last_lines_say_what_to_type_after_day_7(repo, go):
+    windows = isinstance(repo, PureWindowsPath)
+    assert setup.next_lines(repo, windows=windows) == [go, "  uv run diffdata export"]
+
+
+def test_the_last_lines_name_this_repo():
+    assert setup.next_lines(windows=False)[0] == f"  cd {shlex.quote(str(history.REPO))}"
+
+
+def test_with_no_change_a_team_file_for_another_folder_is_kept(home):
+    # #160 review: setup says to run it again with this file, so it must still be there.
+    existing(home)
+    path = team_file(home, folder="team-b")
+    code, script = run(home, "n", "y", team=path)  # Change it? no; put in place anyway? yes
+    assert code == 0 and path.exists()
+    assert "push will fail" in script.text and "Kept the team file" in script.text
+    assert "Deleted the team file" not in script.text
 
 
 def test_setups_last_lines_are_the_export(home):
     _, script = first(home, "none", "none")
     end = script.shown[script.shown.index(setup.NEXT_STEP) :]
     assert end[0] == "Setup is done. After day 7, when the project team tells you, run:"
-    assert end[1].startswith("  cd ") and end[2] == "  uv run diffdata export"
+    assert end[1].startswith(("  cd ", "  Set-Location -LiteralPath ")), end[1]
+    assert end[2] == "  uv run diffdata export"
     assert "/slack-export" not in "\n".join(end)
 
 
@@ -1188,7 +1211,8 @@ def test_with_no_change_the_team_files_parts_can_still_be_put_in_place(home):
     assert path.read_bytes() == before  # the team values weren't used (16)
     assert setup.push.read_key(home / ".diffdata" / "store-key.json") == KEY
     assert (home / ".diffdata" / "google-client.json").exists()
-    assert not team.exists()  # deleted by itself once both were in place (#159)
+    assert team.exists()  # its values weren't used, so it's kept (#160)
+    assert "Kept the team file" in script.text
     assert no_marker(script.text)
 
 

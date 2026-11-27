@@ -255,8 +255,16 @@ def test_must_refuse_1_a_thread_line_the_parser_didnt_read_is_refused(config, ca
     body = "Hello.\n>> Thread: 9 replies (latest: 2026-10-01 09:30:00 CDT)"
     assert save(config, payload(response=channel_read_with(body)), now=T0) == 2
     err = capsys.readouterr().err
-    assert "thread line" in err and "format changed" in err
+    assert "thread line" in err and "format may have changed" in err and "project team" in err
     assert inbox_files(config) == []
+
+
+@pytest.mark.parametrize("line", ["Thread (2 replies)", "Thread: 5 replies", "thread - 2 replies!"])
+def test_a_thread_look_alike_inside_a_posts_text_never_stops_the_export(config, capsys, line):
+    begin(config, ["example-channel=C00000001"], now=T0)
+    body = f"Recap:\n{line}\nthanks all\n> Thread: 2 replies (latest: 2026-10-01 09:30:00 CDT)"
+    assert save(config, payload(response=channel_read_with(body)), now=T0) == 0
+    assert "slack_read_thread: 1790860000.000100." in hook_note(capsys)
 
 
 def test_must_refuse_2_text_that_only_looks_like_a_thread_line_is_saved_as_text(config, capsys):

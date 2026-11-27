@@ -68,11 +68,15 @@ MARKER = re.compile(
 # "Name <email> (U...)". The name can't hold <, > or @, so an email can never end up in it.
 AUTHOR = re.compile(r"^(?P<name>[^<>@]*?)\s*(?:<[^<>]*>)?\s*\((?P<user_id>[A-Z][A-Z0-9]+)\)$")
 # The detail lines at the end of a message, in the connector's exact formats, each with or
-# without "> " before it (#159). A line of text that only starts like one, such as
-# "Reactions: mostly positive" or "> Thread: see below", stays part of the text.
-DETAIL_PREFIX = "> "
+# without a quote mark before it: "> ", or "&gt; " or "&gt;" as Slack escapes it (#159). A
+# line of text that only starts like one, such as "Reactions: mostly positive" or
+# "> Thread: see below", stays part of the text.
+DETAIL_PREFIX = re.compile(r"(?:> |&gt; ?)")
+# A reply count, with or without thousands commas: "3", "1024", "1,024".
+COUNT = r"(?:\d{1,3}(?:,\d{3})+|\d+)"
 META = {
-    "Thread": re.compile(r"\d+ repl(?:y|ies) \(latest: .+\)"),  # "3 replies (latest: ...)"
+    # "3 replies (latest: ...)"
+    "Thread": re.compile(COUNT + r" repl(?:y|ies) \(latest: .+\)"),
     "Reactions": re.compile(r"[^\s,()]+ \(\d+\)(?:, [^\s,()]+ \(\d+\))*"),  # "+1 (2), eyes (1)"
     "Files": re.compile(r".+ \(ID: F[A-Z0-9]+, [^()]+\)"),  # "name (ID: F..., type, size)"
 }
@@ -86,6 +90,12 @@ FORWARDED = re.compile(
     r"(?:\?[^\s()]*)?\): .*"
     r" \u2014 use slack_read_thread or slack_read_channel to read it in context"
 )
+# A forwarded message whose text runs over several lines: its first line and its last line.
+FORWARDED_START = re.compile(
+    r"Forwarded message from .+ \(https://[A-Za-z0-9.-]+/archives/[A-Z][A-Z0-9]+/p[0-9]+"
+    r"(?:\?[^\s()]*)?\): .*"
+)
+FORWARDED_END = " \u2014 use slack_read_thread or slack_read_channel to read it in context"
 # Seconds, a dot, then a sequence number. Ten digits of seconds last until the year 2286;
 # anything else would crash the build when it's turned into a date.
 TS = re.compile(r"[0-9]{1,10}\.[0-9]+")
@@ -102,14 +112,13 @@ CURSOR = re.compile(r"cursor:?\s*`([^`]+)`")  # "...use cursor: `bmV4dF90czox...
 LAST_PAGE = re.compile(
     r"There are no more messages (?:available|in this thread)\.|End of results - No more pages"
 )
-REPLIES = re.compile(r"^(\d+) repl")  # "Thread: 3 replies (latest: ...)"
-# Any line that looks like a Thread line, whatever marks or quoting surround it: "Thread",
-# a count, "reply" or "replies", then nothing, or only a part in brackets. A channel page
-# holding one that wasn't read as a detail line is refused (#159). "Thread: 2 replies so
-# far" isn't in this shape, so it stays text and doesn't stop the export.
-THREAD_SHAPE = re.compile(
-    r"[\W_]*thread\b[\W_]*\d+[\W_]+repl(?:y|ies)\b(?:[\W_]*|\s*\(.*)", re.IGNORECASE
-)
+REPLIES = re.compile(rf"^({COUNT}) repl")  # "Thread: 3 replies (latest: ...)"
+# A line that looks like a Thread line, whatever marks or quoting surround it: "Thread", a
+# count, "reply" or "replies", then anything. Only checked where the connector writes the
+# Thread line: just above a post's detail and forwarded lines (#159). There, one that
+# wasn't read as a detail line makes the hook refuse the page; anywhere else it's text.
+THREAD_SHAPE = re.compile(r"[\W_]*thread\b[\W_]*\d[\d,]*\s*repl(?:y|ies)\b.*", re.IGNORECASE)
+ESCAPED_QUOTES = re.compile(r"^(?:\s*&gt;)+")
 # A message's text could hold lines that look like a search's own, so a search is refused when
 # the count doesn't match the results, or a result shows a line before its text twice or in
 # another shape. One message's text mustn't pass as another message's channel or thread.
@@ -287,17 +296,43 @@ def parse_block(block: str, who: str | None) -> Message | None:
             {"name": r["name"], "count": int(r["count"])}
             for r in REACTION.finditer(meta.get("Reactions", ""))
         ],
-        replies=int(match[1]) if (match := REPLIES.match(meta.get("Thread", ""))) else 0,
+        replies=reply_count(meta),
     )
 
 
-def split_details(lines: list[str]) -> tuple[list[str], dict[str, str]]:
-    """A message's lines after its header, split into its text and its detail lines, as
-    {key: value}. Forwarded-message lines at the very end come after the detail lines, so
-    they're set aside first, then put back at the end of the text."""
-    end = len(lines)
-    while end and (not lines[end - 1].strip() or FORWARDED.fullmatch(lines[end - 1].rstrip())):
-        end -= 1
+def reply_count(meta: dict[str, str]) -> int:
+    """The reply count in a Thread detail line's value, or 0."""
+    match = REPLIES.match(meta.get("Thread", ""))
+    return int(match[1].replace(",", "")) if match else 0
+
+
+def forwarded_start(lines: list[str], end: int) -> int | None:
+    """Where the forwarded entries at the very end of `lines[:end]` start: each is one whole
+    line in the FORWARDED shape, or, when its text runs over several lines, a line starting
+    like one down to a line ending like one. Blank lines between them go with them."""
+    while end:
+        line = lines[end - 1].rstrip()
+        if not line.strip() or FORWARDED.fullmatch(line):
+            end -= 1
+        elif line.endswith(FORWARDED_END):
+            start = next(
+                (i for i in range(end - 2, -1, -1) if FORWARDED_START.fullmatch(lines[i].rstrip())),
+                None,
+            )
+            if start is None:
+                return end
+            end = start
+        else:
+            return end
+    return end
+
+
+def split_tail(lines: list[str]) -> tuple[list[str], dict[str, str], list[str]]:
+    """A message's lines after its header, from the end: the lines above its detail lines,
+    with blank lines at their end dropped; the detail lines, as {key: value}; and the
+    forwarded entries under them. The last of the lines above is where the connector would
+    have written the Thread line."""
+    end = forwarded_start(lines, len(lines))
     forwarded = trim_blank(lines[end:])
     text, meta = lines[:end], {}
     while text and (not text[-1].strip() or detail_line(text[-1])):
@@ -305,6 +340,14 @@ def split_details(lines: list[str]) -> tuple[list[str], dict[str, str]]:
             # The scan runs from the end, so the first one found is the connector's own line.
             # A look-alike typed higher up in the text can't overwrite it.
             meta.setdefault(detail[0], detail[1])
+    return text, meta, forwarded
+
+
+def split_details(lines: list[str]) -> tuple[list[str], dict[str, str]]:
+    """A message's lines after its header, split into its text and its detail lines, as
+    {key: value}. Forwarded-message lines at the very end come after the detail lines, so
+    they're set aside first, then put back at the end of the text."""
+    text, meta, forwarded = split_tail(lines)
     if not meta:  # no detail lines under them: as before #124, only blank lines at the end go
         end = len(lines)
         while end and not lines[end - 1].strip():
@@ -326,33 +369,45 @@ def trim_blank(lines: list[str]) -> list[str]:
 def detail_line(line: str) -> tuple[str, str] | None:
     """A Thread, Reactions or Files line in the connector's format, with or without "> "
     before it, as (key, value)."""
-    key, _, value = line.rstrip().removeprefix(DETAIL_PREFIX).partition(": ")
+    line = line.rstrip()
+    if quote := DETAIL_PREFIX.match(line):
+        line = line[quote.end() :]
+    key, _, value = line.partition(": ")
     pattern = META.get(key)
     return (key, value) if pattern and pattern.fullmatch(value) else None
 
 
+def thread_shaped(line: str) -> bool:
+    """Whether a line looks like a Thread line (THREAD_SHAPE), even quoted as "&gt;"."""
+    return THREAD_SHAPE.fullmatch(ESCAPED_QUOTES.sub("", line.strip())) is not None
+
+
 def unread_thread_lines(tool_response) -> int:
-    """How many lines of a channel read look like a post's Thread line (THREAD_SHAPE) but
-    weren't read as one: in a message's text, before the first message, or after a replies
-    line, which parse_result passes over. Anything but 0 means the connector's format
-    changed, and the page's threads would be missed, so the hook refuses it (#159). A message
-    the parser couldn't read at all is left out here: parse_result counts it, and that keeps
-    the channel's start point where it was (slack_state)."""
+    """How many places in a channel read hold a post's Thread line the parser didn't read
+    (#159). Only where the connector writes it counts: going up from a message's end past
+    its forwarded entries and detail lines, the next line looks like a Thread line. So does
+    a Thread line under a replies line, which parse_result passes over, or in the text
+    before the first message. A line that only looks like one higher up in a post's text is
+    text. Anything but 0 means the connector's format may have changed, or a message's last
+    line looks like a Thread line, and the hook refuses the page. A message the parser
+    couldn't read at all is left out here: parse_result counts it, and that keeps the
+    channel's start point where it was (slack_state)."""
     text = result_text(tool_response)
     markers = list(MARKER.finditer(text))  # as parse_result splits it
     unread = [text[: markers[0].start()] if markers else text]
+    found = 0
     for i, marker in enumerate(markers):
         end = markers[i + 1].start() if i + 1 < len(markers) else len(text)
         block = text[marker.end() : end]
         if marker["replies"]:
             unread.append(block)
         elif parts := block_parts(block, marker["who"]):
-            unread.append("\n".join(parts[2]))
-    return sum(
-        THREAD_SHAPE.fullmatch(line.strip()) is not None
-        for part in unread
-        for line in part.split("\n")
-    )
+            above, _, _ = split_tail(parts[2])
+            found += bool(above) and thread_shaped(above[-1])
+    for part in unread:
+        above, meta, _ = split_tail(part.split("\n"))
+        found += "Thread" in meta or (bool(above) and thread_shaped(above[-1]))
+    return found
 
 
 def parse_files(value: str) -> list[dict]:
@@ -619,9 +674,8 @@ def leave_out_text(
             ]
         stub += [line for line in head if line.startswith(("Time: ", "Message TS: "))]
         _, details = split_details(lines[len(head) :])
-        if count := REPLIES.match(details.get("Thread", "")):
+        if n := reply_count(details):
             # Rebuilt from the count alone: the "latest" part could be their own words.
-            n = int(count[1])
             stub.append(f"Thread: {n} {'reply' if n == 1 else 'replies'} (latest: -)")
         trailing = len(block) - len(block.rstrip("\n"))
         parts.append("\n".join(stub) + "\n" * max(trailing, 1))
