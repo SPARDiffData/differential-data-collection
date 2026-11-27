@@ -655,24 +655,28 @@ def filled(text: str, team: Team, link: str | None) -> str:
 
 
 def next_steps(team: Team, path: Path, link: str | None) -> list[str]:
-    """What add-team prints after the team file: the order of the producer's steps (#150, item
-    6), day 7 (items 3 and 4), then the notice and the mentor message (item 1)."""
+    """What add-team prints after the team file, in two labelled blocks (#156): what the
+    project team does (day 7, #150 items 3 and 4), then what to send the producer (the notice
+    and the mentor message, item 1). No producer commands: the guide has their steps."""
     lines = [
-        f"Project code: {team.name}",
-        "Send the team file to the team's producer privately (never in a repo, Issue, PR or "
-        "channel), with the project code and the two texts below. Their steps, in this order:",
-        "  1. Post the channel notice in each channel, and pin it.",
-        "  2. Send the mentor message to the mentor, in Slack.",
-        "  3. Run setup once, in their own terminal, with the team file where they saved it, and "
-        "paste each pinned notice's link when it asks:",
-        f"       uv run diffdata setup ~/Downloads/{path.name}",
-        f"On day 7, when every channel's 7 days are over: look at the form's answers for "
-        f"{team.name} and find each person's Slack user ID. Record each per-use answer (ID, uses, "
-        "date) in the private log, outside the repo. Then run this, and enter only the people "
-        "who opted out of everything:",
+        "",
+        "FOR YOU (the project team)",
+        f"  On day 7, when every channel's 7 days are over: look at the form's answers for "
+        f"{team.name} and find each person's Slack user ID. Record each per-use answer (ID, "
+        "uses, date) in the private log, outside the repo. Then run this, and enter only the "
+        "people who opted out of everything:",
         f"       uv run diffdata admin optouts {team.name} --bucket {team.bucket}",
         "  Then tell the producer they can run the export. Don't send them the IDs: the export "
         "fetches the list itself.",
+        "",
+        "SEND TO THE PRODUCER, privately (never in a repo, Issue, PR or channel)",
+        f"  1. The team file: {path}",
+        f"  2. The project code: {team.name}",
+        "  3. The channel notice, below.",
+        "  4. The mentor message, below.",
+        "  5. The producer guide.",
+        "  The guide has every step they take.",
+        "",
     ]
     if link is None:
         lines.append(
