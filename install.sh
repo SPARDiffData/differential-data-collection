@@ -33,6 +33,10 @@
 #       the project code (and stops without a terminal); with none, it stops
 
 set -euo pipefail
+# Any step that fails without its own message says so, instead of ending silently. An EXIT
+# trap, not ERR: on macOS's Bash 3.2, ERR misses failures inside functions and pipelines.
+stopped=no
+trap 'rc=$?; if [ "$rc" -ne 0 ] && [ "$stopped" = no ]; then printf "diffdata install: stopped after a step failed (code %s). Run the install line again, or send us this message.\n" "$rc" >&2; fi' EXIT
 
 REPO_URL="https://github.com/SPARDiffData/differential-data-collection.git"
 DEST="${DIFFDATA_REPO:-$HOME/differential-data-collection}"
@@ -45,6 +49,7 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
 
 say() { printf '%s\n' "$*"; }
 stop() {
+  stopped=yes
   printf 'diffdata install: %s\n' "$*" >&2
   exit 1
 }
@@ -75,18 +80,31 @@ esac
 case "/$DEST/" in
   */../* | */./*) stop "Give DIFFDATA_REPO as a plain path, without . or .. in it. Nothing was changed." ;;
 esac
+# A doubled slash would get past the ~/.diffdata spelling check below.
+case "${DIFFDATA_REPO:-}" in
+  *//*) stop "Give DIFFDATA_REPO as a plain path, without // in it. Nothing was changed." ;;
+esac
+inside_settings=no
 # The nearest folder above it that exists, as the system sees it (links resolved).
 probe="${DEST%/*}"
 while [ -n "$probe" ] && [ ! -d "$probe" ]; do probe="${probe%/*}"; done
-parent="$(real "${probe:-/}/")"
-diffdata_home="$(real "$HOME/.diffdata")"
-inside_settings=no
+parent="$(real "${probe:-/}/")" || stop "Couldn't open ${probe:-/}. Choose another folder. Nothing was changed."
+# Where ~/.diffdata is, links resolved. A new producer has none yet (setup makes it later):
+# then it's where it will be, in the home folder as the system sees it. One that's there but
+# can't be opened stops here.
+if [ -e "$HOME/.diffdata" ] || [ -L "$HOME/.diffdata" ]; then
+  diffdata_home="$(real "$HOME/.diffdata")" || stop "Couldn't open ~/.diffdata to check the folder isn't inside it. Nothing was changed."
+else
+  diffdata_home="$(real "$HOME/")" || stop "Couldn't open your home folder. Nothing was changed."
+  diffdata_home="$diffdata_home/.diffdata"
+fi
+# The folder as the system sees it: its nearest existing folder, links resolved, then the rest.
+rest="${DEST#"$probe"}"
+if [ "$(uname -s)" = "Darwin" ]; then rest="$(printf '%s' "$rest" | tr '[:upper:]' '[:lower:]')"; fi
+case "${parent%/}$rest/" in "$diffdata_home"/*) inside_settings=yes ;; esac
 case "$(printf '%s' "$DEST/" | tr '[:upper:]' '[:lower:]')" in
   "$(printf '%s' "$HOME/.diffdata/" | tr '[:upper:]' '[:lower:]')"*) inside_settings=yes ;;
 esac
-if [ -n "$diffdata_home" ] && [ -n "$parent" ]; then
-  case "$parent/" in "$diffdata_home"/*) inside_settings=yes ;; esac
-fi
 if [ "$inside_settings" = yes ]; then
   stop "$DEST is inside ~/.diffdata, which holds your settings and key. Choose another folder. Nothing was changed."
 fi

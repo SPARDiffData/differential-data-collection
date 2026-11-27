@@ -205,11 +205,92 @@ def test_a_fresh_install_clones_syncs_and_prints_the_setup_line(box):
 
 
 @POSIX
+def test_a_new_producer_with_no_diffdata_folder_installs(box):
+    # The first dry run (2026-11-27): with no ~/.diffdata, it ended silently with code 1.
+    shutil.rmtree(box["home"] / ".diffdata")
+    code, out = run_sh(box, tty=True)
+    assert code == 0, out
+    assert any(c.startswith(f"uv run diffdata setup {box['team']} (in") for c in calls(box))
+    assert not (box["home"] / ".diffdata").exists()  # left for setup to make (13)
+
+
+@POSIX
+def test_a_failed_step_without_its_own_message_still_says_it_stopped(box):
+    code, out = run_sh(box, str(box["team"]), STUB_SYNC_EXIT="3")
+    assert code != 0
+    assert "diffdata install: stopped after a step failed (code 3)" in out
+
+
+@POSIX
+def test_a_failed_clone_inside_a_function_says_it_stopped(box):
+    code, out = run_sh(box, STUB_CLONE_EXIT="128")
+    assert code != 0
+    assert "diffdata install: stopped after a step failed" in out
+
+
+@POSIX
+def test_inherited_errtrace_gives_no_false_message(box):
+    shutil.rmtree(box["home"] / ".diffdata")
+    code, out = run_sh(box, SHELLOPTS="errtrace")
+    assert code == 0, out
+    assert "stopped" not in out
+
+
+@POSIX
+def test_a_message_of_its_own_is_not_doubled(box):
+    box["team"].unlink()
+    code, out = run_sh(box)
+    assert code == 1
+    assert "No team file" in out and "stopped after" not in out
+
+
+@POSIX
+@pytest.mark.parametrize("repo", ["{home}//.diffdata/repo", "{home}/.diffdata//repo"])
+def test_must_refuse_12_a_doubled_slash_into_a_missing_diffdata_stops(box, repo):
+    shutil.rmtree(box["home"] / ".diffdata")
+    code, out = run_sh(box, DIFFDATA_REPO=repo.format(home=box["home"]))
+    assert code == 1 and "without //" in out
+    assert not (box["home"] / ".diffdata").exists()
+    assert not any(c.startswith(("git", "uv", "curl")) for c in calls(box))
+
+
+@POSIX
+def test_must_refuse_12_a_link_to_home_into_a_missing_diffdata_stops(box):
+    shutil.rmtree(box["home"] / ".diffdata")
+    os.symlink(box["home"], box["tmp"] / "homelink")
+    code, out = run_sh(box, DIFFDATA_REPO=str(box["tmp"] / "homelink" / ".diffdata" / "repo"))
+    assert code == 1 and "inside ~/.diffdata" in out
+    assert not (box["home"] / ".diffdata").exists()
+
+
+@POSIX
+def test_a_failed_uv_download_says_it_stopped(box):
+    (box["bin"] / "uv").unlink()
+    stub(box["bin"], "curl", LOGGER.format(name="curl", body="exit 7"))
+    code, out = run_sh(box, str(box["team"]))
+    assert code != 0
+    assert "diffdata install: stopped after a step failed" in out
+
+
+@POSIX
+def test_must_refuse_12_an_unopenable_diffdata_stops(box):
+    (box["home"] / ".diffdata").chmod(0)
+    try:
+        code, out = run_sh(box)
+    finally:
+        (box["home"] / ".diffdata").chmod(0o700)
+    if os.geteuid() == 0:
+        pytest.skip("root opens any folder")
+    assert code == 1 and "Couldn't open ~/.diffdata" in out
+
+
+@POSIX
 def test_with_a_terminal_it_hands_over_to_setup_on_the_terminal(box):
     code, out = run_sh(box, str(box["team"]), tty=True)
     assert code == 0, out
     dest = box["home"] / DEST
     log = calls(box)
+    assert "stopped" not in out
     setup = log.index(f"uv run diffdata setup {box['team']} (in {dest})")
     assert log[setup + 1] == "uv stdin is a terminal"  # setup reads the person, not the pipe
     assert "uv stdin is a terminal" not in log[:setup]  # nothing before it reads the terminal
